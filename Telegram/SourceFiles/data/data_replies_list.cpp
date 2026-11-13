@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/filters/filters_cache_controller.h"
 
 
 namespace Data {
@@ -867,6 +868,8 @@ void RepliesList::setUnreadCount(std::optional<int> count) {
 }
 
 int RepliesList::displayedUnreadCount() const {
+	auto result = (_inboxReadTillId > 1) ? unreadCountCurrent() : 0;
+	auto readTill = computeInboxReadTillFull();
 	const auto &ghost = AyuSettings::ghost(&_history->session());
 	if (ghost.isGhostModeActive()
 		&& !ghost.sendReadMessages()
@@ -889,11 +892,25 @@ int RepliesList::displayedUnreadCount() const {
 				_unreadCount.current(),
 				_inboxReadTillId);
 			if (projected) {
-				return *projected;
+				result = *projected;
+				readTill = MsgId(watermark->readTill);
 			}
 		}
 	}
-	return (_inboxReadTillId > 1) ? unreadCountCurrent() : 0;
+	if (result > 0
+		&& AyuSettings::getInstance().countFilteredUnreadInBadge(
+			_history->session().userId().bare)) {
+		const auto filtered = FiltersCacheController::countKnownFilteredUnread(
+			_history,
+			[=](not_null<const HistoryItem*> item) {
+				return item->isRegular()
+					&& !item->out()
+					&& item->id > readTill
+					&& ranges::contains(_list, item->id);
+			});
+		result = std::max(result - filtered, 0);
+	}
+	return result;
 }
 
 bool RepliesList::isServerSideUnread(

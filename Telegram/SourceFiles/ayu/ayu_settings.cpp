@@ -1199,6 +1199,21 @@ void AyuSettings::refreshGhostReadPresentation(uint64 userId) {
 	}
 }
 
+void AyuSettings::refreshFilteredUnreadBadgePresentation(uint64 accountId) {
+	if (!Core::IsAppLaunched()) {
+		return;
+	}
+	for (const auto &[index, account] : Core::App().domain().accounts()) {
+		if (account) {
+			if (const auto session = account->maybeSession();
+				session && session->userId().bare == accountId) {
+				session->data().histories().refreshGhostReadPresentation();
+			}
+		}
+	}
+	Core::App().domain().notifyUnreadBadgeChanged();
+}
+
 void AyuSettings::setUseGlobalGhostMode(bool val) {
 	if (_useGlobalGhostMode.current() == val) return;
 	_useGlobalGhostMode = val;
@@ -1326,6 +1341,26 @@ void AyuSettings::setFiltersEnabledInChats(bool val) {
 	if (_filtersEnabledInChats.current() == val) return;
 	_filtersEnabledInChats = val;
 	save();
+}
+
+bool AyuSettings::countFilteredUnreadInBadge(uint64 accountId) const {
+	const auto i = _countFilteredUnreadInBadge.find(accountId);
+	return (i != _countFilteredUnreadInBadge.end()) && i->second;
+}
+
+void AyuSettings::setCountFilteredUnreadInBadge(
+		uint64 accountId,
+		bool val) {
+	if (!accountId || countFilteredUnreadInBadge(accountId) == val) {
+		return;
+	}
+	if (val) {
+		_countFilteredUnreadInBadge[accountId] = true;
+	} else {
+		_countFilteredUnreadInBadge.erase(accountId);
+	}
+	save();
+	refreshFilteredUnreadBadgePresentation(accountId);
 }
 
 void AyuSettings::setHideFromBlocked(bool val) {
@@ -1847,6 +1882,12 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		}
 		ghostReadAccounts[std::to_string(accountId)] = std::move(watermarks);
 	}
+	auto filteredUnreadBadgeByAccount = nlohmann::json::object();
+	for (const auto &[accountId, enabled] : s._countFilteredUnreadInBadge) {
+		if (enabled) {
+			filteredUnreadBadgeByAccount[std::to_string(accountId)] = true;
+		}
+	}
 	auto deletedMessagePolicies = nlohmann::json::array();
 	for (const auto &[key, policy] : s._deletedMessagePolicies) {
 		deletedMessagePolicies.push_back({
@@ -1859,6 +1900,7 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 	j = nlohmann::json{
 		{"ghostModeSettings", ghostAccounts},
 		{"ghostReadState", ghostReadAccounts},
+		{"countFilteredUnreadInBadge", filteredUnreadBadgeByAccount},
 		{"deletedMessagePolicies", deletedMessagePolicies},
 		{"useGlobalGhostMode", s._useGlobalGhostMode.current()},
 		{"saveDeletedMessages", s._saveDeletedMessages.current()},
@@ -1997,6 +2039,29 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 				}
 			}
 			s._ghostReadStates[accountId].replace(std::move(entries));
+		}
+	}
+	if (j.contains("countFilteredUnreadInBadge")
+		&& j["countFilteredUnreadInBadge"].is_object()) {
+		s._countFilteredUnreadInBadge.clear();
+		for (const auto &[accountKey, enabled] :
+				j["countFilteredUnreadInBadge"].items()) {
+			auto accountId = uint64(0);
+			const auto parsed = std::from_chars(
+				accountKey.data(),
+				accountKey.data() + accountKey.size(),
+				accountId);
+			if (parsed.ec != std::errc()
+				|| parsed.ptr != accountKey.data() + accountKey.size()
+				|| !accountId) {
+				continue;
+			}
+			try {
+				if (enabled.get<bool>()) {
+					s._countFilteredUnreadInBadge[accountId] = true;
+				}
+			} catch (...) {
+			}
 		}
 	}
 	if (j.contains("deletedMessagePolicies") && j["deletedMessagePolicies"].is_array()) {

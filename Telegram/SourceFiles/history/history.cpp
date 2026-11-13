@@ -88,6 +88,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_state.h"
+#include "ayu/features/filters/filters_cache_controller.h"
 
 
 namespace {
@@ -2894,6 +2895,7 @@ Dialogs::UnreadState History::computeUnreadState() const {
 	auto result = Dialogs::UnreadState();
 	auto count = _unreadCount.value_or(0);
 	const auto &ghost = AyuSettings::ghost(&session());
+	auto ghostReadTill = MsgId(0);
 	if (_unreadCount
 		&& ghost.isGhostModeActive()
 		&& !ghost.sendReadMessages()
@@ -2909,8 +2911,22 @@ Dialogs::UnreadState History::computeUnreadState() const {
 			if (const auto projected = countStillUnreadLocal(
 					MsgId(watermark->readTill))) {
 				count = *projected;
+				ghostReadTill = MsgId(watermark->readTill);
 			}
 		}
+	}
+	if (_unreadCount
+		&& AyuSettings::getInstance().countFilteredUnreadInBadge(
+			session().userId().bare)) {
+		const auto filtered = FiltersCacheController::countKnownFilteredUnread(
+			this,
+			[=](not_null<const HistoryItem*> item) {
+				return item->isRegular()
+					&& !item->out()
+					&& item->unread(const_cast<History*>(this))
+					&& (item->id > ghostReadTill);
+			});
+		count = std::max(count - filtered, 0);
 	}
 	const auto mark = !count && unreadMark();
 	const auto muted = this->muted();

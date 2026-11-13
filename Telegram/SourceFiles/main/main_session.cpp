@@ -71,6 +71,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "chat_helpers/spellchecker_common.h"
 #endif // TDESKTOP_DISABLE_SPELLCHECK
 
+// AyuGram includes
+#include "ayu/features/filters/filters_cache_controller.h"
+
+
 namespace Main {
 namespace {
 
@@ -371,6 +375,7 @@ void Session::finishLogout() {
 }
 
 Session::~Session() {
+	FiltersCacheController::clearAccount(userId().bare);
 	Wallet::CloseWallet(this);
 	unlockTerms();
 	data().clear();

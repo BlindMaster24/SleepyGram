@@ -8,6 +8,7 @@
 
 #include "ayu/data/entities.h"
 #include "ayu/features/filters/filters_controller.h"
+#include "base/functional.h"
 #include "rpl/producer.h"
 
 #include <memory>
@@ -17,6 +18,9 @@
 namespace Data {
 struct Group;
 }
+
+class History;
+class HistoryItem;
 
 namespace FiltersCacheController {
 
@@ -52,5 +56,10 @@ void putFiltered(
 	const std::shared_ptr<const Cache> &matchedCache);
 
 void invalidate(not_null<HistoryItem*> item);
+void clearAccount(uint64 accountId);
+
+[[nodiscard]] int countKnownFilteredUnread(
+	not_null<const History*> history,
+	Fn<bool(not_null<const HistoryItem*>)> isUnread);
 
 }

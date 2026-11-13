@@ -277,6 +277,7 @@ public:
 	static void clearGhostRead(uint64 accountId, uint64 peerId, uint64 topicRootId);
 	static void clearGhostReadForPreference(uint64 userId);
 	static void refreshGhostReadPresentation(uint64 userId);
+	static void refreshFilteredUnreadBadgePresentation(uint64 accountId);
 
 	[[nodiscard]] bool useGlobalGhostMode() const { return _useGlobalGhostMode.current(); }
 	void setUseGlobalGhostMode(bool val);
@@ -298,6 +299,7 @@ public:
 	[[nodiscard]] bool saveForBots() const { return _saveForBots.current(); }
 	[[nodiscard]] bool filtersEnabled() const { return _filtersEnabled.current(); }
 	[[nodiscard]] bool filtersEnabledInChats() const { return _filtersEnabledInChats.current(); }
+	[[nodiscard]] bool countFilteredUnreadInBadge(uint64 accountId) const;
 	[[nodiscard]] bool hideFromBlocked() const { return _hideFromBlocked.current(); }
 	[[nodiscard]] bool semiTransparentDeletedMessages() const { return _semiTransparentDeletedMessages.current(); }
 	[[nodiscard]] bool disableAds() const { return _disableAds.current(); }
@@ -384,6 +386,7 @@ public:
 	void setSaveForBots(bool val);
 	void setFiltersEnabled(bool val);
 	void setFiltersEnabledInChats(bool val);
+	void setCountFilteredUnreadInBadge(uint64 accountId, bool val);
 	void setHideFromBlocked(bool val);
 	void setSemiTransparentDeletedMessages(bool val);
 	void setDisableAds(bool val);
@@ -652,6 +655,7 @@ private:
 	std::unordered_set<int64> _shadowBanIds;
 	rpl::variable<bool> _filtersEnabled = false;
 	rpl::variable<bool> _filtersEnabledInChats = false;
+	std::map<uint64, bool> _countFilteredUnreadInBadge;
 	rpl::variable<bool> _hideFromBlocked = false;
 	rpl::variable<bool> _semiTransparentDeletedMessages = false;
 	rpl::variable<bool> _disableAds = true;

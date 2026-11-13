@@ -45,6 +45,8 @@ namespace {
 
 void BuildFiltersSettings(SectionBuilder &builder) {
 	auto *settings = &AyuSettings::getInstance();
+	const auto controller = builder.controller();
+	const auto accountId = controller->session().userId().bare;
 
 	builder.addSkip();
 	builder.addSubsectionTitle(tr::ayu_RegexFilters());
@@ -100,6 +102,25 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 			FiltersCacheController::fireUpdate();
 		}, blockedButton->lifetime());
 	}
+
+	const auto filteredUnreadButton = builder.addButton({
+		.id = u"ayu/countFilteredUnreadInBadge"_q,
+		.title = tr::ayu_CountFilteredUnreadInBadge(),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::single(
+			settings->countFilteredUnreadInBadge(accountId)),
+	});
+	if (filteredUnreadButton) {
+		filteredUnreadButton->toggledValue(
+		) | rpl::filter([=](bool enabled) {
+			return enabled != settings->countFilteredUnreadInBadge(accountId);
+		}) | on_next([=](bool enabled) {
+			AyuSettings::getInstance().setCountFilteredUnreadInBadge(
+				accountId,
+				enabled);
+		}, filteredUnreadButton->lifetime());
+	}
+	builder.addDividerText(tr::ayu_CountFilteredUnreadInBadgeDescription());
 
 	builder.addSkip();
 }

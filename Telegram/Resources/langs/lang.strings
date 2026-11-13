@@ -9352,6 +9352,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_RegexFiltersExcluded" = "Excluded Filters";
 "ayu_RegexFiltersEnable" = "Enable Filters";
 "ayu_FiltersHideFromBlocked" = "Hide from Blocked Users";
+"ayu_CountFilteredUnreadInBadge" = "Exclude filtered messages from unread count";
+"ayu_CountFilteredUnreadInBadgeDescription" = "Only messages already checked by filters are excluded. Unknown messages stay counted.";
 "ayu_FiltersHideFromBlockedNote" = "Message filters were enabled.";
 "ayu_RegexFiltersEnableSharedInChats" = "Enable Shared Filters in Chats";
 "ayu_RegexFiltersAdd" = "Add Filter";

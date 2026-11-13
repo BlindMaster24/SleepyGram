@@ -15,6 +15,7 @@
 #include "history/history_item.h"
 #include "rpl/event_stream.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <unordered_set>
@@ -24,6 +25,32 @@ namespace FiltersCacheController {
 std::mutex rebuildMutex;
 std::mutex cacheMutex;
 std::mutex filteredMessagesMutex;
+
+struct DialogScope {
+	uint64 accountId = 0;
+	uint64 peerId = 0;
+
+	friend bool operator==(const DialogScope &, const DialogScope &) = default;
+};
+
+struct DialogScopeHasher {
+	std::size_t operator()(const DialogScope &scope) const {
+		const auto accountHash = std::hash<uint64>()(scope.accountId);
+		const auto peerHash = std::hash<uint64>()(scope.peerId);
+		return accountHash ^ (peerHash + 0x9e3779b9 + (accountHash << 6) + (accountHash >> 2));
+	}
+};
+
+DialogScope ScopeFor(not_null<PeerData*> peer) {
+	return {
+		peer->session().userId().bare,
+		peer->id.value
+	};
+}
+
+DialogScope ScopeFor(not_null<HistoryItem*> item) {
+	return ScopeFor(item->history()->peer);
+}
 
 rpl::event_stream<> filtersUpdateStream;
 
@@ -37,8 +64,9 @@ rpl::producer<> updates() {
 
 std::shared_ptr<const Cache> cache;
 
-std::unordered_map<long long, std::unordered_map<int64, bool>> filteredMessages;
-std::unordered_set<BareId> dialogsWithHiddenBlockedMessages; // purely for show / hide filtered messages
+std::unordered_map<DialogScope, std::unordered_map<int64, bool>, DialogScopeHasher> filteredMessages;
+std::unordered_map<DialogScope, std::unordered_set<int64>, DialogScopeHasher> filteredUnreadCandidates;
+std::unordered_set<DialogScope, DialogScopeHasher> dialogsWithHiddenBlockedMessages; // purely for show / hide filtered messages
 
 std::shared_ptr<const Cache> buildCache() {
 	const auto filters = AyuDatabase::getAllRegexFilters();
@@ -95,6 +123,7 @@ void rebuildCache() {
 		std::lock_guard filteredLock(filteredMessagesMutex);
 		cache = std::move(next);
 		filteredMessages.clear();
+		filteredUnreadCandidates.clear();
 		dialogsWithHiddenBlockedMessages.clear();
 	}
 }
@@ -143,7 +172,7 @@ std::shared_ptr<const Cache> snapshot() {
 
 std::optional<bool> isFiltered(not_null<HistoryItem*> item) {
 	std::lock_guard lock(filteredMessagesMutex);
-	auto dialogIt = filteredMessages.find(item->history()->peer->id.value);
+	auto dialogIt = filteredMessages.find(ScopeFor(item));
 
 	if (dialogIt == filteredMessages.end()) {
 		return std::nullopt;
@@ -159,24 +188,18 @@ std::optional<bool> isFiltered(not_null<HistoryItem*> item) {
 
 bool hasFilteredMessages(not_null<PeerData*> peer) {
 	std::lock_guard lock(filteredMessagesMutex);
-	if (dialogsWithHiddenBlockedMessages.contains(peer->id.value)) {
+	const auto scope = ScopeFor(peer);
+	if (dialogsWithHiddenBlockedMessages.contains(scope)) {
 		return true;
 	}
-	const auto dialogIt = filteredMessages.find(peer->id.value);
-	if (dialogIt == filteredMessages.end()) {
-		return false;
-	}
-	for (const auto &entry : dialogIt->second) {
-		if (entry.second) {
-			return true;
-		}
-	}
-	return false;
+	const auto dialogIt = filteredUnreadCandidates.find(scope);
+	return (dialogIt != filteredUnreadCandidates.end())
+		&& !dialogIt->second.empty();
 }
 
 void putHiddenBlockedMessage(not_null<HistoryItem*> item) {
 	std::lock_guard lock(filteredMessagesMutex);
-	dialogsWithHiddenBlockedMessages.insert(item->history()->peer->id.value);
+	dialogsWithHiddenBlockedMessages.insert(ScopeFor(item));
 }
 
 void putFiltered(
@@ -190,16 +213,25 @@ void putFiltered(
 	}
 
 	std::lock_guard filteredLock(filteredMessagesMutex);
-	filteredMessages[item->history()->peer->id.value][item->id.bare] = res;
+	const auto scope = ScopeFor(item);
+	filteredMessages[scope][item->id.bare] = res;
+	if (res) {
+		filteredUnreadCandidates[scope].insert(item->id.bare);
+	} else if (const auto i = filteredUnreadCandidates.find(scope);
+		i != filteredUnreadCandidates.end()) {
+		i->second.erase(item->id.bare);
+	}
 	if (group && res) {
 		for (const auto& groupItem : group->items) {
-			filteredMessages[item->history()->peer->id.value][groupItem->id.bare] = true;
+			filteredMessages[scope][groupItem->id.bare] = true;
+			filteredUnreadCandidates[scope].insert(groupItem->id.bare);
 		}
 	}
 }
 
 void invalidateSingle(not_null<HistoryItem*> item) {
-	const auto dialogIt = filteredMessages.find(item->history()->peer->id.value);
+	const auto scope = ScopeFor(item);
+	const auto dialogIt = filteredMessages.find(scope);
 
 	if (dialogIt == filteredMessages.end()) {
 		return;
@@ -211,6 +243,10 @@ void invalidateSingle(not_null<HistoryItem*> item) {
 	}
 
 	dialogIt->second.erase(it);
+	if (const auto candidates = filteredUnreadCandidates.find(scope);
+		candidates != filteredUnreadCandidates.end()) {
+		candidates->second.erase(item->id.bare);
+	}
 }
 
 void invalidate(not_null<HistoryItem*> item) {
@@ -222,6 +258,65 @@ void invalidate(not_null<HistoryItem*> item) {
 	} else {
 		invalidateSingle(item);
 	}
+}
+
+void clearAccount(uint64 accountId) {
+	std::lock_guard lock(filteredMessagesMutex);
+	const auto clearMaps = [=](auto &cache) {
+		for (auto i = cache.begin(); i != cache.end();) {
+			if (i->first.accountId == accountId) {
+				i = cache.erase(i);
+			} else {
+				++i;
+			}
+		}
+	};
+	clearMaps(filteredMessages);
+	clearMaps(filteredUnreadCandidates);
+	for (auto i = dialogsWithHiddenBlockedMessages.begin();
+		i != dialogsWithHiddenBlockedMessages.end();) {
+		if (i->accountId == accountId) {
+			i = dialogsWithHiddenBlockedMessages.erase(i);
+		} else {
+			++i;
+		}
+	}
+}
+
+int countKnownFilteredUnread(
+		not_null<const History*> history,
+		Fn<bool(not_null<const HistoryItem*>)> isUnread) {
+	constexpr auto kMaxCandidatesPerBadge = std::size_t(256);
+	const auto peer = history->peer;
+	if (!FiltersController::isEnabled(peer)
+		|| FiltersController::filteredMessagesShown(peer).value_or(false)) {
+		return 0;
+	}
+	auto filteredIds = std::vector<MsgId>();
+	{
+		std::lock_guard lock(filteredMessagesMutex);
+		const auto dialog = filteredUnreadCandidates.find(ScopeFor(peer));
+		if (dialog == filteredUnreadCandidates.end()) {
+			return 0;
+		}
+		filteredIds.reserve(std::min(
+			dialog->second.size(),
+			kMaxCandidatesPerBadge));
+		for (const auto id : dialog->second) {
+			if (filteredIds.size() == kMaxCandidatesPerBadge) {
+				break;
+			}
+			filteredIds.push_back(MsgId(id));
+		}
+	}
+	auto result = 0;
+	for (const auto id : filteredIds) {
+		if (const auto item = history->owner().message(peer->id, id);
+			item && isUnread(item)) {
+			++result;
+		}
+	}
+	return result;
 }
 
 }
