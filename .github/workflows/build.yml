@@ -6,7 +6,7 @@ on:
       platform:
         description: Platform to build
         required: true
-        default: macos-windows
+        default: all
         type: choice
         options:
           - macos-windows
@@ -16,12 +16,12 @@ on:
           - windows-x64
           - all
       publish_release:
-        description: Upload built artifacts to a GitHub Release
+        description: Publish a release after all three platforms pass
         required: false
         default: false
         type: boolean
       release_tag:
-        description: Release tag for manual publishing
+        description: Optional tag for manual publishing
         required: false
         default: manual
         type: string
@@ -35,24 +35,26 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.AYUGRAM_API_ID || secrets.TELEGRAM_API_ID || secrets.API_ID || '2040' }}
   TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.AYUGRAM_API_HASH || secrets.TELEGRAM_API_HASH || secrets.API_HASH || 'b18441a1ff607e10a989891a5462e627' }}
+  CI_QT_VERSION: 6.11.2
 
 jobs:
   linux-x64:
     name: linux-x64
     runs-on: ubuntu-22.04
-    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.platform == 'linux-macos' || inputs.platform == 'linux-x64' || inputs.platform == 'all') }}
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'linux-macos' || inputs.platform == 'linux-x64' || inputs.platform == 'all' }}
     env:
       IMAGE_TAG: sleepygram:centos_env
     steps:
       - name: Check API credentials
+        shell: bash
         run: |
-          if [ -z "$TDESKTOP_API_ID" ] || [ -z "$TDESKTOP_API_HASH" ]; then
-            echo "::error::Missing API credentials. Add TDESKTOP_API_ID/TDESKTOP_API_HASH or reuse AyuGram credentials as AYUGRAM_API_ID/AYUGRAM_API_HASH, TELEGRAM_API_ID/TELEGRAM_API_HASH, or API_ID/API_HASH."
+          if [[ -z "$TDESKTOP_API_ID" || -z "$TDESKTOP_API_HASH" ]]; then
+            echo "::error::Missing API credentials. Configure TDESKTOP_API_ID and TDESKTOP_API_HASH or the supported Telegram aliases."
             exit 1
           fi
 
@@ -81,11 +83,15 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Cache key inputs
+        id: cache-key
+        run: python3 .github/ci/build_artifact.py cache-key --platform linux-x64 --repo-root .
+
       - name: Cache Docker layers
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/.buildx-cache
-          key: linux-x64-buildx-${{ hashFiles('Telegram/build/docker/centos_env/**') }}
+          key: linux-x64-buildx-${{ steps.cache-key.outputs.key }}
           restore-keys: linux-x64-buildx-
 
       - name: Prepare libraries
@@ -99,8 +105,20 @@ jobs:
 
       - name: Move Docker cache
         run: |
-          rm -rf "${{ runner.temp }}/.buildx-cache"
-          mv "${{ runner.temp }}/.buildx-cache-new" "${{ runner.temp }}/.buildx-cache"
+          rm -rf "$RUNNER_TEMP/.buildx-cache"
+          mv "$RUNNER_TEMP/.buildx-cache-new" "$RUNNER_TEMP/.buildx-cache"
+
+      - name: Record build image
+        shell: bash
+        run: |
+          image_id="$(docker image inspect --format='{{.Id}}' "$IMAGE_TAG")"
+          cmake_version="$(docker run --rm --network none "$IMAGE_TAG" cmake --version | head -n 1)"
+          compiler_version="$(docker run --rm --network none "$IMAGE_TAG" c++ --version | head -n 1)"
+          {
+            echo "CI_CONTAINER_IMAGE=$image_id"
+            echo "CI_CONTAINER_CMAKE=$cmake_version"
+            echo "CI_CONTAINER_CXX=$compiler_version"
+          } >> "$GITHUB_ENV"
 
       - name: Build
         run: |
@@ -116,20 +134,80 @@ jobs:
               -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
               -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
-      - name: Package
+      - name: Package and verify
+        shell: bash
         run: |
-          test -f out/Release/SleepyGram || { echo "::error::Smoke check failed: SleepyGram not found"; exit 1; }
-          mkdir -p "$RUNNER_TEMP/sleepygram-linux-x64"
-          cp out/Release/SleepyGram "$RUNNER_TEMP/sleepygram-linux-x64/"
+          set -euo pipefail
+          app="out/Release/SleepyGram"
+          test -f "$app"
+          readelf -h "$app" | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || {
+            echo "::error::SleepyGram is not an x86_64 ELF executable"
+            exit 1
+          }
+          package="$RUNNER_TEMP/sleepygram-linux-x64"
+          mkdir -p "$package"
+          cp "$app" "$package/SleepyGram"
+          files=(SleepyGram)
           if [ -f out/Release/Updater ]; then
-            cp out/Release/Updater "$RUNNER_TEMP/sleepygram-linux-x64/"
+            readelf -h out/Release/Updater | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || {
+              echo "::error::Updater is not an x86_64 ELF executable"
+              exit 1
+            }
+            cp out/Release/Updater "$package/Updater"
+            files+=(Updater)
           fi
-          tar -C "$RUNNER_TEMP/sleepygram-linux-x64" -cJf "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz" .
+          python3 .github/ci/build_artifact.py create \
+            --platform linux-x64 \
+            --repo-root . \
+            --build-dir out/Release \
+            --output "$package/build-manifest.json" \
+            --qt-version "$CI_QT_VERSION" \
+            --container-image "$CI_CONTAINER_IMAGE"
+          files+=(build-manifest.json)
+          tar -C "$package" -cJf "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz" "${files[@]}"
+          python3 .github/ci/build_artifact.py verify-package \
+            --platform linux-x64 \
+            --archive "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz"
+
+      - name: Startup smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          extracted="$RUNNER_TEMP/sleepygram-linux-x64-extracted"
+          mkdir -p "$extracted"
+          tar -xJf "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz" -C "$extracted"
+          if command -v Xvfb >/dev/null 2>&1; then
+            Xvfb :99 -screen 0 1024x768x24 -nolisten tcp -ac >"$RUNNER_TEMP/xvfb.log" 2>&1 &
+            xvfb_pid=$!
+            trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+            for attempt in {1..20}; do
+              [ -S /tmp/.X11-unix/X99 ] && break
+              sleep 0.25
+            done
+            docker run --rm --network none \
+              -u "$(id -u)" \
+              -e DISPLAY=:99 \
+              -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+              -v "$PWD:/usr/src/tdesktop:ro" \
+              -v "$extracted:/package:ro" \
+              "$IMAGE_TAG" \
+              python3 /usr/src/tdesktop/.github/ci/smoke.py \
+                --platform linux-x64 --directory /package --qpa-platform xcb
+          else
+            echo "::warning::Xvfb is unavailable; trying Qt offscreen startup"
+            docker run --rm --network none \
+              -u "$(id -u)" \
+              -v "$PWD:/usr/src/tdesktop:ro" \
+              -v "$extracted:/package:ro" \
+              "$IMAGE_TAG" \
+              python3 /usr/src/tdesktop/.github/ci/smoke.py \
+                --platform linux-x64 --directory /package
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SleepyGram-linux-x64.tar.xz
+          name: package-linux-x64
           path: ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
           if-no-files-found: error
 
@@ -141,7 +219,7 @@ jobs:
       - name: Check API credentials
         run: |
           if [ -z "$TDESKTOP_API_ID" ] || [ -z "$TDESKTOP_API_HASH" ]; then
-            echo "::error::Missing API credentials. Add TDESKTOP_API_ID/TDESKTOP_API_HASH or reuse AyuGram credentials as AYUGRAM_API_ID/AYUGRAM_API_HASH, TELEGRAM_API_ID/TELEGRAM_API_HASH, or API_ID/API_HASH."
+            echo "::error::Missing API credentials. Configure TDESKTOP_API_ID and TDESKTOP_API_HASH or the supported Telegram aliases."
             exit 1
           fi
 
@@ -163,16 +241,24 @@ jobs:
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
           sudo sed -i '' '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/ -g//' /opt/homebrew/share/cmake/Modules/Compiler/GNU.cmake || true
 
+      - name: Test macOS permission wrapper
+        run: python3 tdesktop/tools/tests/test_mac_permissions.py
+
+      - name: Cache key inputs
+        id: cache-key
+        run: python3 tdesktop/.github/ci/build_artifact.py cache-key --platform macos-arm64 --repo-root tdesktop
+
       - name: Cache libraries
         uses: actions/cache@v4
         with:
           path: |
             Libraries
             ThirdParty
-          key: macos-arm64-libraries-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py') }}
-          restore-keys: macos-arm64-libraries-
+          key: macos-arm64-libraries-${{ steps.cache-key.outputs.key }}
 
       - name: Prepare libraries
+        env:
+          QT: ${{ env.CI_QT_VERSION }}
         run: ./tdesktop/Telegram/build/prepare/mac.sh silent
 
       - name: Free up library build intermediates
@@ -180,6 +266,8 @@ jobs:
           find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path 'Libraries/local/src/wallet_engine/wallet_engine.cpp' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
       - name: Build
+        env:
+          QT: ${{ env.CI_QT_VERSION }}
         run: |
           cd tdesktop/Telegram
           ./configure.sh \
@@ -192,18 +280,54 @@ jobs:
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
           cmake --build ../out --config Release --parallel
 
-      - name: Package
+      - name: Package, sign, and verify
+        shell: bash
         run: |
-          cd tdesktop/out/Release
-          test -d SleepyGram.app || { echo "::error::Smoke check failed: SleepyGram.app not found"; exit 1; }
-          codesign --force --deep --sign - SleepyGram.app
-          codesign --verify --deep --strict SleepyGram.app
-          ditto -c -k --sequesterRsrc --keepParent SleepyGram.app "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
+          set -euo pipefail
+          app="tdesktop/out/Release/SleepyGram.app"
+          test -d "$app"
+          executable=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Contents/Info.plist")
+          main="$app/Contents/MacOS/$executable"
+          test -f "$main"
+          test -f "$app/Contents/Resources/Telegram.rcc"
+          while IFS= read -r -d '' binary; do
+            if file -b "$binary" | grep -q 'Mach-O'; then
+              archs="$(lipo -archs "$binary")"
+              if [[ " $archs " != *" arm64 "* ]]; then
+                echo "::error::Mach-O file has no arm64 slice: ${binary#$app/} ($archs)"
+                exit 1
+              fi
+            fi
+          done < <(find "$app" -type f -print0)
+          main_archs="$(lipo -archs "$main")"
+          if [[ "$main_archs" != "arm64" ]]; then
+            echo "::error::SleepyGram main executable must be arm64 only, found: $main_archs"
+            exit 1
+          fi
+          python3 tdesktop/.github/ci/build_artifact.py create \
+            --platform macos-arm64 \
+            --repo-root tdesktop \
+            --build-dir tdesktop/out/Release \
+            --output "$app/Contents/Resources/BuildManifest.json" \
+            --qt-version "$CI_QT_VERSION"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
+          python3 tdesktop/.github/ci/build_artifact.py verify-package \
+            --platform macos-arm64 \
+            --archive "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
+          extracted="$RUNNER_TEMP/sleepygram-macos-arm64-extracted"
+          mkdir -p "$extracted"
+          ditto -x -k "$RUNNER_TEMP/SleepyGram-macos-arm64.zip" "$extracted"
+          codesign --verify --deep --strict "$extracted/SleepyGram.app"
+          python3 tdesktop/.github/ci/smoke.py \
+            --platform macos-arm64 \
+            --directory "$extracted"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SleepyGram-macos-arm64.zip
+          name: package-macos-arm64
           path: ${{ runner.temp }}/SleepyGram-macos-arm64.zip
           if-no-files-found: error
 
@@ -218,7 +342,7 @@ jobs:
       - name: Check API credentials
         run: |
           if ([string]::IsNullOrWhiteSpace($env:TDESKTOP_API_ID) -or [string]::IsNullOrWhiteSpace($env:TDESKTOP_API_HASH)) {
-            Write-Error "Missing API credentials. Add TDESKTOP_API_ID/TDESKTOP_API_HASH or reuse AyuGram credentials as AYUGRAM_API_ID/AYUGRAM_API_HASH, TELEGRAM_API_ID/TELEGRAM_API_HASH, or API_ID/API_HASH."
+            Write-Error "Missing API credentials. Configure TDESKTOP_API_ID and TDESKTOP_API_HASH or the supported Telegram aliases."
             exit 1
           }
 
@@ -247,20 +371,7 @@ jobs:
             exit 1
           }
           "SDK=$($Matches.sdk)" >> $env:GITHUB_ENV
-
-      - name: Cache ThirdParty
-        uses: actions/cache@v4
-        with:
-          path: TBuild\ThirdParty
-          key: windows-x64-third-party-${{ hashFiles('TBuild/tdesktop/Telegram/build/prepare/prepare.py') }}
-          restore-keys: windows-x64-third-party-
-
-      - name: Cache libraries
-        uses: actions/cache@v4
-        with:
-          path: TBuild\Libraries\win64
-          key: windows-x64-libraries-${{ hashFiles('TBuild/tdesktop/Telegram/build/prepare/prepare.py') }}
-          restore-keys: windows-x64-libraries-
+          "WINDOWS_SDK_VERSION=$($Matches.sdk)" >> $env:GITHUB_ENV
 
       - name: MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -268,19 +379,33 @@ jobs:
           arch: x64
           sdk: ${{ env.SDK }}
 
+      - name: Cache key inputs
+        id: cache-key
+        run: python "$env:REPO_PATH\.github\ci\build_artifact.py" cache-key --platform windows-x64 --repo-root "$env:REPO_PATH"
+
+      - name: Cache ThirdParty
+        uses: actions/cache@v4
+        with:
+          path: TBuild\ThirdParty
+          key: windows-x64-third-party-${{ steps.cache-key.outputs.key }}
+
+      - name: Cache libraries
+        uses: actions/cache@v4
+        with:
+          path: TBuild\Libraries\win64
+          key: windows-x64-libraries-${{ steps.cache-key.outputs.key }}
+
       - name: NuGet sources
         run: |
           nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
           nuget sources Add -Source https://api.nuget.org/v3/index.json
-          exit 0
 
       - name: Prepare libraries
         shell: cmd
         env:
           GYP_MSVS_OVERRIDE_PATH: C:\Program Files\Microsoft Visual Studio\2022\Enterprise\
           GYP_MSVS_VERSION: 2022
-        run: |
-          "%REPO_PATH%\Telegram\build\prepare\win.bat" silent
+        run: '%REPO_PATH%\Telegram\build\prepare\win.bat silent'
 
       - name: Configure
         shell: cmd
@@ -299,24 +424,51 @@ jobs:
         shell: cmd
         run: cmake --build "%REPO_PATH%\out" --config Release --parallel
 
-      - name: Package
+      - name: Package, smoke, and verify
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           $out = "$env:REPO_PATH\out\Release"
-          if (!(Test-Path "$out\SleepyGram.exe")) {
-            Write-Error "Smoke check failed: SleepyGram.exe not found"
-            exit 1
+          $package = Join-Path $env:RUNNER_TEMP "sleepygram-windows-x64"
+          $archive = Join-Path $env:RUNNER_TEMP "SleepyGram-windows-x64.zip"
+          if (!(Test-Path "$out\SleepyGram.exe")) { throw "Build output is missing SleepyGram.exe" }
+          $module = "$out\modules\x64\d3d\d3dcompiler_47.dll"
+          function Assert-X64([string]$path) {
+            $headers = (& dumpbin.exe /headers $path 2>&1 | Out-String)
+            if ($LASTEXITCODE -ne 0 -or $headers -notmatch '(?i)8664 machine \(x64\)') {
+              throw "Expected an x64 PE image: $path"
+            }
           }
-          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\sleepygram-windows-x64" | Out-Null
-          Copy-Item "$out\SleepyGram.exe" "$env:RUNNER_TEMP\sleepygram-windows-x64\"
+          Assert-X64 "$out\SleepyGram.exe"
+          New-Item -ItemType Directory -Force $package | Out-Null
+          Copy-Item "$out\SleepyGram.exe" $package
           if (Test-Path "$out\Updater.exe") {
-            Copy-Item "$out\Updater.exe" "$env:RUNNER_TEMP\sleepygram-windows-x64\"
+            Assert-X64 "$out\Updater.exe"
+            Copy-Item "$out\Updater.exe" $package
           }
-          Compress-Archive -Path "$env:RUNNER_TEMP\sleepygram-windows-x64\*" -DestinationPath "$env:RUNNER_TEMP\SleepyGram-windows-x64.zip" -Force
+          if (Test-Path $module) {
+            Assert-X64 $module
+            New-Item -ItemType Directory -Force "$package\modules\x64\d3d" | Out-Null
+            Copy-Item $module "$package\modules\x64\d3d\d3dcompiler_47.dll"
+          }
+          python "$env:REPO_PATH\.github\ci\build_artifact.py" create `
+            --platform windows-x64 `
+            --repo-root "$env:REPO_PATH" `
+            --build-dir $out `
+            --output "$package\build-manifest.json" `
+            --qt-version $env:CI_QT_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "Manifest creation failed" }
+          Compress-Archive -Path "$package\*" -DestinationPath $archive -Force
+          python "$env:REPO_PATH\.github\ci\build_artifact.py" verify-package --platform windows-x64 --archive $archive
+          if ($LASTEXITCODE -ne 0) { throw "Windows package validation failed" }
+          $extracted = Join-Path $env:RUNNER_TEMP "sleepygram-windows-x64-extracted"
+          Expand-Archive -LiteralPath $archive -DestinationPath $extracted -Force
+          python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted
+          if ($LASTEXITCODE -ne 0) { throw "Windows startup smoke failed" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SleepyGram-windows-x64.zip
+          name: package-windows-x64
           path: ${{ runner.temp }}\SleepyGram-windows-x64.zip
           if-no-files-found: error
 
@@ -327,108 +479,97 @@ jobs:
       - linux-x64
       - macos-arm64
       - windows-x64
-    if: ${{ always() && ((github.event_name == 'push' && (github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
+    if: ${{ always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
+    permissions:
+      contents: write
     steps:
-      - name: Check build results
+      - name: Check release authorization and builds
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PLATFORM_INPUT: ${{ inputs.platform }}
+          PUBLISH_INPUT: ${{ inputs.publish_release }}
+          LINUX_RESULT: ${{ needs.linux-x64.result }}
+          MACOS_RESULT: ${{ needs.macos-arm64.result }}
+          WINDOWS_RESULT: ${{ needs.windows-x64.result }}
         run: |
-          check_result() {
-            local job="$1"
-            local result="$2"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$PUBLISH_INPUT" != "true" ]]; then
+            echo "::error::Manual publishing requires publish_release=true"
+            exit 1
+          fi
+          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$PLATFORM_INPUT" != "all" ]]; then
+            echo "::error::Manual publishing requires platform=all"
+            exit 1
+          fi
+          for result in "$LINUX_RESULT" "$MACOS_RESULT" "$WINDOWS_RESULT"; do
             if [[ "$result" != "success" ]]; then
-              echo "::error::$job did not finish successfully: $result"
+              echo "::error::Release requires all three build jobs to succeed"
               exit 1
             fi
-          }
+          done
 
-          if [[ "${{ github.event_name }}" == "push" ]]; then
-            check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
-            check_result "windows-x64" "${{ needs.windows-x64.result }}"
-            exit 0
-          fi
-
-          case "${{ inputs.platform }}" in
-            macos-windows)
-              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
-              check_result "windows-x64" "${{ needs.windows-x64.result }}"
-              ;;
-            linux-macos)
-              check_result "linux-x64" "${{ needs.linux-x64.result }}"
-              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
-              ;;
-            linux-x64)
-              check_result "linux-x64" "${{ needs.linux-x64.result }}"
-              ;;
-            macos-arm64)
-              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
-              ;;
-            windows-x64)
-              check_result "windows-x64" "${{ needs.windows-x64.result }}"
-              ;;
-            all)
-              check_result "linux-x64" "${{ needs.linux-x64.result }}"
-              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
-              check_result "windows-x64" "${{ needs.windows-x64.result }}"
-              ;;
-          esac
-
-      - name: Checkout release ref
+      - name: Checkout release commit
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Download artifacts
+      - name: Download this run's artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-assets
           merge-multiple: true
 
+      - name: Verify artifact source and run
+        run: |
+          python3 .github/ci/build_artifact.py verify-release \
+            --directory release-assets \
+            --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+
       - name: Publish GitHub Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
         run: |
-          shopt -s nullglob
-          files=(release-assets/*)
-          if (( ${#files[@]} == 0 )); then
-            echo "::error::No artifacts found for release upload"
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="$RELEASE_TAG_INPUT"
+            if [[ -z "$tag" || "$tag" == "manual" ]]; then
+              tag="manual-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
+            fi
+          fi
+          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$ ]]; then
+            echo "::error::Invalid release tag"
             exit 1
           fi
-
-          prerelease=()
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tag="$GITHUB_REF_NAME"
-            title="SleepyGram $tag"
-          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
-            tag="continuous"
-            title="SleepyGram Continuous"
-            prerelease=(--prerelease)
-          else
-            tag="${{ inputs.release_tag }}"
-            if [[ -z "$tag" || "$tag" == "manual" ]]; then
-              tag="manual-${GITHUB_RUN_NUMBER}"
-              prerelease=(--prerelease)
-            elif [[ "$tag" != v* ]]; then
-              prerelease=(--prerelease)
-            fi
-            title="SleepyGram $tag"
-          fi
-
-          if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git fetch --tags --force
-            git tag -f "$tag" "$GITHUB_SHA"
-            git push -f origin "refs/tags/$tag"
-          fi
-
-          notes="Automated SleepyGram build for ${GITHUB_SHA}."
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" "${files[@]}" --clobber
-          else
-            gh release create "$tag" "${files[@]}" \
-              --title "$title" \
-              --notes "$notes" \
-              --target "$GITHUB_SHA" \
-              "${prerelease[@]}"
+            echo "::error::Release $tag already exists; refusing to overwrite it"
+            exit 1
           fi
+          git fetch --tags origin
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            existing_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
+            if [[ "$existing_commit" != "$GITHUB_SHA" ]]; then
+              echo "::error::Tag $tag points at a different commit"
+              exit 1
+            fi
+          fi
+          files=(
+            release-assets/SleepyGram-linux-x64.tar.xz
+            release-assets/SleepyGram-macos-arm64.zip
+            release-assets/SleepyGram-windows-x64.zip
+          )
+          title="SleepyGram $tag"
+          release_args=(--title "$title" --notes "Automated SleepyGram build for ${GITHUB_SHA}." --target "$GITHUB_SHA")
+          if [[ "$tag" != v* ]]; then
+            release_args+=(--prerelease)
+          fi
+          gh release create "$tag" "${files[@]}" \
+            "${release_args[@]}"
