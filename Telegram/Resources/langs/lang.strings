@@ -5644,6 +5644,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_forward_cant" = "Sorry, no way to forward here :(";
 "lng_forward_share_contact" = "Share contact to {recipient}?";
 "lng_forward_share_cant" = "Sorry, no way to share contact here :(";
+"lng_forward_share_failed#one" = "{count} message could not be forwarded.";
+"lng_forward_share_failed#other" = "{count} messages could not be forwarded.";
+"lng_forward_share_unknown#one" = "The result for {count} message is unknown. Check the destination chat before retrying.";
+"lng_forward_share_unknown#other" = "The results for {count} messages are unknown. Check the destination chats before retrying.";
+"lng_forward_share_retry" = "Retry eligible messages";
 
 "lng_forward_send_files_cant" = "Sorry, no way to send media here :(";
 "lng_forward_send" = "Send";

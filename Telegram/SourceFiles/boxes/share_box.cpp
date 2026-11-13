@@ -1832,7 +1832,18 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 	struct State final {
 		base::flat_set<mtpRequestId> requests;
 		mtpRequestId nextRequestKey = 0;
-		bool failed = false;
+		int sentMessages = 0;
+		int failedMessages = 0;
+		int unknownMessages = 0;
+		int retriedMessages = 0;
+		int retryFailedMessages = 0;
+		int retryUnknownMessages = 0;
+		int unretryableMessages = 0;
+		std::vector<Fn<void()>> retries;
+		bool initialComplete = false;
+		bool retrying = false;
+		bool schedulingRetries = false;
+		bool started = false;
 	};
 	const auto state = std::make_shared<State>();
 	return [=](
@@ -1841,10 +1852,9 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 			TextWithTags comment,
 			Api::SendOptions options,
 			Data::ForwardOptions forwardOptions) {
-		if (!state->requests.empty()) {
+		if (state->started || !state->requests.empty()) {
 			return; // Share clicked already.
 		}
-		state->failed = false;
 
 		const auto items = history->owner().idsToItems(msgIds);
 		const auto existingIds = history->owner().itemsToIds(items);
@@ -1896,6 +1906,91 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 		const auto showRecentForwardsToSelf = result.size() == 1
 			&& result.front()->peer()->isSelf()
 			&& history->session().premium();
+		state->started = true;
+		const auto weakState = std::weak_ptr<State>(state);
+		const auto resultText = [=](
+				int sent,
+				int failed,
+				int unknown) {
+			auto text = QString();
+			if (sent) {
+				text = tr::lng_forward_messages(
+					tr::now,
+					lt_count,
+					sent);
+			}
+			if (failed) {
+				if (!text.isEmpty()) {
+					text += u"\n\n"_q;
+				}
+				text += tr::lng_forward_share_failed(
+					tr::now,
+					lt_count,
+					failed);
+			}
+			if (unknown) {
+				if (!text.isEmpty()) {
+					text += u"\n\n"_q;
+				}
+				text += tr::lng_forward_share_unknown(
+					tr::now,
+					lt_count,
+					unknown);
+			}
+			return text;
+		};
+		const auto finish = [=] {
+			const auto state = weakState.lock();
+			if (!state
+				|| !state->initialComplete
+				|| state->schedulingRetries
+				|| !state->requests.empty()
+				|| !show->valid()) {
+				return;
+			}
+			if (state->retrying) {
+				show->showBox(Ui::MakeInformBox(resultText(
+					state->sentMessages + state->retriedMessages,
+					state->unretryableMessages
+						+ state->retryFailedMessages,
+					state->unknownMessages + state->retryUnknownMessages)));
+			} else if (!state->retries.empty()) {
+				show->hideLayer();
+				show->showBox(Ui::MakeConfirmBox({
+					.text = resultText(
+						state->sentMessages,
+						state->failedMessages,
+						state->unknownMessages),
+					.confirmed = [=](Fn<void()> &&close) {
+						if (!show->valid()) {
+							return;
+						}
+						close();
+						state->retrying = true;
+						state->schedulingRetries = true;
+						auto retries = base::take(state->retries);
+						for (const auto &retry : retries) {
+							retry();
+						}
+						state->schedulingRetries = false;
+						finish();
+					},
+					.confirmText = tr::lng_forward_share_retry(),
+				}));
+			} else if (state->failedMessages || state->unknownMessages) {
+				show->hideLayer();
+				show->showBox(Ui::MakeInformBox(resultText(
+					state->sentMessages,
+					state->failedMessages,
+					state->unknownMessages)));
+			} else {
+				show->hideLayer();
+				ShowForwardedMessageToast(
+					show,
+					&history->session(),
+					donePhraseArgs);
+			}
+		};
 
 		// AyuGram-changed
 		const auto dismiss = [=]
@@ -1964,54 +2059,6 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 				? nullptr
 				: thread->maybeSublistPeer();
 			const auto fromPeer = history->peer;
-			const auto requestDone = [=](
-					const MTPUpdates &updates,
-					mtpRequestId requestKey) {
-				if (showRecentForwardsToSelf) {
-					ApiWrap::ProcessRecentSelfForwards(
-						&threadHistory->session(),
-						updates,
-						peer->id,
-						history->peer->id);
-				}
-				state->requests.remove(requestKey);
-				if (state->requests.empty()) {
-					if (show->valid()) {
-						show->hideLayer();
-						if (!state->failed) {
-							ShowForwardedMessageToast(
-								show,
-								&history->session(),
-								donePhraseArgs);
-						}
-					}
-				}
-			};
-			const auto requestFail = [=](
-					const MTP::Error &error,
-					mtpRequestId requestKey) {
-				state->failed = true;
-				const auto type = error.type();
-				if (type.startsWith(
-						u"ALLOW_PAYMENT_REQUIRED_"_q)) {
-					show->showToast(
-						u"Payment requirements changed. "
-						"Please, try again."_q);
-				} else if (type
-					== u"VOICE_MESSAGES_FORBIDDEN"_q) {
-					show->showToast(
-						tr::lng_restricted_send_voice_messages(
-							tr::now,
-							lt_user,
-							peer->name()));
-				}
-				state->requests.remove(requestKey);
-				if (state->requests.empty()) {
-					if (show->valid()) {
-						show->hideLayer();
-					}
-				}
-			};
 			for (const auto &range : ranges) {
 				const auto allMsgIds = ForwardRangeIds(
 					&history->session(),
@@ -2045,6 +2092,10 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 						| (range.fromEphemeral
 							? Flag::f_from_ephemeral
 							: Flag(0));
+					auto randoms = QVector<MTPlong>(msgCount);
+					for (auto &value : randoms) {
+						value = base::RandomValue<MTPlong>();
+					}
 					auto buildMessage = [=](
 							not_null<History*> history,
 							FullReplyTo replyTo)
@@ -2060,10 +2111,6 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 							flags |= Flag::f_top_msg_id;
 						} else {
 							flags &= ~Flag::f_top_msg_id;
-						}
-						auto randoms = QVector<MTPlong>(msgCount);
-						for (auto &value : randoms) {
-							value = base::RandomValue<MTPlong>();
 						}
 						return MTPmessages_ForwardMessages(
 							MTP_flags(flags),
@@ -2087,6 +2134,52 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 							MTP_long(starsPaid),
 							Api::SuggestToMTP(options.suggest));
 					};
+					const auto sendRetry = [=] {
+						const auto state = weakState.lock();
+						if (!state || !show->valid()) {
+							return;
+						}
+						const auto requestKey = ++state->nextRequestKey;
+						state->requests.insert(requestKey);
+						threadHistory->owner().histories().sendPreparedMessage(
+							threadHistory,
+							FullReplyTo{ .topicRootId = topicRootId },
+							uint64(0),
+							buildMessage,
+							[=](const MTPUpdates &updates,
+									const MTP::Response &) {
+								if (!show->valid()) {
+									state->requests.remove(requestKey);
+									return;
+								}
+								if (showRecentForwardsToSelf) {
+									ApiWrap::ProcessRecentSelfForwards(
+										&threadHistory->session(),
+										updates,
+										peer->id,
+										history->peer->id);
+								}
+								state->retriedMessages += msgCount;
+								state->requests.remove(requestKey);
+								finish();
+							},
+							[=](const MTP::Error &error,
+									const MTP::Response &) {
+								if (!show->valid()) {
+									state->requests.remove(requestKey);
+									return;
+								}
+								if (MTP::IsTemporaryError(error)
+									|| error.type()
+										== u"RANDOM_ID_DUPLICATE"_q) {
+									state->retryUnknownMessages += msgCount;
+								} else {
+									state->retryFailedMessages += msgCount;
+								}
+								state->requests.remove(requestKey);
+								finish();
+							});
+					};
 					const auto requestKey = ++state->nextRequestKey;
 					state->requests.insert(requestKey);
 					histories.sendPreparedMessage(
@@ -2096,24 +2189,60 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 						std::move(buildMessage),
 						[=](const MTPUpdates &updates,
 								const MTP::Response &) {
-							requestDone(updates, requestKey);
+							if (showRecentForwardsToSelf) {
+								ApiWrap::ProcessRecentSelfForwards(
+									&threadHistory->session(),
+									updates,
+									peer->id,
+									history->peer->id);
+							}
+							state->sentMessages += msgCount;
+							state->requests.remove(requestKey);
+							finish();
 						},
 						[=](const MTP::Error &error,
 								const MTP::Response &) {
-							requestFail(error, requestKey);
+							const auto type = error.type();
+							if (type.startsWith(
+									u"ALLOW_PAYMENT_REQUIRED_"_q)) {
+								if (show->valid()) {
+									show->showToast(
+										u"Payment requirements changed. "
+										"Please, try again."_q);
+								}
+							} else if (type
+								== u"VOICE_MESSAGES_FORBIDDEN"_q) {
+								if (show->valid()) {
+									show->showToast(
+										tr::lng_restricted_send_voice_messages(
+											tr::now,
+											lt_user,
+											peer->name()));
+								}
+							}
+							if (MTP::IsTemporaryError(error)
+								|| type == u"RANDOM_ID_DUPLICATE"_q) {
+								state->unknownMessages += msgCount;
+							} else {
+								state->failedMessages += msgCount;
+								if (!type.startsWith(
+										u"ALLOW_PAYMENT_REQUIRED_"_q)
+									&& !starsPaid
+									&& type
+									!= u"VOICE_MESSAGES_FORBIDDEN"_q) {
+									state->retries.push_back(sendRetry);
+								} else {
+									state->unretryableMessages += msgCount;
+								}
+							}
+							state->requests.remove(requestKey);
+							finish();
 						});
 				}
 			}
 		}
-		if (state->requests.empty()) {
-			if (show->valid()) {
-				show->hideLayer();
-				ShowForwardedMessageToast(
-					show,
-					&history->session(),
-					donePhraseArgs);
-			}
-		}
+		state->initialComplete = true;
+		finish();
 	};
 }
 
