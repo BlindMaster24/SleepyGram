@@ -666,14 +666,14 @@ void AyuSettings::setSaveDeletedMessages(bool val) {
 	save();
 }
 
-int AyuSettings::deletedMessagePolicy(uint64 accountId, int64 peerId) const {
+int AyuSettings::deletedMessagePolicy(uint64 accountId, uint64 peerId) const {
 	const auto i = _deletedMessagePolicies.find({ accountId, peerId });
 	return (i == end(_deletedMessagePolicies)) ? -1 : i->second;
 }
 
 void AyuSettings::setDeletedMessagePolicy(
 		uint64 accountId,
-		int64 peerId,
+		uint64 peerId,
 		int policy) {
 	const auto key = std::make_pair(accountId, peerId);
 	if (policy < 0) {
@@ -1389,7 +1389,7 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 		for (const auto &entry : j["deletedMessagePolicies"]) {
 			try {
 				const auto accountId = entry.value("accountId", uint64(0));
-				const auto peerId = entry.value("peerId", int64(0));
+				const auto peerId = entry.value("peerId", uint64(0));
 				const auto policy = entry.value("policy", -1);
 				if (accountId && peerId && (policy == 0 || policy == 1)) {
 					s._deletedMessagePolicies[{ accountId, peerId }] = policy;

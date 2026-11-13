@@ -127,7 +127,7 @@ DeletedMessagePolicy deletedMessagePolicy(not_null<PeerData*> peer) {
 	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
 	const auto value = AyuSettings::getInstance().deletedMessagePolicy(
 		userId,
-		getDialogIdFromPeer(peer));
+		peer->id.value);
 	return (value == 0 || value == 1)
 		? static_cast<DeletedMessagePolicy>(value)
 		: DeletedMessagePolicy::Inherit;
@@ -139,7 +139,7 @@ void setDeletedMessagePolicy(
 	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
 	AyuSettings::getInstance().setDeletedMessagePolicy(
 		userId,
-		getDialogIdFromPeer(peer),
+		peer->id.value,
 		static_cast<int>(policy));
 }
 
