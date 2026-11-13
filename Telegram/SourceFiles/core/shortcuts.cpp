@@ -52,6 +52,7 @@ const auto AutoRepeatCommands = base::flat_set<Command>{
 	Command::MediaNext,
 	Command::ChatPrevious,
 	Command::ChatNext,
+	Command::ChatNextUnread,
 	Command::ChatFirst,
 	Command::ChatLast,
 };
@@ -92,6 +93,7 @@ const auto CommandByName = base::flat_map<QString, Command>{
 
 	{ u"previous_chat"_q                 , Command::ChatPrevious },
 	{ u"next_chat"_q                     , Command::ChatNext },
+	{ u"next_unread_chat"_q              , Command::ChatNextUnread },
 	{ u"first_chat"_q                    , Command::ChatFirst },
 	{ u"last_chat"_q                     , Command::ChatLast },
 	{ u"self_chat"_q                     , Command::ChatSelf },
@@ -542,6 +544,7 @@ void Manager::fillDefaults() {
 
 	set(u"ctrl+pgdown"_q             , Command::ChatNext);
 	set(u"alt+down"_q                , Command::ChatNext);
+	set(u"ctrl+shift+pgdown"_q       , Command::ChatNextUnread);
 	set(u"ctrl+pgup"_q               , Command::ChatPrevious);
 	set(u"alt+up"_q                  , Command::ChatPrevious);
 

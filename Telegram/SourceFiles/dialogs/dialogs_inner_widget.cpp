@@ -6515,6 +6515,33 @@ RowDescriptor InnerWidget::chatListEntryLast() const {
 	return RowDescriptor();
 }
 
+RowDescriptor InnerWidget::chatListEntryNextUnread(
+		const RowDescriptor &from) const {
+	if (_state != WidgetState::Default || _shownList->empty()) {
+		return RowDescriptor();
+	}
+	auto i = _shownList->cbegin();
+	if (from.key) {
+		if (const auto row = _shownList->getRow(from.key)) {
+			i = _shownList->cfind(row) + 1;
+			if (i == _shownList->cend()) {
+				i = _shownList->cbegin();
+			}
+		}
+	}
+	for (auto count = _shownList->size(); count != 0; --count) {
+		if (i == _shownList->cend()) {
+			i = _shownList->cbegin();
+		}
+		const auto row = *i++;
+		const auto key = row->key();
+		if (key.history() && key.entry()->chatListBadgesState().unread) {
+			return RowDescriptor(key, FullMsgId(PeerId(), ShowAtUnreadMsgId));
+		}
+	}
+	return RowDescriptor();
+}
+
 void InnerWidget::setupOnlineStatusCheck() {
 	session().changes().peerUpdates(
 		Data::PeerUpdate::Flag::OnlineStatus
@@ -6668,6 +6695,10 @@ void InnerWidget::setupShortcuts() {
 				return jumpToDialogRow(first);
 			});
 		}
+		request->check(Command::ChatNextUnread) && request->handle([=] {
+			const auto nextUnread = chatListEntryNextUnread(row);
+			return nextUnread.key && jumpToDialogRow(nextUnread);
+		});
 		request->check(Command::ChatFirst) && request->handle([=] {
 			return jumpToDialogRow(first);
 		});

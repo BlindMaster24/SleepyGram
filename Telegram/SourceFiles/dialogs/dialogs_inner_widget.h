@@ -456,6 +456,8 @@ private:
 	RowDescriptor chatListEntryAfter(const RowDescriptor &which) const;
 	RowDescriptor chatListEntryFirst() const;
 	RowDescriptor chatListEntryLast() const;
+	RowDescriptor chatListEntryNextUnread(
+		const RowDescriptor &from) const;
 
 	void itemRemoved(not_null<const HistoryItem*> item);
 	enum class UpdateRowSection {

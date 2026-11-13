@@ -758,6 +758,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_shortcuts_search" = "Search messages";
 "lng_shortcuts_chat_previous" = "Previous chat";
 "lng_shortcuts_chat_next" = "Next chat";
+"lng_shortcuts_chat_next_unread" = "Next unread chat in this folder";
 "lng_shortcuts_chat_first" = "First chat";
 "lng_shortcuts_chat_last" = "Last chat";
 "lng_shortcuts_chat_self" = "Saved Messages";

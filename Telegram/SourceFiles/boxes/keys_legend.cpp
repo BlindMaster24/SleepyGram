@@ -202,6 +202,10 @@ using KeysMap = base::flat_map<QKeySequence, base::flat_set<Command>>;
 				tr::lng_shortcuts_chat_next(tr::now),
 			},
 			{
+				caps(Command::ChatNextUnread),
+				tr::lng_shortcuts_chat_next_unread(tr::now),
+			},
+			{
 				GroupCaps(currents, {
 					Command::ChatPinned1,
 					Command::ChatPinned2,
