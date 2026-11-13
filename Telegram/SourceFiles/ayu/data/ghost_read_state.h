@@ -87,12 +87,6 @@ public:
 		if (state && state->manuallyUnread) {
 			return false;
 		}
-		if (topicRootId) {
-			const auto peerState = find(accountId, peerId, 0);
-			if (peerState && peerState->manuallyUnread) {
-				return false;
-			}
-		}
 		return state
 			&& !state->manuallyUnread
 			&& (messageId > 0)
