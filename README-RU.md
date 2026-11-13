@@ -1,82 +1,130 @@
-<p align="center">
-  <img src="Telegram/Resources/art/sleepygram_1024.png" alt="SleepyGram logo" width="180">
-</p>
+<div align="center">
+  <img src="Telegram/Resources/art/sleepygram_1024.png" alt="SleepyGram" width="144" />
 
-<h1 align="center">SleepyGram Desktop</h1>
+  <h1>SleepyGram Desktop</h1>
 
-<p align="center">
-  Специальный клиент Telegram Desktop на базе AyuGram (актуальная база Telegram Desktop 7.4.3), который развивается открытым сообществом, а не закрытой группой разработчиков.
-</p>
+  <p>
+    <strong>Быстрый и приватный клиент Telegram Desktop на базе AyuGram, развиваемый сообществом.</strong><br />
+    Актуальная база Telegram, открытая разработка и реальное внимание к запросам пользователей — без закрытой тусовки мейнтейнеров.
+  </p>
 
-<p align="center">
-  <a href="README.md">English</a>
-  ·
-  <a href="https://github.com/slpkbt/SleepyGram/releases">Releases</a>
-  ·
-  <a href="https://github.com/slpkbt/SleepyGram/issues">Issues</a>
-</p>
+  <p>
+    <a href="https://github.com/slpkbt/SleepyGram/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/slpkbt/SleepyGram/build.yml?branch=dev&style=flat-square&label=build" alt="Build Status" /></a>
+    <a href="https://github.com/telegramdesktop/tdesktop/releases/tag/v7.4.3"><img src="https://img.shields.io/badge/telegram_base-v7.4.3-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Base v7.4.3" /></a>
+    <a href="https://github.com/slpkbt/SleepyGram/releases"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-181717?style=flat-square" alt="Platforms" /></a>
+    <a href="https://github.com/slpkbt/SleepyGram/issues"><img src="https://img.shields.io/badge/PRs%20%26%20Issues-welcome-10B981?style=flat-square" alt="PRs & Issues Welcome" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue?style=flat-square" alt="License GPLv3" /></a>
+  </p>
 
-## О проекте SleepyGram
+  <p>
+    <a href="#скачать"><strong>Скачать</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#почему-sleepygram"><strong>О проекте</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#возможности"><strong>Возможности</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#сравнение"><strong>Сравнение</strong></a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/slpkbt/SleepyGram/issues"><strong>Предложить идею / Багрепорт</strong></a>
+    &nbsp;·&nbsp;
+    <a href="README.md"><strong>English</strong></a>
+  </p>
+</div>
 
-**SleepyGram** — это модифицированный клиент Telegram Desktop на основе AyuGram, созданный для реального улучшения повседневного опыта в Telegram вместе с пользователями, а не в закрытом кругу мейнтейнеров.
+---
 
-В AyuGram отличный базовый набор privacy-функций, но сам проект регулярно отстаёт от свежих релизов Telegram, а запросы и багрепорты обычных пользователей в Issues годами остаются без внимания. Мы сделали **SleepyGram**, чтобы исправить этот подход:
+## Почему SleepyGram
 
-- **Развитие от комьюнити, а не закрытой тусовки:** Идеи, проблемы и предложения из [Issues](https://github.com/slpkbt/SleepyGram/issues) реально учитываются и попадают в обновления, а не игнорируются.
-- **Живой репозиторий и актуальная база:** Репозиторий своевременно синхронизируется со свежими версиями официального Telegram Desktop (`7.4.3`) с полным сохранением фич AyuGram.
-- **Фокус на удобстве работы с Telegram:** Убираем искусственные лимиты и дорабатываем клиент там, где это действительно нужно людям каждый день.
+AyuGram дал десктопному Telegram отличные инструменты приватности и сохранения истории, но со временем обновления стали выходить редко, база начала отставать от официального клиента, а идеи и багрепорты пользователей в Issues годами оставались без ответа.
+
+**SleepyGram** создан, чтобы исправить именно это:
+
+- **Развивается сообществом, а не закрытым кругом разработчиков.** Запросы и проблемы из [Issues](https://github.com/slpkbt/SleepyGram/issues) напрямую влияют на следующие релизы, а не лежат мёртвым грузом.
+- **Своевременные обновления базы Telegram.** Репозиторий поддерживается на актуальном `tdesktop` (`v7.4.3`) со всеми новыми функциями мессенджера и полным сохранением возможностей AyuGram.
+- **Упор на реальный ежедневный опыт.** Снятие искусственных ограничений, продуманные мелочи интерфейса, отключённое принудительное автообновление и полностью отдельный профиль приложения.
+
+---
 
 ## Возможности
 
-- **Расширенное выделение и пакетная пересылка:** Выделение и пересылка до **10 000 сообщений** за раз (с автоматической разбивкой по 100 сообщений на API-запрос)
-- **Ghost Mode и гибкая приватность:** Нечиталка, скрытие онлайна, набора текста и просмотра историй
-- **История изменений и анти-удаление:** Локальное сохранение удалённых и отредактированных сообщений и медиа
-- **Кастомизация интерфейса:** Шрифты, оформление чатов, папок и панелей
-- **Streamer Mode и локальные опции Telegram Premium**
-- **Встроенный переводчик сообщений**
-- **Превью медиа и быстрая реакция по Force Click на macOS**
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>👻 Ghost Mode и приватность</h3>
+      <p>Гибкое управление прочтением сообщений, онлайном, статусом набора текста и просмотром историй — читайте чаты незаметно и отправляйте отметку о прочтении только тогда, когда нужно вам.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🕓 Анти-удаление и история правок</h3>
+      <p>Локальное сохранение удалённых сообщений, исчезающих медиафайлов и полной истории редактирования — ни один собеседник не сотрёт контекст задним числом.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>⚡ Снятие искусственных лимитов</h3>
+      <p>Выделение и пересылка до <strong>10 000 сообщений</strong> за одно действие с автоматической разбивкой на безопасные батчи по 100 сообщений без потери порядка и зависаний.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🎨 Кастомизация и удобство</h3>
+      <p>Свои шрифты, Streamer Mode, локальные интерфейсные опции, встроенный переводчик, настройка папок и быстрый предпросмотр по Force Click на macOS.</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## Сравнение
+
+| Возможность | Telegram Desktop | AyuGram Desktop | **SleepyGram Desktop** |
+| :--- | :---: | :---: | :---: |
+| **База Telegram Desktop** | `v7.4.3` | Отстаёт от апстрима | **`v7.4.3` (актуальный синк)** |
+| **Ghost Mode и анти-удаление** | — | Да | **Да** |
+| **История правок и сохранение медиа** | — | Да | **Да** |
+| **Выделение и пакетная пересылка** | До 100 сообщений | До 100 сообщений | **До 10 000 сообщений (авто-батчи)** |
+| **Работа с запросами из Issues** | Только планы Telegram | Закрытая команда | **Открытая разработка с комьюнити** |
+| **Параллельная работа клиентов** | Отдельный профиль | Отдельный профиль | **Изолированный профиль (`SleepyGram`)** |
+
+---
 
 ## Скачать
 
-Актуальные сборки публикуются на странице [Releases](https://github.com/slpkbt/SleepyGram/releases).
+Готовые сборки публикуются в разделе [**Releases**](https://github.com/slpkbt/SleepyGram/releases). SleepyGram использует собственные идентификаторы и отдельную директорию данных — его можно устанавливать рядом с обычным Telegram и AyuGram.
 
-Автоматические артефакты GitHub Actions:
+| Платформа | Архитектура | Архив | Статус |
+| :--- | :--- | :--- | :--- |
+| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Официальный релиз |
+| **Linux** | 64-bit (`x86_64`) | [`SleepyGram-linux-x64.tar.xz`](https://github.com/slpkbt/SleepyGram/releases) | Официальный релиз |
+| **Windows** | 64-bit (`x86_64`) | [`SleepyGram-windows-x64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Архив релиза |
 
-- `SleepyGram-macos-arm64.zip` (macOS Apple Silicon)
-- `SleepyGram-linux-x64.tar.xz` (Linux x86_64)
+<details>
+<summary><strong>Первый запуск на macOS (Gatekeeper)</strong></summary>
 
-Сборка под Windows (`SleepyGram-windows-x64.zip`) запускается через `workflow_dispatch`. Автообновление в CI-сборках отключено (`DESKTOP_APP_DISABLE_AUTOUPDATE=ON`), чтобы клиент не обновлялся без вашего ведома.
+<br />
 
-## Идентификация клиента
+Сборки подписываются ad-hoc подписью в GitHub Actions без платного сертификата Apple Developer. Если после переноса `SleepyGram.app` в `/Applications` система блокирует первый запуск, снимите карантин одной командой в Терминале:
 
-SleepyGram использует собственные идентификаторы приложения, имя исполняемого файла и отдельные папки данных — его можно спокойно запускать параллельно с обычным Telegram Desktop и AyuGram без конфликта профилей.
+```bash
+xattr -cr /Applications/SleepyGram.app
+```
 
-- Product name: `SleepyGram Desktop`
-- Executable name: `SleepyGram`
-- macOS bundle id: `com.sleepygram.desktop`
-- Linux app id: `com.sleepygram.desktop`
-- Windows app id: `{09F8EFBD-99A0-4326-9A2F-2694574B75CB}`
+</details>
 
-## Сборка
+---
 
-Сборка и публикация релизов настроены в `.github/workflows/build.yml`:
+## Участие в развитии
 
-- **Pull requests:** проверочные сборки под Linux и macOS
-- **Push в `dev`:** обновление rolling-пререлиза `continuous`
-- **Теги `v*` и ручной запуск:** публикация релизов (`macos-arm64`, `linux-x64`, `windows-x64` или `all`)
+SleepyGram делается для тех, кто живёт в Telegram каждый день. Если вас раздражает старое ограничение клиента, игнорируемый месяцами тикет в AyuGram или у вас готов полезный патч:
 
-Поддерживаемые secrets для Telegram API:
+1. **Создайте тикет** с идеей или багрепортом в [GitHub Issues](https://github.com/slpkbt/SleepyGram/issues).
+2. **Отправьте Pull Request** в ветку `dev` — улучшения UX, фиксы и патчи приветствуются.
+3. **Соберите проект самостоятельно** по инструкциям в [`docs/`](docs/) ([macOS](docs/building-mac.md) · [Linux](docs/building-linux.md) · [Windows](docs/building-win.md)).
 
-- `TDESKTOP_API_ID`
-- `TDESKTOP_API_HASH`
+---
 
-Также поддерживаются `AYUGRAM_API_ID` / `AYUGRAM_API_HASH`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH` и `API_ID` / `API_HASH`. Если секреты не заданы, используются стандартные публичные ключи из `docs/api_credentials.md`.
+## Благодарности и лицензия
 
-## Благодарности
+Проект опирается на открытый исходный код:
 
-SleepyGram основан на кодовой базе:
+- [**Telegram Desktop**](https://github.com/telegramdesktop/tdesktop) — официальный клиент и кодовая база мессенджера
+- [**AyuGram Desktop**](https://github.com/AyuGram/AyuGramDesktop) — оригинальная реализация Ghost Mode, истории сообщений и кастомизации
 
-- [Telegram Desktop](https://github.com/telegramdesktop/tdesktop)
-- [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop)
-
-Сторонние библиотеки и компоненты принадлежат их авторам и указаны в соответствующих директориях исходного кода.
+Распространяется под лицензией [**GPLv3**](LICENSE) с исключением OpenSSL. Подробности приведены в файле [LEGAL](LEGAL).

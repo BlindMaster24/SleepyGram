@@ -1,82 +1,130 @@
-<p align="center">
-  <img src="Telegram/Resources/art/sleepygram_1024.png" alt="SleepyGram logo" width="180">
-</p>
+<div align="center">
+  <img src="Telegram/Resources/art/sleepygram_1024.png" alt="SleepyGram" width="144" />
 
-<h1 align="center">SleepyGram Desktop</h1>
+  <h1>SleepyGram Desktop</h1>
 
-<p align="center">
-  A community-driven Telegram Desktop client based on AyuGram and synced with Telegram Desktop 7.4.3 — built openly with users to make daily Telegram genuinely better.
-</p>
+  <p>
+    <strong>Fast, privacy-first, community-driven Telegram Desktop client built on top of AyuGram.</strong><br />
+    Up to date with upstream Telegram, shaped openly by users — not locked behind a closed developer circle.
+  </p>
 
-<p align="center">
-  <a href="README-RU.md">Русский</a>
-  ·
-  <a href="https://github.com/slpkbt/SleepyGram/releases">Releases</a>
-  ·
-  <a href="https://github.com/slpkbt/SleepyGram/issues">Issues</a>
-</p>
+  <p>
+    <a href="https://github.com/slpkbt/SleepyGram/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/slpkbt/SleepyGram/build.yml?branch=dev&style=flat-square&label=build" alt="Build Status" /></a>
+    <a href="https://github.com/telegramdesktop/tdesktop/releases/tag/v7.4.3"><img src="https://img.shields.io/badge/telegram_base-v7.4.3-26A5E4?style=flat-square&logo=telegram&logoColor=white" alt="Telegram Base v7.4.3" /></a>
+    <a href="https://github.com/slpkbt/SleepyGram/releases"><img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-181717?style=flat-square" alt="Platforms" /></a>
+    <a href="https://github.com/slpkbt/SleepyGram/issues"><img src="https://img.shields.io/badge/PRs%20%26%20Issues-welcome-10B981?style=flat-square" alt="PRs & Issues Welcome" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue?style=flat-square" alt="License GPLv3" /></a>
+  </p>
 
-## About SleepyGram
+  <p>
+    <a href="#downloads"><strong>Download</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#why-sleepygram"><strong>Why SleepyGram</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#highlights"><strong>Features</strong></a>
+    &nbsp;·&nbsp;
+    <a href="#comparison"><strong>Comparison</strong></a>
+    &nbsp;·&nbsp;
+    <a href="https://github.com/slpkbt/SleepyGram/issues"><strong>Report Issue / Request Feature</strong></a>
+    &nbsp;·&nbsp;
+    <a href="README-RU.md"><strong>Русский</strong></a>
+  </p>
+</div>
 
-**SleepyGram** is a specialized Telegram Desktop client built on top of AyuGram, shaped and improved together with the community rather than behind a closed group of maintainers.
+---
 
-AyuGram introduced great privacy and history tools, but upstream releases lagged behind and community feature requests and issues were routinely ignored. SleepyGram was created to fix that:
+## Why SleepyGram
 
-- **Community-driven, not closed-door:** Real user pain points, bug reports, and ideas from [Issues](https://github.com/slpkbt/SleepyGram/issues) directly drive what ships next instead of sitting unanswered.
-- **Actively maintained & up to date:** The repository stays properly synced with current official Telegram Desktop releases (`7.4.3`) while keeping AyuGram's core toolset intact.
-- **Focused on everyday Telegram UX:** Practical quality-of-life upgrades that remove artificial limits and improve daily workflows without bloat.
+AyuGram brought some of the best privacy and message-preservation features to Telegram Desktop — and then slowed down, fell behind official Telegram updates, and started leaving community bug reports and feature requests unanswered.
 
-## Features
+**SleepyGram** was started to fix that from the ground up:
 
-- **Extended multi-select & batched forwarding:** Select and forward up to **10,000 messages** at once (automatically split into safe 100-message API batches)
-- **Ghost mode & privacy controls:** Flexible read, online, typing, and story-view stealth options
-- **Message history & anti-recall:** Preserve edited and deleted messages and media locally
-- **Customization:** Fonts, chat appearance, folders, and interface tweaks
-- **Streamer mode & local Telegram Premium options**
-- **Built-in message translation**
-- **macOS force-click media preview & quick reactions**
+- **Shaped by the community, not a closed inner circle.** User feedback in [Issues](https://github.com/slpkbt/SleepyGram/issues) isn't background noise — requested workflow fixes, limit removals, and UX improvements actually make it into releases.
+- **Synced with modern Telegram Desktop.** Maintained cleanly against upstream `tdesktop` (`v7.4.3`) so you don't have to choose between privacy tools and new Telegram features.
+- **Built for heavy daily use.** Practical power-user upgrades, no forced self-updates, and an independent app profile that runs safely alongside official Telegram or AyuGram.
+
+---
+
+## Highlights
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>👻 Stealth & Ghost Controls</h3>
+      <p>Granular control over read receipts, online status, typing/upload indicators, and story views — read on your own terms and explicitly send read marks only when you choose.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🕓 Anti-Recall & Edit History</h3>
+      <p>Locally preserve deleted messages, disappearing media, and full message edit timelines so context never vanishes mid-conversation.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>⚡ Power-User Limits Unlocked</h3>
+      <p>Select and forward up to <strong>10,000 messages</strong> in one action — automatically dispatched in safe 100-message API batches without silent drops or client freezes.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🎨 Clean UX & Customization</h3>
+      <p>Custom fonts, streamer mode, local interface unlocks, built-in translation, folder tweaks, and macOS Force Click media previews & quick reactions.</p>
+    </td>
+  </tr>
+</table>
+
+---
+
+## Comparison
+
+| Capability | Telegram Desktop | AyuGram Desktop | **SleepyGram Desktop** |
+| :--- | :---: | :---: | :---: |
+| **Upstream Telegram Base** | `v7.4.3` | Lags behind upstream | **`v7.4.3` (Actively Synced)** |
+| **Ghost Mode & Anti-Recall** | — | Yes | **Yes** |
+| **Edit History & Deleted Media Vault** | — | Yes | **Yes** |
+| **Max Multi-Select & Batch Forward** | 100 messages | 100 messages | **10,000 messages (Auto-Batched)** |
+| **Community Feature Requests** | Official roadmap only | Closed maintainer group | **Open & Community-Driven** |
+| **Runs Alongside Other Clients** | Separate profile | Separate profile | **Isolated (`SleepyGram`)** |
+
+---
 
 ## Downloads
 
-Linux and macOS builds are published on the [Releases](https://github.com/slpkbt/SleepyGram/releases) page.
+Prebuilt binaries are published on the [**Releases**](https://github.com/slpkbt/SleepyGram/releases) page. SleepyGram uses its own bundle identifier and data folder, so your existing Telegram or AyuGram session stays untouched.
 
-GitHub Actions produces these release archives:
+| Platform | Architecture | Package | Status |
+| :--- | :--- | :--- | :--- |
+| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Official Release |
+| **Linux** | 64-bit (`x86_64`) | [`SleepyGram-linux-x64.tar.xz`](https://github.com/slpkbt/SleepyGram/releases) | Official Release |
+| **Windows** | 64-bit (`x86_64`) | [`SleepyGram-windows-x64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Release Archive |
 
-- `SleepyGram-macos-arm64.zip` (Apple Silicon macOS)
-- `SleepyGram-linux-x64.tar.xz` (Linux x86_64)
+<details>
+<summary><strong>macOS First-Launch Note (Gatekeeper)</strong></summary>
 
-Windows builds (`SleepyGram-windows-x64.zip`) can be triggered via `workflow_dispatch`. CI builds disable automatic self-updates (`DESKTOP_APP_DISABLE_AUTOUPDATE=ON`) so you stay in control of client versions.
+<br />
 
-## App Identity
+SleepyGram builds are ad-hoc signed in CI without an Apple Developer notarization certificate. If macOS displays an unverified developer prompt after moving `SleepyGram.app` to `/Applications`, clear the quarantine attribute once in Terminal:
 
-SleepyGram uses dedicated application identifiers, executable names, and local data directories, running completely side-by-side with Telegram Desktop and AyuGram without touching existing profiles.
+```bash
+xattr -cr /Applications/SleepyGram.app
+```
 
-- Product name: `SleepyGram Desktop`
-- Executable name: `SleepyGram`
-- macOS bundle id: `com.sleepygram.desktop`
-- Linux app id: `com.sleepygram.desktop`
-- Windows app id: `{09F8EFBD-99A0-4326-9A2F-2694574B75CB}`
+</details>
 
-## Building
+---
 
-Artifacts are built through `.github/workflows/build.yml`:
+## Community & Contributing
 
-- **Pull requests:** Linux and macOS verification builds
-- **Pushes to `dev`:** Rolling `continuous` prerelease builds
-- **`v*` tags & manual dispatch:** Tagged GitHub Releases (`macos-arm64`, `linux-x64`, `windows-x64`, or `all`)
+SleepyGram exists for the people who actually use it every day. If something annoys you in Telegram, if an AyuGram issue has been sitting ignored for months, or if you have a clean patch ready:
 
-Preferred Telegram API credential secrets:
+1. **Request a feature or report a bug** via [GitHub Issues](https://github.com/slpkbt/SleepyGram/issues).
+2. **Open a Pull Request** against `dev` — clean UX improvements, bug fixes, and upstream sync helpers are always welcome.
+3. **Build from source** using platform guides in [`docs/`](docs/) ([macOS](docs/building-mac.md) · [Linux](docs/building-linux.md) · [Windows](docs/building-win.md)).
 
-- `TDESKTOP_API_ID`
-- `TDESKTOP_API_HASH`
+---
 
-The workflow also accepts `AYUGRAM_API_ID` / `AYUGRAM_API_HASH`, `TELEGRAM_API_ID` / `TELEGRAM_API_HASH`, or `API_ID` / `API_HASH`, falling back to the public test credentials in `docs/api_credentials.md` if unset.
+## Acknowledgements & License
 
-## Credits
+SleepyGram stands on the shoulders of open-source work from:
 
-SleepyGram builds upon:
+- [**Telegram Desktop**](https://github.com/telegramdesktop/tdesktop) — official desktop client and upstream foundation
+- [**AyuGram Desktop**](https://github.com/AyuGram/AyuGramDesktop) — original Ghost Mode, message history, and customization implementation
 
-- [Telegram Desktop](https://github.com/telegramdesktop/tdesktop)
-- [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop)
-
-Third-party libraries and components are credited in their respective source directories.
+Licensed under [**GPLv3**](LICENSE) with OpenSSL exception. See [LEGAL](LEGAL) for full licensing details.
