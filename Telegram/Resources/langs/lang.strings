@@ -9196,6 +9196,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_DeletedMessagesPolicyInherit" = "Deleted Messages: Use Global Setting";
 "ayu_DeletedMessagesPolicyOn" = "Deleted Messages: Always Save";
 "ayu_DeletedMessagesPolicyOff" = "Deleted Messages: Never Save";
+"ayu_BulkDownloadTitle" = "Save Selected Files";
+"ayu_BulkDownloadLimit" = "Concurrent downloads";
+"ayu_BulkDownloadProgress" = "Saved {saved} of {total} · {running} active · {failed} failed · {cancelled} cancelled";
+"ayu_BulkDownloadStart" = "Start";
+"ayu_BulkDownloadStop" = "Stop after active downloads";
+"ayu_BulkDownloadRetry" = "Retry incomplete";
 "ayu_SaveMessagesHistory" = "Save Edits History";
 "ayu_MessageSavingSaveMedia" = "Save Attachments";
 "ayu_MessageSavingSaveMediaHint" = "Configure chats & limits";

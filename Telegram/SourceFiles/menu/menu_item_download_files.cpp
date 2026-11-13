@@ -26,7 +26,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 #include "storage/storage_account.h"
 #include "ui/text/text_utilities.h"
+#include "ui/layers/generic_box.h"
+#include "ui/layers/show.h"
 #include "ui/toast/toast.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/labels.h"
 #include "ui/widgets/popup_menu.h"
 #include "window/window_session_controller.h"
 #include "window/window_controller.h"
@@ -34,11 +38,289 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_menu_icons.h"
 #include "styles/style_widgets.h"
 
+#include <QFileInfo>
+#include <QTimer>
+
 namespace Menu {
 namespace {
 
 using Documents = std::vector<std::pair<not_null<DocumentData*>, FullMsgId>>;
 using Photos = std::vector<std::pair<not_null<PhotoData*>, FullMsgId>>;
+
+constexpr auto kBulkDownloadLimitPref = "bulk-download-limit";
+constexpr auto kBulkDownloadLimits = { 1, 2, 3, 5 };
+
+struct BulkSaveEntry {
+	not_null<DocumentData*> document;
+	FullMsgId origin;
+	QString path;
+	enum class State { Pending, Active, Saved, Failed, Cancelled } state
+		= State::Pending;
+};
+
+struct BulkSaveQueue {
+	std::vector<BulkSaveEntry> entries;
+	int limit = 3;
+	bool started = false;
+	bool stopped = false;
+
+	[[nodiscard]] int pending() const {
+		return ranges::count(entries, BulkSaveEntry::State::Pending,
+			&BulkSaveEntry::state);
+	}
+	[[nodiscard]] int running() const {
+		return ranges::count(entries, BulkSaveEntry::State::Active,
+			&BulkSaveEntry::state);
+	}
+	[[nodiscard]] int saved() const {
+		return ranges::count(entries, BulkSaveEntry::State::Saved,
+			&BulkSaveEntry::state);
+	}
+	[[nodiscard]] int failed() const {
+		return ranges::count(entries, BulkSaveEntry::State::Failed,
+			&BulkSaveEntry::state);
+	}
+	[[nodiscard]] int cancelled() const {
+		return ranges::count(entries, BulkSaveEntry::State::Cancelled,
+			&BulkSaveEntry::state);
+	}
+};
+
+[[nodiscard]] QString BulkTargetKey(const QString &path) {
+	return QFileInfo(path).fileName().normalized(
+		QString::NormalizationForm_C).toCaseFolded();
+}
+
+[[nodiscard]] QString AvailableBulkTarget(
+		const QString &path,
+		const BulkSaveQueue &queue,
+		const BulkSaveEntry *excluded) {
+	auto used = base::flat_set<QString>();
+	for (const auto &entry : queue.entries) {
+		if (&entry != excluded) {
+			used.emplace(BulkTargetKey(entry.path));
+		}
+	}
+	if (!QFileInfo::exists(path) && !used.contains(BulkTargetKey(path))) {
+		return path;
+	}
+	const auto info = QFileInfo(path);
+	const auto extension = info.suffix().isEmpty()
+		? QString()
+		: ('.' + info.suffix());
+	const auto stem = path.chopped(extension.size());
+	for (auto i = 2;; ++i) {
+		const auto candidate = stem + u" (%1)"_q.arg(i) + extension;
+		if (!used.contains(BulkTargetKey(candidate))
+			&& !QFileInfo::exists(candidate)) {
+			return candidate;
+		}
+	}
+}
+
+[[nodiscard]] bool BulkSaveSucceeded(const BulkSaveEntry &entry) {
+	const auto info = QFileInfo(entry.path);
+	const auto actual = QFileInfo(entry.document->filepath(true));
+	return info.exists()
+		&& actual.absoluteFilePath() == info.absoluteFilePath()
+		&& (!entry.document->size || info.size() == entry.document->size);
+}
+
+void RefreshBulkSaveQueue(
+		const std::shared_ptr<BulkSaveQueue> &queue) {
+	auto active = queue->running();
+	for (auto &entry : queue->entries) {
+		if (entry.state == BulkSaveEntry::State::Active
+			&& !entry.document->loading()) {
+			entry.state = BulkSaveSucceeded(entry)
+				? BulkSaveEntry::State::Saved
+				: BulkSaveEntry::State::Failed;
+			--active;
+		}
+	}
+	if (!queue->started || queue->stopped) {
+		return;
+	}
+	for (auto &entry : queue->entries) {
+		if (active >= queue->limit) {
+			break;
+		} else if (entry.state != BulkSaveEntry::State::Pending) {
+			continue;
+		} else if (entry.document->loading()) {
+			entry.state = BulkSaveEntry::State::Failed;
+			continue;
+		}
+		entry.path = AvailableBulkTarget(entry.path, *queue, &entry);
+		entry.state = BulkSaveEntry::State::Active;
+		++active;
+		entry.document->save(entry.origin, entry.path);
+		if (!entry.document->loading()) {
+			entry.state = BulkSaveSucceeded(entry)
+				? BulkSaveEntry::State::Saved
+				: BulkSaveEntry::State::Failed;
+			--active;
+		}
+	}
+}
+
+void ShowBulkSaveQueue(
+		not_null<Window::SessionController*> controller,
+		std::shared_ptr<BulkSaveQueue> queue) {
+	controller->uiShow()->showBox(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(tr::ayu_BulkDownloadTitle());
+		box->setWidth(st::boxWideWidth);
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			tr::ayu_BulkDownloadLimit(tr::now),
+			st::boxLabel));
+		const auto status = box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			st::boxLabel));
+		const auto savedLimit = Core::App().settings().readPref<int>(
+			kBulkDownloadLimitPref,
+			3);
+		auto selectedLimit = ranges::find(kBulkDownloadLimits, savedLimit);
+		const auto defaultLimit = selectedLimit == end(kBulkDownloadLimits)
+			? 3
+			: *selectedLimit;
+		const auto group = std::make_shared<Ui::RadiobuttonGroup>(defaultLimit);
+		const auto limitChanged = box->lifetime().make_state<int>(defaultLimit);
+		group->setChangedCallback([=](int value) {
+			*limitChanged = value;
+		});
+		for (const auto count : kBulkDownloadLimits) {
+			box->addRow(object_ptr<Ui::Radiobutton>(
+				box,
+				group,
+				count,
+				QString::number(count),
+				st::defaultBoxCheckbox));
+		}
+		auto timer = new QTimer(box);
+		timer->setInterval(250);
+		const auto updateStatus = [=] {
+			status->setText(tr::ayu_BulkDownloadProgress(
+				tr::now,
+				lt_saved,
+				QString::number(queue->saved()),
+				lt_total,
+				QString::number(int(queue->entries.size())),
+				lt_running,
+				QString::number(queue->running()),
+				lt_failed,
+				QString::number(queue->failed()),
+				lt_cancelled,
+				QString::number(queue->cancelled())));
+		};
+		const auto updateButtons = [=] {
+			box->clearButtons();
+			if (!queue->started) {
+				box->addButton(tr::ayu_BulkDownloadStart(), [=] {
+					queue->limit = *limitChanged;
+					Core::App().settings().writePref<int>(
+						kBulkDownloadLimitPref,
+						queue->limit);
+					Core::App().saveSettingsDelayed();
+					queue->started = true;
+					RefreshBulkSaveQueue(queue);
+					updateStatus();
+				});
+				box->addButton(tr::lng_cancel(), [=] {
+					queue->stopped = true;
+					timer->stop();
+					box->closeBox();
+				});
+			} else if (!queue->stopped && queue->pending()) {
+				box->addButton(tr::ayu_BulkDownloadStop(), [=] {
+					queue->stopped = true;
+					for (auto &entry : queue->entries) {
+						if (entry.state == BulkSaveEntry::State::Pending) {
+							entry.state = BulkSaveEntry::State::Cancelled;
+						}
+					}
+				});
+			} else if (queue->stopped && queue->running()) {
+				box->addButton(tr::lng_close(), [=] {
+					timer->stop();
+					box->closeBox();
+				});
+			} else if (queue->failed() || queue->cancelled()
+				|| queue->pending()) {
+				box->addButton(tr::ayu_BulkDownloadRetry(), [=] {
+					for (auto &entry : queue->entries) {
+						if (entry.state == BulkSaveEntry::State::Failed
+							|| entry.state == BulkSaveEntry::State::Cancelled) {
+							entry.path = AvailableBulkTarget(
+								entry.path,
+								*queue,
+								&entry);
+							entry.state = BulkSaveEntry::State::Pending;
+						}
+					}
+					queue->stopped = false;
+					timer->start();
+				});
+				if (queue->running()) {
+					box->addButton(tr::lng_close(), [=] {
+						timer->stop();
+						box->closeBox();
+					});
+				} else {
+					box->addButton(tr::lng_close(), [=] { box->closeBox(); });
+				}
+			} else {
+				box->addButton(tr::lng_close(), [=] {
+					timer->stop();
+					box->closeBox();
+				});
+			}
+		};
+		updateStatus();
+		updateButtons();
+		struct ObservedState {
+			int running = 0;
+			int pending = 0;
+			int saved = 0;
+			int failed = 0;
+			int cancelled = 0;
+			bool started = false;
+			bool stopped = false;
+		};
+		auto observed = std::make_shared<ObservedState>(ObservedState{
+			queue->running(),
+			queue->pending(),
+			queue->saved(),
+			queue->failed(),
+			queue->cancelled(),
+			queue->started,
+			queue->stopped,
+		});
+		QObject::connect(timer, &QTimer::timeout, box, [=] {
+			RefreshBulkSaveQueue(queue);
+			updateStatus();
+			if (observed->running != queue->running()
+				|| observed->pending != queue->pending()
+				|| observed->saved != queue->saved()
+				|| observed->failed != queue->failed()
+				|| observed->cancelled != queue->cancelled()
+				|| observed->started != queue->started
+				|| observed->stopped != queue->stopped) {
+				observed->running = queue->running();
+				observed->pending = queue->pending();
+				observed->saved = queue->saved();
+				observed->failed = queue->failed();
+				observed->cancelled = queue->cancelled();
+				observed->started = queue->started;
+				observed->stopped = queue->stopped;
+				updateButtons();
+			}
+			if (queue->started && !queue->running() && !queue->pending()) {
+				timer->stop();
+			}
+		});
+		timer->start();
+	}));
+}
 
 [[nodiscard]] bool Collected(
 		HistoryItem *item,
@@ -198,49 +480,57 @@ void AddAction(
 			}
 		}
 		auto savedDocuments = base::flat_set<not_null<DocumentData*>>();
+		auto queue = std::make_shared<BulkSaveQueue>();
 		for (const auto &[document, origin] : documents) {
 			if (!savedDocuments.emplace(document).second) {
 				continue;
 			}
-			if (!folderPath.isEmpty()) {
-				const auto already = document->filepath(true);
-				if (!already.isEmpty()
-					&& QFileInfo(already).absoluteDir() == directory) {
-					continue;
-				}
-				const auto loading = document->loadingFilePath();
-				if (!loading.isEmpty()
-					&& QFileInfo(loading).absoluteDir() == directory) {
-					document->save(origin, loading);
-					continue;
-				}
-				auto path = DocumentFileNameForSave(
+			const auto already = document->filepath(true);
+			if (!already.isEmpty()
+				&& QFileInfo(already).absoluteDir() == directory) {
+				continue;
+			}
+			const auto loading = document->loadingFilePath();
+			if (!loading.isEmpty()
+				&& QFileInfo(loading).absoluteDir() == directory) {
+				usedNames.emplace(nameKey(loading));
+				queue->entries.push_back({
 					document,
-					false,
-					QString(),
-					directory);
-				if (path.isEmpty()) {
-					continue;
-				}
-				if (usedNames.contains(nameKey(path))) {
-					const auto info = QFileInfo(path);
-					const auto suffix = info.suffix();
-					const auto extension = suffix.isEmpty()
-						? QString()
-						: ('.' + suffix);
-					const auto prefix = path.chopped(extension.size());
-					for (auto i = 2;; ++i) {
-						path = prefix + u" (%1)"_q.arg(i) + extension;
-						if (!usedNames.contains(nameKey(path))
-							&& !QFileInfo::exists(path)) {
-							break;
-						}
+					origin,
+					loading,
+					BulkSaveEntry::State::Active,
+				});
+				continue;
+			}
+			auto path = DocumentFileNameForSave(
+				document,
+				false,
+				QString(),
+				directory);
+			if (path.isEmpty()) {
+				continue;
+			}
+			if (usedNames.contains(nameKey(path))) {
+				const auto info = QFileInfo(path);
+				const auto suffix = info.suffix();
+				const auto extension = suffix.isEmpty()
+					? QString()
+					: ('.' + suffix);
+				const auto prefix = path.chopped(extension.size());
+				for (auto i = 2;; ++i) {
+					path = prefix + u" (%1)"_q.arg(i) + extension;
+					if (!usedNames.contains(nameKey(path))
+						&& !QFileInfo::exists(path)) {
+						break;
 					}
 				}
-				usedNames.emplace(nameKey(path));
-				document->save(origin, path);
-			} else {
-				DocumentSaveClickHandler::SaveAndTrack(origin, document);
+			}
+			usedNames.emplace(nameKey(path));
+			queue->entries.push_back({ document, origin, path });
+		}
+		if (!queue->entries.empty()) {
+			if (const auto strong = weak.get()) {
+				ShowBulkSaveQueue(strong, std::move(queue));
 			}
 		}
 	};
