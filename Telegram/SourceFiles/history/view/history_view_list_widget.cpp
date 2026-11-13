@@ -2334,7 +2334,7 @@ void ListWidget::loadRangeSelectionPage() {
 	_rangeSelectionPageLifetime = rpl::lifetime();
 	_selectionPageTimeout.callOnce(kSelectionPageTimeout);
 	const auto pageHandled = std::make_shared<bool>(false);
-	_delegate->listSource(around, 0, kPageSize
+	_delegate->listSelectionSource(around, 0, kPageSize
 	) | rpl::on_next_done([=](Data::MessagesSlice &&slice) {
 		if (*pageHandled
 			|| generation != _rangeSelectionGeneration
@@ -2515,7 +2515,7 @@ void ListWidget::loadLatestSelectionPage() {
 	_latestSelectionPageLifetime = rpl::lifetime();
 	_selectionPageTimeout.callOnce(kSelectionPageTimeout);
 	const auto pageHandled = std::make_shared<bool>(false);
-	_delegate->listSource(around, kPageSize, 0
+	_delegate->listSelectionSource(around, kPageSize, 0
 	) | rpl::on_next_done([=](Data::MessagesSlice &&slice) {
 		if (*pageHandled
 			|| generation != _latestSelectionGeneration

@@ -196,6 +196,10 @@ public:
 		Data::MessagePosition aroundId,
 		int limitBefore,
 		int limitAfter) override;
+	rpl::producer<Data::MessagesSlice> listSelectionSource(
+		Data::MessagePosition aroundId,
+		int limitBefore,
+		int limitAfter) override;
 	bool listAllowsMultiSelect() override;
 	bool listIsItemGoodForSelection(not_null<HistoryItem*> item) override;
 	bool listIsLessInOrder(

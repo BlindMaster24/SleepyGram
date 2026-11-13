@@ -142,6 +142,12 @@ public:
 		Data::MessagePosition aroundId,
 		int limitBefore,
 		int limitAfter) = 0;
+	virtual rpl::producer<Data::MessagesSlice> listSelectionSource(
+		Data::MessagePosition aroundId,
+		int limitBefore,
+		int limitAfter) {
+		return listSource(aroundId, limitBefore, limitAfter);
+	}
 	virtual bool listAllowsMultiSelect() = 0;
 	virtual bool listIsItemGoodForSelection(not_null<HistoryItem*> item) = 0;
 	virtual bool listIsLessInOrder(

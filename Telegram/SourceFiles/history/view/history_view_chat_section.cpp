@@ -5104,6 +5104,22 @@ rpl::producer<Data::MessagesSlice> ChatWidget::listSource(
 	return historySource(aroundId, limitBefore, limitAfter);
 }
 
+rpl::producer<Data::MessagesSlice> ChatWidget::listSelectionSource(
+		Data::MessagePosition aroundId,
+		int limitBefore,
+		int limitAfter) {
+	if (_replies) {
+		return _replies->source(aroundId, limitBefore, limitAfter);
+	} else if (_sublist) {
+		return rpl::single(Data::MessagesSlice());
+	}
+	return Data::HistoryMessagesViewer(
+		_history,
+		aroundId,
+		limitBefore,
+		limitAfter);
+}
+
 rpl::producer<Data::MessagesSlice> ChatWidget::repliesSource(
 		Data::MessagePosition aroundId,
 		int limitBefore,
