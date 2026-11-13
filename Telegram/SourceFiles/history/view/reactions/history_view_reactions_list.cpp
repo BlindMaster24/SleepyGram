@@ -32,8 +32,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_chat.h"
 #include "data/data_channel.h"
 #include "lang/lang_keys.h"
-#include "styles/style_boxes.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_widgets.h"
 
 // AyuGram includes
 #include "ayu/features/filters/filters_controller.h"
@@ -159,7 +159,7 @@ private:
 		return {};
 	}
 	auto result = std::vector<not_null<PeerData*>>();
-	auto &owner = window->session().data();
+	const auto &owner = window->session().data();
 	for (const auto &peerWithDate : whoReadIds->list) {
 		if (const auto peer = owner.peerLoaded(peerWithDate.peer)) {
 			if (FiltersController::isBlocked(peer)) {

@@ -30,6 +30,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "window/window_session_controller.h"
 
+// AyuGram includes
+#include "ayu/ayu_settings.h"
+#include "ayu/utils/telegram_helpers.h"
+
+
 namespace {
 
 constexpr auto kVoteRestrictionToastDuration = 5 * crl::time(1000);
@@ -210,11 +215,6 @@ void ShowVoteRestrictionToast(
 
 } // namespace
 
-// AyuGram includes
-#include "ayu/ayu_settings.h"
-#include "ayu/utils/telegram_helpers.h"
-
-
 namespace Api {
 
 Polls::Polls(not_null<ApiWrap*> api)
@@ -228,6 +228,7 @@ void Polls::create(
 		SendAction action,
 		Fn<void()> done,
 		Fn<void(bool fileReferenceExpired)> fail) {
+	StripEphemeralReply(_session, action.replyTo);
 	_session->api().sendAction(action);
 
 	const auto history = action.history;
@@ -386,10 +387,10 @@ void Polls::sendVotes(
 			}
 		}
 		_session->updates().applyUpdates(result);
-
 		const auto &ghost = AyuSettings::ghost(_session);
-		if (!ghost.sendReadMessages() && ghost.markReadAfterAction() && item)
-		{
+		if (!ghost.sendReadMessages()
+			&& ghost.markReadAfterAction()
+			&& item) {
 			readHistory(item);
 		}
 	}).fail([=](const MTP::Error &error) {
@@ -497,7 +498,8 @@ void Polls::close(not_null<HistoryItem*> item) {
 		MTPVector<MTPMessageEntity>(),
 		MTP_int(0), // schedule_date
 		MTP_int(0), // schedule_repeat_period
-		MTPint() // quick_reply_shortcut_id
+		MTPint(), // quick_reply_shortcut_id
+		MTPInputRichMessage()
 	)).done([=](const MTPUpdates &result) {
 		_pollCloseRequestIds.erase(itemId);
 		_session->updates().applyUpdates(result);

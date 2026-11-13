@@ -22,11 +22,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "styles/style_boxes.h"
 #include "styles/style_chat.h"
+#include "styles/style_chat_style.h"
 #include "styles/style_settings.h"
 #include "styles/style_layers.h"
-#include "styles/style_window.h"
 
 #include <QtGui/QFontDatabase>
+
+// AyuGram includes
+#include "ayu/ayu_settings.h"
+#include "ui/chat/chat_style_radius.h"
+
 
 namespace Ui {
 namespace {
@@ -583,7 +588,7 @@ PreviewPainter::PreviewPainter(const QImage &bg, PreviewRequest request)
 : _request(request)
 , _msgBg(_request.msgBg)
 , _msgShadow(_request.msgShadow)
-, _nameFontOwned(_request.family, style::FontFlag::Semibold, st::fsize)
+, _nameFontOwned(_request.family, style::FontFlag::Bold, st::fsize)
 , _nameFont(_nameFontOwned.font())
 , _nameStyle(st::semiboldTextStyle)
 , _textFontOwned(_request.family, 0, st::fsize)
@@ -636,7 +641,7 @@ void PreviewPainter::validateBubbleCache() {
 	if (!_bubbleCorners.p[0].isNull()) {
 		return;
 	}
-	const auto radius = st::bubbleRadiusLarge;
+	const auto radius = Ui::BubbleRadiusLarge();
 	_bubbleCorners = Ui::PrepareCornerPixmaps(radius, _msgBg.color());
 	_bubbleCorners.p[2] = {};
 	_bubbleShadowBottomRight
@@ -667,13 +672,15 @@ void PreviewPainter::paintReply(Painter &p) {
 			outline,
 			_replyRect.height());
 		p.drawRoundedRect(_replyRect, radius, radius);
-		p.setOpacity(Ui::kDefaultBgOpacity);
-		p.setClipRect(
-			_replyRect.x() + outline,
-			_replyRect.y(),
-			_replyRect.width() - outline,
-			_replyRect.height());
-		p.drawRoundedRect(_replyRect, radius, radius);
+		if (!AyuSettings::getInstance().simpleQuotesAndReplies()) {
+			p.setOpacity(Ui::kDefaultBgOpacity);
+			p.setClipRect(
+				_replyRect.x() + outline,
+				_replyRect.y(),
+				_replyRect.width() - outline,
+				_replyRect.height());
+			p.drawRoundedRect(_replyRect, radius, radius);
+		}
 	}
 	p.setOpacity(1.);
 	p.setClipping(false);

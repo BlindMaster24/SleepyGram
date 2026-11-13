@@ -15,6 +15,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 class HiddenSenderInfo;
 class History;
+class DocumentData;
+class PhotoData;
 
 struct HistoryMessageReply;
 struct HistoryMessageViews;
@@ -61,6 +63,7 @@ class Story;
 class SavedSublist;
 struct PaidReactionSend;
 struct SendError;
+struct FileOriginCloudDraft;
 } // namespace Data
 
 namespace HistoryUnreadThings {
@@ -74,6 +77,10 @@ class Message;
 class Service;
 class ServiceMessagePainter;
 } // namespace HistoryView
+
+namespace Iv {
+struct RichPage;
+} // namespace Iv
 
 namespace Ui {
 struct ColorCollectible;
@@ -208,6 +215,7 @@ public:
 	[[nodiscard]] bool isSavedMusicItem() const;
 	[[nodiscard]] BusinessShortcutId shortcutId() const;
 	[[nodiscard]] bool isBusinessShortcut() const;
+	[[nodiscard]] bool isWelcomeTemplate() const;
 	void setRealShortcutId(BusinessShortcutId id);
 	void setCustomServiceLink(ClickHandlerPtr link);
 
@@ -216,7 +224,9 @@ public:
 	void addLogEntryOriginal(
 		WebPageId localId,
 		const QString &label,
-		const TextWithEntities &content);
+		const TextWithEntities &content,
+		PhotoData *photo = nullptr,
+		DocumentData *document = nullptr);
 	void setFactcheck(MessageFactcheck info);
 	[[nodiscard]] bool hasUnrequestedFactcheck() const;
 	[[nodiscard]] TextWithEntities factcheckText() const;
@@ -240,7 +250,8 @@ public:
 	}
 	void refreshMainView();
 	void clearMainView();
-	void removeMainView();
+	void removeMainView(
+		Data::ViewRemovalReason reason = Data::ViewRemovalReason::Removed);
 
 	void invalidateChatListEntry();
 
@@ -270,6 +281,8 @@ public:
 	[[nodiscard]] bool isUnreadMedia() const;
 	[[nodiscard]] bool isIncomingUnreadMedia() const;
 	[[nodiscard]] bool hasUnreadMediaFlag() const;
+	[[nodiscard]] bool isTtlCoveredMedia() const;
+	[[nodiscard]] TimeId mediaDestroyAt() const;
 	void markReactionsRead();
 	void markPollVotesRead();
 	void markMediaAndMentionRead();
@@ -283,8 +296,11 @@ public:
 	[[nodiscard]] bool isEditingMedia() const;
 	void clearSavedMedia();
 
+	[[nodiscard]] HistoryMessageContent backupContent();
+	void applyContent(HistoryMessageContent &&content);
+
 	// Zero result means this message is not self-destructing right now.
-	[[nodiscard]] crl::time getSelfDestructIn(crl::time now);
+	void applyMediaContentsRead(TimeId readDate);
 
 	[[nodiscard]] bool definesReplyKeyboard() const;
 	[[nodiscard]] ReplyMarkupFlags replyKeyboardFlags() const;
@@ -337,6 +353,10 @@ public:
 	[[nodiscard]] bool isLocal() const {
 		return _flags & MessageFlag::Local;
 	}
+	[[nodiscard]] bool isEphemeral() const {
+		return _flags & MessageFlag::Ephemeral;
+	}
+	[[nodiscard]] bool canBeSelected() const;
 	[[nodiscard]] bool isFakeAboutView() const {
 		return _flags & MessageFlag::FakeAboutView;
 	}
@@ -384,9 +404,11 @@ public:
 	void applyEdition(const MTPDmessageService &message);
 	void applyEdition(const QVector<MTPMessageExtendedMedia> &media);
 	void updateForwardedInfo(const MTPMessageFwdHeader *fwd);
+	void updateSentContent(const MTPDmessage &data);
 	void updateSentContent(
 		const TextWithEntities &textWithEntities,
-		const MTPMessageMedia *media);
+		const MTPMessageMedia *media,
+		const MTPRichMessage *richMessage);
 	void applySentMessage(const MTPDmessage &data);
 	void applySentMessage(
 		const QString &text,
@@ -436,8 +458,9 @@ public:
 	[[nodiscard]] TextForMimeData clipboardText() const;
 
 	bool changeViewsCount(int count);
+	bool changeForwardsCount(int count);
 	void setForwardsCount(int count);
-	void setReplies(HistoryMessageRepliesData &&data);
+	void setReplies(HistoryMessageRepliesData &&data, bool notify = true);
 	void clearReplies();
 	void changeRepliesCount(int delta, PeerId replier);
 	void setReplyFields(
@@ -453,6 +476,7 @@ public:
 	void applyTTL(TimeId destroyAt);
 	void setAyuHint(const QString &hint);
 	void setRealId(MsgId newId);
+	void markEphemeralSent();
 	void markTextAppearingStarted();
 	void incrementReplyToTopCounter();
 	void applyEffectWatchedOnUnreadKnown();
@@ -472,6 +496,7 @@ public:
 	[[nodiscard]] bool allowsSendNow() const;
 	[[nodiscard]] bool allowsReschedule() const;
 	[[nodiscard]] bool allowsForward() const;
+	[[nodiscard]] bool allowsMediaDownloadControls() const;
 	[[nodiscard]] bool allowsEdit(TimeId now) const;
 	[[nodiscard]] bool allowsEditMedia() const;
 	[[nodiscard]] bool canDelete() const;
@@ -489,6 +514,9 @@ public:
 	[[nodiscard]] bool translationShowRequiresCheck(LanguageId to) const;
 	bool translationShowRequiresRequest(LanguageId to);
 	void translationDone(LanguageId to, TextWithEntities result);
+	void translationDone(
+		LanguageId to,
+		std::shared_ptr<const Iv::RichPage> result);
 
 	[[nodiscard]] bool canReact() const;
 	void toggleReaction(
@@ -537,8 +565,23 @@ public:
 	[[nodiscard]] Data::Media *media() const {
 		return _media.get();
 	}
+	[[nodiscard]] const Data::Media *savedMedia() const;
+	[[nodiscard]] std::shared_ptr<const Iv::RichPage> richPage() const;
+	[[nodiscard]] auto translatedRichPage() const
+		-> std::shared_ptr<const Iv::RichPage>;
+	[[nodiscard]] std::shared_ptr<const Iv::RichPage> fullRichPage() const;
+	[[nodiscard]] uint64 fullRichPageVersion() const;
 	[[nodiscard]] bool computeDropForwardedInfo() const;
 	void setText(TextWithEntities textWithEntities);
+	void applyLocalRichPage(std::shared_ptr<const Iv::RichPage> page);
+	void applyLocalRichPage(
+		std::shared_ptr<const Iv::RichPage> page,
+		const TextWithEntities &summary);
+	void setRichPage(std::shared_ptr<const Iv::RichPage> page);
+	void setFullRichPage(std::shared_ptr<const Iv::RichPage> page);
+	void setRichDraftOrigin(Data::FileOriginCloudDraft origin);
+	void clearFullRichPage();
+	void clearRichPage();
 
 	[[nodiscard]] MsgId replyToId() const;
 	[[nodiscard]] FullMsgId replyToFullId() const;
@@ -547,6 +590,8 @@ public:
 	[[nodiscard]] FullStoryId replyToStory() const;
 	[[nodiscard]] FullReplyTo replyTo() const;
 	[[nodiscard]] bool inThread(MsgId rootId) const;
+
+	void resolveAdminLogReplyTo(not_null<HistoryItem*> replyTo);
 
 	[[nodiscard]] not_null<PeerData*> author() const;
 
@@ -610,6 +655,16 @@ public:
 	void updateDate(TimeId newDate);
 	[[nodiscard]] bool canUpdateDate() const;
 	void customEmojiRepaint();
+	void setMediaForInstantView(
+		QString url,
+		DocumentData *document = nullptr,
+		PhotoData *photo = nullptr);
+	void addDocumentForInstantView(
+		not_null<DocumentData*> document,
+		TextWithEntities caption = {});
+	void addPhotoForInstantView(
+		not_null<PhotoData*> photo,
+		TextWithEntities caption = {});
 
 	[[nodiscard]] SuggestionActions computeSuggestionActions() const;
 	[[nodiscard]] SuggestionActions computeSuggestionActions(
@@ -625,9 +680,6 @@ public:
 		return _ttlDestroyAt;
 	}
 
-	[[nodiscard]] int unsupportedTTL() const {
-		return _unsupportedTTL;
-	}
 	void removeTranslationBit();
 
 	[[nodiscard]] int boostsApplied() const {
@@ -661,6 +713,11 @@ private:
 	}
 
 	[[nodiscard]] bool checkDiscussionLink(ChannelId id) const;
+	void updateSentContent(
+		const TextWithEntities &textWithEntities,
+		const MTPMessageMedia *media,
+		std::shared_ptr<const Iv::RichPage> richPage,
+		std::shared_ptr<const Iv::RichPage> preservedFullPage = nullptr);
 
 	void setReplyMarkup(
 		HistoryMessageMarkupData &&markup,
@@ -670,6 +727,7 @@ private:
 	void changeReplyToTopCounter(
 		not_null<HistoryMessageReply*> reply,
 		int delta);
+	bool updateRepliesText(not_null<HistoryMessageViews*> views);
 	void refreshRepliesText(
 		not_null<HistoryMessageViews*> views,
 		bool forceResize = false);
@@ -695,7 +753,13 @@ private:
 	void translationToggle(
 		not_null<HistoryMessageTranslation*> translation,
 		bool used);
-	void setSelfDestruct(HistorySelfDestructType type, MTPint mtpTTLvalue);
+	void translationDone(
+		LanguageId to,
+		TextWithEntities result,
+		std::shared_ptr<const Iv::RichPage> page);
+	void setSelfDestruct(HistorySelfDestructType type, TimeId ttlSeconds);
+	void armMediaDestroy(TimeId destroyAt);
+	void unarmMediaDestroy();
 
 	void resolveDependent(not_null<HistoryServiceDependentData*> dependent);
 	void resolveDependent(not_null<HistoryMessageReply*> reply);
@@ -765,7 +829,6 @@ private:
 
 	bool _deleted = false;
 	bool _deletedAnimated = false;
-	int _unsupportedTTL = 0;
 
 	TimeId _date = 0;
 	TimeId _ttlDestroyAt = 0;

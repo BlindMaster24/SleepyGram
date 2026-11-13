@@ -9,9 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/options.h"
 #include "boxes/compose_ai_box.h"
-#include "config.h"
 #include "core/mime_type.h"
 #include "data/data_ai_compose_tones.h"
+#include "data/data_premium_limits.h"
 #include "data/data_session.h"
 #include "history/view/controls/history_view_compose_ai_button.h"
 #include "lang/lang_keys.h"
@@ -41,7 +41,6 @@ bool HasEnoughLinesForAi(
 		not_null<Main::Session*> session,
 		not_null<Ui::InputField*> field) {
 	if (!AyuSettings::getInstance().showAiEditorButtonInMessageField()
-		|| HideAiButtonOption.value()
 		|| session->data().aiComposeTones().list().empty()) {
 		return false;
 	}
@@ -57,9 +56,30 @@ bool HasEnoughLinesForAi(
 		return false;
 	}
 	const auto &text = field->getLastText();
-	if (text.size() > MaxMessageSize) {
+	if (text.size() > Data::PremiumLimits(session).messageLengthCurrent()) {
 		return false;
 	}
+	for (const auto &ch : text) {
+		if (!Text::IsTrimmed(ch) && !Text::IsReplacedBySpace(ch)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool HasEnoughLinesForExpand(not_null<Ui::InputField*> field) {
+	const auto &style = field->st().style;
+	const auto lineHeight = style.lineHeight
+		? style.lineHeight
+		: style.font->height;
+	const auto margins = field->fullTextMargins();
+	const auto contentHeight = field->height()
+		- margins.top()
+		- margins.bottom();
+	if (contentHeight < (3 * lineHeight)) {
+		return false;
+	}
+	const auto &text = field->getLastText();
 	for (const auto &ch : text) {
 		if (!Text::IsTrimmed(ch) && !Text::IsReplacedBySpace(ch)) {
 			return true;
@@ -83,11 +103,13 @@ PreparedList PrepareTextAsFile(const QString &text) {
 
 constexpr auto kSendAsFilePasteMultiplier = 8;
 
-int SendAsFilePasteThreshold() {
-	return kSendAsFilePasteMultiplier * MaxMessageSize;
+int SendAsFilePasteThreshold(not_null<Main::Session*> session) {
+	return kSendAsFilePasteMultiplier
+		* Data::PremiumLimits(session).messageLengthCurrent();
 }
 
 LargeTextPasteResult CheckLargeTextPaste(
+		not_null<Main::Session*> session,
 		not_null<Ui::InputField*> field,
 		not_null<const QMimeData*> data) {
 	if (data->hasImage()) {
@@ -104,7 +126,7 @@ LargeTextPasteResult CheckLargeTextPaste(
 	const auto resultingSize = currentText.size()
 		- (selEnd - selStart)
 		+ pasteText.size();
-	if (resultingSize < SendAsFilePasteThreshold()) {
+	if (resultingSize < SendAsFilePasteThreshold(session)) {
 		return {};
 	}
 	return {
@@ -185,6 +207,7 @@ auto SetupCaptionAiButton(SetupCaptionAiButtonArgs &&args)
 		field->heightChanges() | rpl::to_empty,
 		field->changes() | rpl::to_empty,
 		field->shownValue() | rpl::to_empty,
+		session->data().aiComposeTones().updated() | rpl::to_empty,
 		AyuSettings::getInstance().showAiEditorButtonInMessageFieldChanges()
 			| rpl::to_empty
 	) | rpl::on_next([=] {
