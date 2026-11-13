@@ -37,6 +37,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/power_saving.h"
 #include "ui/screen_reader_mode.h"
 #include "ui/ui_utility.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "boxes/filters/edit_filter_box.h"
 #include "boxes/choose_filter_box.h"
 #include "boxes/premium_limits_box.h"
@@ -49,6 +50,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_menu_icons.h"
 
 #include <QtGui/QtEvents>
+#include <algorithm>
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
@@ -163,6 +165,12 @@ void FiltersMenu::setup() {
 		rpl::single(rpl::empty) | rpl::then(filters->changed()),
 		std::move(premium)
 	) | rpl::on_next([=] {
+		refresh();
+	}, _outer.lifetime());
+	Ui::ChatFilterTabVisibilityChanges() | rpl::filter([=](
+			not_null<Main::Session*> changed) {
+		return changed == &_session->session();
+	}) | rpl::on_next([=] {
 		refresh();
 	}, _outer.lifetime());
 
@@ -374,12 +382,24 @@ void FiltersMenu::refresh() {
 	const auto maxLimit = (reorderAll ? 1 : 0)
 		+ Data::PremiumLimits(&_session->session()).dialogFiltersCurrent();
 	const auto premiumFrom = (reorderAll ? 0 : 1) + maxLimit;
+	const auto &list = filters->list();
+	const auto visibleIds = Ui::VisibleChatFilterTabIds(
+		&_session->session());
+	const auto visibleBefore = [&](int originalPosition) {
+		const auto till = std::clamp(originalPosition, 0, int(list.size()));
+		return ranges::count_if(
+			list.begin(),
+			list.begin() + till,
+			[&](const Data::ChatFilter &filter) {
+				return ranges::contains(visibleIds, filter.id());
+			});
+	};
 	if (!reorderAll && !settings.hideAllChatsFolder()) {
 		_reorder->addPinnedInterval(0, 1);
 	}
 	_reorder->addPinnedInterval(
-		premiumFrom,
-		std::max(1, int(filters->list().size()) - maxLimit));
+		visibleBefore(premiumFrom),
+		std::max(1, visibleBefore(int(list.size()) - maxLimit)));
 
 	// Remember which folder holds keyboard focus so the roving Tab-stop can be
 	// re-established on its replacement after the rebuild: the new buttons are
@@ -394,9 +414,18 @@ void FiltersMenu::refresh() {
 	}
 
 	auto now = base::flat_map<int, base::unique_qptr<Ui::SideBarButton>>();
-	const auto &currentFilter = _session->activeChatsFilterCurrent();
-	for (const auto &filter : filters->list()) {
-		const auto nextIsLocked = (now.size() >= premiumFrom);
+	auto currentFilter = _session->activeChatsFilterCurrent();
+	if (!visibleIds.empty()
+		&& ChatFilterTabHidden(&_session->session(), currentFilter)) {
+		currentFilter = visibleIds.front();
+		_session->setActiveChatsFilter(currentFilter);
+	}
+	for (auto index = 0; index < list.size(); ++index) {
+		const auto &filter = list[index];
+		if (!ranges::contains(visibleIds, filter.id())) {
+			continue;
+		}
+		const auto nextIsLocked = (index >= premiumFrom);
 		if (nextIsLocked && (currentFilter == filter.id())) {
 			_session->setActiveChatsFilter(FilterId(0));
 		}
@@ -844,7 +873,24 @@ void FiltersMenu::applyReorder(
 	) | ranges::views::transform(
 		&Data::ChatFilter::id
 	) | ranges::to_vector;
-	base::reorder(order, oldPosition, newPosition);
+	const auto visibleIds = Ui::VisibleChatFilterTabIds(
+		&_session->session());
+	if (oldPosition < 0
+		|| newPosition < 0
+		|| oldPosition >= int(visibleIds.size())
+		|| newPosition >= int(visibleIds.size())) {
+		return;
+	}
+	const auto oldId = visibleIds[oldPosition];
+	const auto newId = visibleIds[newPosition];
+	const auto oldIndex = ranges::find(order, oldId) - order.begin();
+	const auto newIndex = ranges::find(order, newId) - order.begin();
+	if (oldIndex < 0 || newIndex < 0
+		|| oldIndex >= int(order.size())
+		|| newIndex >= int(order.size())) {
+		return;
+	}
+	base::reorder(order, oldIndex, newIndex);
 
 	_ignoreRefresh = true;
 	filters->saveOrder(order);

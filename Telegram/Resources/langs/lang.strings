@@ -7731,6 +7731,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_filters_recommended" = "Recommended folders";
 "lng_filters_recommended_add" = "Add";
 "lng_filters_restore" = "Undo";
+"lng_filters_hide_folder" = "Hide folder";
+"lng_filters_show_folder" = "Show folder";
 "lng_filters_new" = "New Folder";
 "lng_filters_edit" = "Edit Folder";
 "lng_filters_setup_menu" = "Edit Folders";

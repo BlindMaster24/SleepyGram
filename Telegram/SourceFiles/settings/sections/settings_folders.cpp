@@ -28,6 +28,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "settings/sections/settings_premium.h"
 #include "settings/settings_builder.h"
 #include "settings/settings_common_session.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/empty_userpic.h"
 #include "ui/filter_icons.h"
@@ -52,6 +53,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_settings.h"
 #include "styles/style_stickers_box.h"
 
+#include <algorithm>
+
 namespace Settings {
 namespace {
 
@@ -72,9 +75,12 @@ public:
 		const Data::ChatFilter &filter,
 		bool ignoreCount = false);
 	void updateCount(const Data::ChatFilter &filter);
+	void setHidden(bool hidden);
 
 	[[nodiscard]] rpl::producer<> removeRequests() const;
 	[[nodiscard]] rpl::producer<> restoreRequests() const;
+	[[nodiscard]] rpl::producer<> hideRequests() const;
+	[[nodiscard]] rpl::producer<> showRequests() const;
 	[[nodiscard]] rpl::producer<> addRequests() const;
 
 	void setColorIndexProgress(float64 progress);
@@ -96,6 +102,8 @@ private:
 
 	Ui::IconButton _remove;
 	Ui::RoundButton _restore;
+	Ui::RoundButton _show;
+	Ui::RoundButton _hide;
 	Ui::RoundButton _add;
 
 	Ui::Text::String _title;
@@ -105,6 +113,8 @@ private:
 	float64 _colorIndexProgress = 1.;
 
 	State _state = State::Normal;
+	bool _canHide = false;
+	bool _hidden = false;
 
 };
 
@@ -182,12 +192,18 @@ FilterRowButton::FilterRowButton(
 , _session(session)
 , _remove(this, st::filtersRemove)
 , _restore(this, tr::lng_filters_restore(), st::settingsFilterAddRecommended)
+, _show(this, tr::lng_filters_show_folder(), st::settingsFilterAddRecommended)
+, _hide(this, tr::lng_filters_hide_folder(), st::settingsFilterAddRecommended)
 , _add(
 	this,
 	tr::lng_filters_recommended_add(),
 	st::settingsFilterAddRecommended)
 , _state(description.isEmpty() ? State::Normal : State::Suggested) {
+	_canHide = (filter.id() != 0);
+	_hidden = _canHide && Ui::ChatFilterTabHidden(session, filter.id());
 	_restore.setFullRadius(true);
+	_show.setFullRadius(true);
+	_hide.setFullRadius(true);
 	_add.setFullRadius(true);
 	setup(filter, description.isEmpty()
 		? ComputeCountString(session, filter)
@@ -225,6 +241,11 @@ void FilterRowButton::updateCount(const Data::ChatFilter &filter) {
 	update();
 }
 
+void FilterRowButton::setHidden(bool hidden) {
+	_hidden = hidden;
+	updateButtonsVisibility();
+}
+
 void FilterRowButton::setState(State state, bool force) {
 	if (!force && _state == state) {
 		return;
@@ -254,12 +275,19 @@ void FilterRowButton::setup(
 		_add.moveToRight(right, (height - _add.height()) / 2, width);
 		const auto skipped = right - st::stickersRemoveSkip;
 		_remove.moveToRight(skipped, (height - _remove.height()) / 2, width);
+		_show.moveToRight(right, (height - _show.height()) / 2, width);
+		_hide.moveToRight(
+			skipped + _remove.width() + st::stickersRemoveSkip,
+			(height - _hide.height()) / 2,
+			width);
 	}, lifetime());
 }
 
 void FilterRowButton::updateButtonsVisibility() {
 	_remove.setVisible(_state == State::Normal);
 	_restore.setVisible(_state == State::Removed);
+	_show.setVisible(_state == State::Normal && _canHide && _hidden);
+	_hide.setVisible(_state == State::Normal && _canHide && !_hidden);
 	_add.setVisible(_state == State::Suggested);
 }
 
@@ -269,6 +297,14 @@ rpl::producer<> FilterRowButton::removeRequests() const {
 
 rpl::producer<> FilterRowButton::restoreRequests() const {
 	return _restore.clicks() | rpl::to_empty;
+}
+
+rpl::producer<> FilterRowButton::hideRequests() const {
+	return _hide.clicks() | rpl::to_empty;
+}
+
+rpl::producer<> FilterRowButton::showRequests() const {
+	return _show.clicks() | rpl::to_empty;
 }
 
 rpl::producer<> FilterRowButton::addRequests() const {
@@ -311,9 +347,13 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 	const auto left = (_state == State::Suggested)
 		? st::defaultSubsectionTitlePadding.left()
 		: st::settingsButtonActive.padding.left();
-	const auto buttonsLeft = std::min(
+	const auto buttonsLeft = std::min({
 		_add.x(),
-		std::min(_remove.x(), _restore.x()));
+		_remove.x(),
+		_restore.x(),
+		_show.x(),
+		_hide.x(),
+	});
 	const auto availableWidth = buttonsLeft - left;
 
 	p.setPen(st::contactsNameFg);
@@ -377,6 +417,24 @@ void SetupFilterRowButton(
 		}
 		button->setRemoved(false);
 		find(button)->removed = false;
+	}, button->lifetime());
+	button->hideRequests(
+	) | rpl::on_next([=] {
+		const auto row = find(button);
+		Ui::SetChatFilterTabHidden(
+			&controller->session(),
+			row->filter.id(),
+			true);
+		button->setHidden(true);
+	}, button->lifetime());
+	button->showRequests(
+	) | rpl::on_next([=] {
+		const auto row = find(button);
+		Ui::SetChatFilterTabHidden(
+			&controller->session(),
+			row->filter.id(),
+			false);
+		button->setHidden(false);
 	}, button->lifetime());
 	button->setClickedCallback([=] {
 		const auto found = find(button);

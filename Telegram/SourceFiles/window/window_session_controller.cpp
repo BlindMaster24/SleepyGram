@@ -136,6 +136,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 
 
 namespace Window {
@@ -2239,7 +2240,13 @@ void SessionController::activateFirstChatsFilter() {
 
 	const auto &settings = AyuSettings::getInstance();
 	if (!settings.hideAllChatsFolder()) {
-		setActiveChatsFilter(session().data().chatsFilters().defaultId());
+		const auto preferred = session().data().chatsFilters().defaultId();
+		const auto visible = Ui::VisibleChatFilterTabIds(&session());
+		auto active = preferred;
+		if (!ranges::contains(visible, active)) {
+			active = visible.empty() ? FilterId(0) : visible.front();
+		}
+		setActiveChatsFilter(active);
 	}
 }
 

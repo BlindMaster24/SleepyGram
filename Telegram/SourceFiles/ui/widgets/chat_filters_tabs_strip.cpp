@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/power_saving.h"
 #include "ui/ui_utility.h"
 #include "ui/widgets/chat_filters_tabs_slider_reorder.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/scroll_area.h"
@@ -41,6 +42,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_menu_icons.h"
 
 #include <QScrollBar>
+#include <algorithm>
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
@@ -68,17 +70,8 @@ void ShowMenu(
 		not_null<Ui::RpWidget*> parent,
 		not_null<Window::SessionController*> controller,
 		not_null<State*> state,
-		int index) {
+		FilterId id) {
 	const auto session = &controller->session();
-
-	auto id = FilterId(0);
-	{
-		const auto &list = session->data().chatsFilters().list();
-		if (index < 0 || index >= list.size()) {
-			return;
-		}
-		id = list[index].id();
-	}
 	state->menu = base::make_unique_q<Ui::PopupMenu>(
 		parent,
 		st::popupMenuWithIcons);
@@ -145,6 +138,7 @@ void ShowFiltersListMenu(
 		int active,
 		Fn<void(int)> changeActive) {
 	const auto &list = session->data().chatsFilters().list();
+	const auto ids = Ui::VisibleChatFilterTabIds(session);
 
 	state->menu = base::make_unique_q<Ui::PopupMenu>(
 		parent,
@@ -155,8 +149,12 @@ void ShowFiltersListMenu(
 		+ Data::PremiumLimits(session).dialogFiltersCurrent();
 	const auto premiumFrom = (reorderAll ? 0 : 1) + maxLimit;
 
-	for (auto i = 0; i < list.size(); ++i) {
-		const auto title = list[i].title();
+	for (auto i = 0; i < int(ids.size()); ++i) {
+		const auto filter = ranges::find(list, ids[i], &Data::ChatFilter::id);
+		if (filter == end(list)) {
+			continue;
+		}
+		const auto title = filter->title();
 		const auto text = title.text.empty()
 			? tr::lng_filters_all_short(tr::now)
 			: title.text.text;
@@ -178,7 +176,7 @@ void ShowFiltersListMenu(
 			action,
 			icon,
 			icon);
-		action->setEnabled(i < premiumFrom);
+		action->setEnabled((filter - list.begin()) < premiumFrom);
 		if (!title.text.empty()) {
 			const auto context = Core::TextContext({
 				.session = session,
@@ -235,12 +233,12 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 	const auto state = wrap->lifetime().make_state<State>();
 	const auto reassignUnreadValue = [=] {
 		state->reorderLifetime.destroy();
-		const auto &list = session->data().chatsFilters().list();
+		const auto ids = Ui::VisibleChatFilterTabIds(session);
 		auto includeMuted = Data::IncludeMutedCounterFoldersValue();
 		auto hideCounters = AyuSettings::getInstance().hideNotificationCountersValue();
-		for (auto i = 0; i < list.size(); i++) {
+		for (auto i = 0; i < int(ids.size()); i++) {
 			rpl::combine(
-				Data::UnreadStateValue(session, list[i].id()),
+				Data::UnreadStateValue(session, ids[i]),
 				rpl::duplicate(includeMuted),
 				rpl::duplicate(hideCounters)
 			) | rpl::on_next([=](
@@ -280,15 +278,29 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					filters->moveAllToFront();
 				}
 			}
-			Assert(oldPosition >= 0 && oldPosition < list.size());
-			Assert(newPosition >= 0 && newPosition < list.size());
+			const auto visibleIds = Ui::VisibleChatFilterTabIds(session);
+			if (oldPosition < 0
+				|| newPosition < 0
+				|| oldPosition >= int(visibleIds.size())
+				|| newPosition >= int(visibleIds.size())) {
+				return;
+			}
 
 			auto order = ranges::views::all(
 				list
 			) | ranges::views::transform(
 				&Data::ChatFilter::id
 			) | ranges::to_vector;
-			base::reorder(order, oldPosition, newPosition);
+			const auto oldIndex = ranges::find(order, visibleIds[oldPosition])
+				- order.begin();
+			const auto newIndex = ranges::find(order, visibleIds[newPosition])
+				- order.begin();
+			if (oldIndex < 0 || newIndex < 0
+				|| oldIndex >= int(order.size())
+				|| newIndex >= int(order.size())) {
+				return;
+			}
+			base::reorder(order, oldIndex, newIndex);
 
 			state->ignoreRefresh = true;
 			filters->saveOrder(order);
@@ -323,10 +335,9 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 						? slider->lookupSectionLeft(i + 1)
 						: slider->width();
 					if (x >= left && x < right) {
-						const auto &list
-							= session->data().chatsFilters().list();
-						return (i < list.size())
-							? list[i].id()
+						const auto ids = Ui::VisibleChatFilterTabIds(session);
+						return (i < int(ids.size()))
+							? ids[i]
 							: FilterId();
 					}
 				}
@@ -334,9 +345,9 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			},
 			[=] { return state->lastFilterId.value_or(FilterId()); },
 			[=](FilterId id) {
-				const auto &list = session->data().chatsFilters().list();
-				for (auto i = 0; i < list.size(); i++) {
-					if (list[i].id() == id) {
+				const auto ids = Ui::VisibleChatFilterTabIds(session);
+				for (auto i = 0; i < int(ids.size()); i++) {
+					if (ids[i] == id) {
 						slider->selectSection(i);
 						return;
 					}
@@ -383,12 +394,16 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 
 	const auto filterByIndex = [=](int index) -> const Data::ChatFilter& {
 		const auto &list = session->data().chatsFilters().list();
-		Assert(index >= 0 && index < list.size());
-		return list[index];
+		const auto ids = Ui::VisibleChatFilterTabIds(session);
+		Assert(index >= 0 && index < int(ids.size()));
+		const auto i = ranges::find(list, ids[index], &Data::ChatFilter::id);
+		Assert(i != end(list));
+		return *i;
 	};
 
 	const auto rebuild = [=] {
 		const auto &list = session->data().chatsFilters().list();
+		const auto visibleIds = Ui::VisibleChatFilterTabIds(session);
 		if ((list.size() <= 1 && !slider->width()) || state->ignoreRefresh) {
 			return;
 		}
@@ -397,10 +412,23 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			return On(PowerSaving::kEmojiChat)
 				|| controller->isGifPausedAtLeastFor(pauseLevel);
 		};
+		if (visibleIds.empty()) {
+			slider->setSectionsAndCheckChanged(
+				std::vector<TextWithEntities>(),
+				context,
+				paused);
+			slider->setSectionIcons({});
+			wrap->toggle(false, anim::type::instant);
+			return;
+		}
 		const auto sectionsChanged = slider->setSectionsAndCheckChanged(
 			ranges::views::all(
-				list
-			) | ranges::views::transform([](const Data::ChatFilter &filter) {
+				visibleIds
+			) | ranges::views::transform([&](FilterId id) {
+				const auto &filter = *ranges::find(
+					list,
+					id,
+					&Data::ChatFilter::id);
 				auto title = filter.title();
 				return title.text.empty()
 					? TextWithEntities{ tr::lng_filters_all_short(tr::now) }
@@ -409,8 +437,12 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					: title.text;
 			}) | ranges::to_vector, context, paused);
 		slider->setSectionIcons(ranges::views::all(
-			list
-		) | ranges::views::transform([](const Data::ChatFilter &filter) {
+			visibleIds
+		) | ranges::views::transform([&](FilterId id) {
+			const auto &filter = *ranges::find(
+				list,
+				id,
+				&Data::ChatFilter::id);
 			return LookupFilterIcon(filter.id()
 				? ComputeFilterIcon(filter)
 				: FilterIcon::All).tabs.get();
@@ -425,9 +457,22 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			const auto maxLimit = (reorderAll ? 1 : 0)
 				+ Data::PremiumLimits(session).dialogFiltersCurrent();
 			const auto premiumFrom = (reorderAll ? 0 : 1) + maxLimit;
-			slider->setLockedFrom((premiumFrom >= list.size())
+			const auto visibleBefore = [&](int originalPosition) {
+				const auto till = std::clamp(
+					originalPosition,
+					0,
+					int(list.size()));
+				return ranges::count_if(
+					list.begin(),
+					list.begin() + till,
+					[&](const Data::ChatFilter &filter) {
+						return ranges::contains(visibleIds, filter.id());
+					});
+			};
+			const auto visiblePremiumFrom = visibleBefore(premiumFrom);
+			slider->setLockedFrom((visiblePremiumFrom >= int(visibleIds.size()))
 				? 0
-				: premiumFrom);
+				: visiblePremiumFrom);
 			slider->lockedClicked() | rpl::on_next([=] {
 				controller->show(Box(FiltersLimitBox, session, std::nullopt));
 			}, state->rebuildLifetime);
@@ -438,21 +483,24 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					state->reorder->addPinnedInterval(0, 1);
 				}
 				state->reorder->addPinnedInterval(
-					premiumFrom,
-					std::max(1, int(list.size()) - maxLimit));
+					visiblePremiumFrom,
+					std::max(1, visibleBefore(int(list.size()) - maxLimit)));
 			}
 		}
 		if (trackActiveFilterAndUnreadAndReorder) {
 			reassignUnreadValue();
 		}
 		[&] {
-			const auto lookingId = state->lastFilterId.value_or(
+			auto lookingId = state->lastFilterId.value_or(
 				trackActiveFilterAndUnreadAndReorder
 					? controller->activeChatsFilterCurrent()
-					: list[0].id());
-			for (auto i = 0; i < list.size(); i++) {
-				const auto &filter = list[i];
-				if (filter.id() == lookingId) {
+					: visibleIds[0]);
+			if (!ranges::contains(visibleIds, lookingId)) {
+				lookingId = visibleIds[0];
+			}
+		for (auto i = 0; i < int(visibleIds.size()); i++) {
+			const auto &filter = filterByIndex(i);
+			if (filter.id() == lookingId) {
 					const auto wasLast = !!state->lastFilterId;
 					state->lastFilterId = filter.id();
 					slider->setActiveSectionFast(i);
@@ -465,7 +513,7 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					return;
 				}
 			}
-			if (list.size()) {
+			if (!visibleIds.empty()) {
 				const auto index = 0;
 				const auto &filter = filterByIndex(index);
 				state->lastFilterId = filter.id();
@@ -477,9 +525,9 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		if (trackActiveFilterAndUnreadAndReorder) {
 			controller->activeChatsFilter(
 			) | rpl::on_next([=](FilterId id) {
-				const auto &list = session->data().chatsFilters().list();
-				for (auto i = 0; i < list.size(); ++i) {
-					if (list[i].id() == id) {
+				const auto ids = Ui::VisibleChatFilterTabIds(session);
+				for (auto i = 0; i < int(ids.size()); ++i) {
+					if (ids[i] == id) {
 						state->ignoreActivation = true;
 						slider->setActiveSection(i);
 						state->ignoreActivation = false;
@@ -507,8 +555,11 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			}
 		}, state->rebuildLifetime);
 		slider->contextMenuRequested() | rpl::on_next([=](int index) {
+			if (index < 0 || index >= int(visibleIds.size())) {
+				return;
+			}
 			if (trackActiveFilterAndUnreadAndReorder) {
-				ShowMenu(wrap, controller, state, index);
+				ShowMenu(wrap, controller, state, visibleIds[index]);
 			} else {
 				ShowFiltersListMenu(
 					wrap,
@@ -518,7 +569,7 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					[=](int i) { slider->setActiveSection(i); });
 			}
 		}, state->rebuildLifetime);
-		wrap->toggle((list.size() > 1), anim::type::instant);
+		wrap->toggle((visibleIds.size() > 1), anim::type::instant);
 
 		if (state->reorder) {
 			state->reorder->start();
@@ -528,6 +579,10 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		session->data().chatsFilters().changed(),
 		Data::AmPremiumValue(session) | rpl::to_empty
 	) | rpl::on_next(rebuild, wrap->lifetime());
+	Ui::ChatFilterTabVisibilityChanges() | rpl::filter([=](
+			not_null<Main::Session*> changed) {
+		return changed == session;
+	}) | rpl::on_next(rebuild, wrap->lifetime());
 	Core::App().settings().chatFiltersTabsModeValue(
 	) | rpl::on_next([=](ChatsFiltersTabsMode mode) {
 		slider->setTabsMode(HorizontalChatsFiltersTabsMode(mode));
