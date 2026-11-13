@@ -2042,10 +2042,6 @@ const std::vector<LocalUrlHandler> &LocalUrlHandlers() {
 			AyuUrlHandlers::HandleAyu
 		},
 		{
-			u"^(support)|(donate)$"_q,
-			AyuUrlHandlers::HandleSupport
-		},
-		{
 			u"^([^\\?]+)(\\?|#|$)"_q,
 			HandleUnknown
 		},

@@ -665,12 +665,6 @@ void BuildOther(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	builder.addSubsectionTitle(tr::ayu_MessageSavingOtherHeader());
 
 	ayu.addSettingToggle({
-		.id = u"ayu/localPremium"_q,
-		.title = tr::ayu_LocalPremium(),
-		.getter = &AyuSettings::localPremium,
-		.setter = &AyuSettings::setLocalPremium,
-	});
-	ayu.addSettingToggle({
 		.id = u"ayu/disableAds"_q,
 		.title = tr::ayu_DisableAds(),
 		.getter = &AyuSettings::disableAds,

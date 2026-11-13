@@ -675,12 +675,6 @@ void AyuSettings::setDisableNotificationsDelay(bool val) {
 	save();
 }
 
-void AyuSettings::setLocalPremium(bool val) {
-	if (_localPremium.current() == val) return;
-	_localPremium = val;
-	save();
-}
-
 void AyuSettings::setShowChannelReactions(bool val) {
 	if (_showChannelReactions.current() == val) return;
 	_showChannelReactions = val;
@@ -1102,7 +1096,6 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		{"materialSwitches", s._materialSwitches.current()},
 		{"removeMessageTail", s._removeMessageTail.current()},
 		{"disableNotificationsDelay", s._disableNotificationsDelay.current()},
-		{"localPremium", s._localPremium.current()},
 		{"showChannelReactions", s._showChannelReactions.current()},
 		{"showGroupReactions", s._showGroupReactions.current()},
 		{"showPrivateChatReactions", s._showPrivateChatReactions.current()},
@@ -1206,7 +1199,6 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._materialSwitches = j.value("materialSwitches", defaults._materialSwitches.current());
 	s._removeMessageTail = j.value("removeMessageTail", defaults._removeMessageTail.current());
 	s._disableNotificationsDelay = j.value("disableNotificationsDelay", defaults._disableNotificationsDelay.current());
-	s._localPremium = j.value("localPremium", defaults._localPremium.current());
 	s._showChannelReactions = j.value("showChannelReactions", defaults._showChannelReactions.current());
 	s._showGroupReactions = j.value("showGroupReactions", defaults._showGroupReactions.current());
 	s._showPrivateChatReactions = j.value("showPrivateChatReactions", defaults._showPrivateChatReactions.current());

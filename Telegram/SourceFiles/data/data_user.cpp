@@ -665,15 +665,6 @@ bool UserData::isFake() const {
 }
 
 bool UserData::isPremium() const {
-	if (id) {
-		const auto &settings = AyuSettings::getInstance();
-		if (settings.localPremium()) {
-			if (getSession(id.value)) {
-				return true;
-			}
-		}
-	}
-
 	return flags() & UserDataFlag::Premium;
 }
 

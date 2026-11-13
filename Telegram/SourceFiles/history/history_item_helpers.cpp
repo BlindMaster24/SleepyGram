@@ -769,10 +769,6 @@ void ConfirmDeleteSelectedEphemeral(
 TextWithEntities DropDisallowedCustomEmoji(
 		not_null<PeerData*> to,
 		TextWithEntities text) {
-	if (true) { // AyuGram: allow all premium emojis (via tg://emoji?id=...)
-		return text;
-	}
-
 	if (to->session().premium() || to->isSelf()) {
 		return text;
 	}
@@ -1043,7 +1039,6 @@ MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
 		const auto replyToTop = LookupReplyToTop(action.history, replyTo);
 		const auto topicPost = replyTo.topicRootId
 			&& (replyTo.topicRootId != Data::ForumTopic::kGeneralId);
-		const auto quoteNormalized = reverseLocalPremiumEmoji(replyTo.quote, action.history, true);
 		const auto rich = replyTo.messageId
 			? replyTo.richQuote.get()
 			: nullptr;
@@ -1051,7 +1046,7 @@ MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
 			? MTPVector<MTPMessageEntity>()
 			: Api::EntitiesToMTP(
 				&action.history->session(),
-				quoteNormalized.entities,
+			replyTo.quote.entities,
 				Api::ConvertOption::SkipLocal);
 		return MTP_messageReplyHeader(
 			MTP_flags(Flag::f_reply_to_msg_id
@@ -1061,7 +1056,7 @@ MTPMessageReplyHeader NewMessageReplyHeader(const Api::SendAction &action) {
 					? (Flag::f_quote
 						| Flag::f_quote_rich
 						| (rich->offset ? Flag::f_quote_offset : Flag()))
-					: quoteNormalized.empty()
+					: replyTo.quote.empty()
 					? Flag()
 					: (Flag::f_quote
 						| Flag::f_quote_text

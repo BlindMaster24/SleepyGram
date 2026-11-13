@@ -4940,8 +4940,6 @@ void HistoryItem::setText(TextWithEntities textWithEntities) {
 		text.text = filterZalgo(text.text);
 	}
 
-	applyLocalPremiumEmoji(text);
-
 	detectTextLinks(text);
 	setTextValue((_media && _media->consumeMessageText(text))
 		? TextWithEntities()

@@ -146,6 +146,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "data/data_ai_compose_tones.h"
 #include "ayu/ayu_settings.h"
+#include "ayu/utils/telegram_helpers.h"
 #include "history/history_item_components.h"
 
 
@@ -3979,7 +3980,18 @@ void ComposeControls::applyDraft(FieldHistoryAction fieldHistoryAction) {
 	}
 
 	_textUpdateEvents = 0;
-	setFieldText(draft->textWithTags, 0, fieldHistoryAction);
+	auto draftText = draft->textWithTags;
+	const auto draftEntities = TextUtilities::ConvertTextTagsToEntities(
+		draftText.tags);
+	const auto normalized = NormalizeLegacyDraftEmoji({
+		draftText.text,
+		draftEntities,
+	});
+	if (normalized.entities != draftEntities) {
+		draftText.tags = TextUtilities::ConvertEntitiesToTextTags(
+			normalized.entities);
+	}
+	setFieldText(draftText, 0, fieldHistoryAction);
 	if (hadFocus) {
 		_field->setFocus();
 	}

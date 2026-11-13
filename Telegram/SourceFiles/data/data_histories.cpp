@@ -86,7 +86,6 @@ MTPInputReplyTo ReplyToForMTP(
 		const auto external = replyTo.messageId
 			&& (replyTo.messageId.peer != history->peer->id
 				|| replyingToTopicId != replyToTopicId);
-		const auto textNormalized = reverseLocalPremiumEmoji(replyTo.quote, history, true);
 		const auto rich = replyTo.messageId
 			? replyTo.richQuote.get()
 			: nullptr;
@@ -94,7 +93,7 @@ MTPInputReplyTo ReplyToForMTP(
 			? MTPVector<MTPMessageEntity>()
 			: Api::EntitiesToMTP(
 				&history->session(),
-				textNormalized.entities,
+			replyTo.quote.entities,
 				Api::ConvertOption::SkipLocal);
 		using Flag = MTPDinputReplyToMessage::Flag;
 		return MTP_inputReplyToMessage(
@@ -103,7 +102,7 @@ MTPInputReplyTo ReplyToForMTP(
 				| (rich
 					? (Flag::f_quote_rich
 						| (rich->offset ? Flag::f_quote_offset : Flag()))
-					: textNormalized.text.isEmpty()
+					: replyTo.quote.text.isEmpty()
 					? Flag()
 					: (Flag::f_quote_text | Flag::f_quote_offset))
 				| (replyToMonoforumPeerId
@@ -121,7 +120,7 @@ MTPInputReplyTo ReplyToForMTP(
 			(external
 				? owner->peer(replyTo.messageId.peer)->input()
 				: MTPInputPeer()),
-			MTP_string(textNormalized.text),
+			MTP_string(replyTo.quote.text),
 			quoteEntities,
 			MTP_int(rich ? rich->offset.value_or(0) : replyTo.quoteOffset),
 			(replyToMonoforumPeerId

@@ -297,6 +297,9 @@ MTPVector<MTPMessageEntity> EntitiesToMTP(
 		if (entity.length() <= 0) {
 			continue;
 		}
+		if (entity.type() == EntityType::CustomEmoji && entity.isLocal()) {
+			continue;
+		}
 		if (option == ConvertOption::SkipLocal
 			&& entity.type() != EntityType::Bold
 			//&& entity.type() != EntityType::Semibold // Not in API.

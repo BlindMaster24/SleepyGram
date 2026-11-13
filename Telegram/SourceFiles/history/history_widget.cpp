@@ -1415,13 +1415,10 @@ void HistoryWidget::refreshGiftToChannelShown() {
 	if (!_giftToChannel || !_peer) {
 		return;
 	}
-	// AyuGram: hide gift button almost everywhere
-	// still accessible via the menu in peer window
 	const auto channel = _peer->asChannel();
 	_giftToChannel->setVisible(channel
 		&& channel->isBroadcast()
-		&& channel->stargiftsAvailable()
-		&& isExteraPeer(getBareID(channel)));
+		&& channel->stargiftsAvailable());
 }
 
 void HistoryWidget::refreshDirectMessageShown() {
@@ -3301,7 +3298,18 @@ bool HistoryWidget::applyDraft(FieldHistoryAction fieldHistoryAction) {
 	}
 
 	_textUpdateEvents = 0;
-	setFieldText(draft->textWithTags, 0, fieldHistoryAction);
+	auto draftText = draft->textWithTags;
+	const auto draftEntities = TextUtilities::ConvertTextTagsToEntities(
+		draftText.tags);
+	const auto normalized = NormalizeLegacyDraftEmoji({
+		draftText.text,
+		draftEntities,
+	});
+	if (normalized.entities != draftEntities) {
+		draftText.tags = TextUtilities::ConvertEntitiesToTextTags(
+			normalized.entities);
+	}
+	setFieldText(draftText, 0, fieldHistoryAction);
 	setInnerFocus();
 	draft->cursor.applyTo(_field);
 	_textUpdateEvents = TextUpdateEvent::SaveDraft

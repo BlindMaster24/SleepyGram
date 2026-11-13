@@ -7,12 +7,9 @@
 #pragma once
 
 #include "api/api_common.h"
-#include "ayu/data/entities.h"
-#include "ayu/utils/rc_manager.h"
 #include "core/application.h"
 #include "data/data_media_types.h"
 #include "dialogs/dialogs_main_list.h"
-#include "info/profile/info_profile_badge.h"
 
 namespace Api {
 struct SendOptions;
@@ -60,14 +57,6 @@ ID getDialogIdFromPeer(not_null<PeerData*> peer);
 
 ID getBareID(not_null<PeerData*> peer);
 
-bool isExteraPeer(ID peerId);
-bool isSupporterPeer(ID peerId);
-bool isCustomBadgePeer(ID peerId);
-CustomBadge getCustomBadge(ID peerId);
-
-rpl::producer<Info::Profile::Badge::Content> ExteraBadgeTypeFromPeer(not_null<PeerData*> peer);
-Fn<void()> badgeClickHandler(not_null<PeerData *> peer);
-
 bool isMessageHidden(not_null<HistoryItem*> item);
 
 void MarkAsReadChatList(not_null<Dialogs::MainList*> list);
@@ -102,8 +91,7 @@ ID getUserIdFromPackId(uint64 id);
 TextWithTags extractText(not_null<HistoryItem*> item);
 bool mediaDownloadable(const Data::Media* media);
 
-TextWithEntities reverseLocalPremiumEmoji(const TextWithEntities &text, not_null<History *> history, bool isForQuote = false);
-void applyLocalPremiumEmoji(TextWithEntities &text);
+TextWithEntities NormalizeLegacyDraftEmoji(TextWithEntities text);
 
 not_null<Main::Session *> currentSession();
 

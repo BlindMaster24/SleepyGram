@@ -290,7 +290,6 @@ public:
 	[[nodiscard]] bool materialSwitches() const { return _materialSwitches.current(); }
 	[[nodiscard]] bool removeMessageTail() const { return _removeMessageTail.current(); }
 	[[nodiscard]] bool disableNotificationsDelay() const { return _disableNotificationsDelay.current(); }
-	[[nodiscard]] bool localPremium() const { return _localPremium.current(); }
 	[[nodiscard]] bool showChannelReactions() const { return _showChannelReactions.current(); }
 	[[nodiscard]] bool showGroupReactions() const { return _showGroupReactions.current(); }
 	[[nodiscard]] bool showPrivateChatReactions() const { return _showPrivateChatReactions.current(); }
@@ -377,7 +376,6 @@ public:
 	void setMaterialSwitches(bool val);
 	void setRemoveMessageTail(bool val);
 	void setDisableNotificationsDelay(bool val);
-	void setLocalPremium(bool val);
 	void setShowChannelReactions(bool val);
 	void setShowGroupReactions(bool val);
 	void setShowPrivateChatReactions(bool val);
@@ -489,8 +487,6 @@ public:
 	[[nodiscard]] rpl::producer<bool> removeMessageTailChanges() const { return _removeMessageTail.changes(); }
 	[[nodiscard]] rpl::producer<bool> disableNotificationsDelayValue() const { return _disableNotificationsDelay.value(); }
 	[[nodiscard]] rpl::producer<bool> disableNotificationsDelayChanges() const { return _disableNotificationsDelay.changes(); }
-	[[nodiscard]] rpl::producer<bool> localPremiumValue() const { return _localPremium.value(); }
-	[[nodiscard]] rpl::producer<bool> localPremiumChanges() const { return _localPremium.changes(); }
 	[[nodiscard]] rpl::producer<bool> showChannelReactionsValue() const { return _showChannelReactions.value(); }
 	[[nodiscard]] rpl::producer<bool> showChannelReactionsChanges() const { return _showChannelReactions.changes(); }
 	[[nodiscard]] rpl::producer<bool> showGroupReactionsValue() const { return _showGroupReactions.value(); }
@@ -647,7 +643,6 @@ private:
 	rpl::variable<bool> _materialSwitches = true;
 	rpl::variable<bool> _removeMessageTail = false;
 	rpl::variable<bool> _disableNotificationsDelay = false;
-	rpl::variable<bool> _localPremium = false;
 	rpl::variable<bool> _showChannelReactions = true;
 	rpl::variable<bool> _showGroupReactions = true;
 	rpl::variable<bool> _showPrivateChatReactions = true;

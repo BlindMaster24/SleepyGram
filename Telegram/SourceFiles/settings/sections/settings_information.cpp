@@ -77,7 +77,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ui/ayu_userpic.h"
-#include "ayu/utils/telegram_helpers.h"
 #include "styles/style_info.h"
 
 
@@ -117,11 +116,9 @@ private:
 	rpl::variable<QString> _text;
 	rpl::event_stream<int> _unreadWidth;
 	rpl::event_stream<int> _premiumWidth;
-	rpl::event_stream<int> _exteraWidth;
 
 	QPointer<Ui::RpWidget> _unread;
 	Info::Profile::Badge _badge;
-	Info::Profile::Badge _exteraBadge;
 
 };
 
@@ -142,16 +139,7 @@ ComposedBadge::ComposedBadge(
 		nullptr,
 		animationPaused,
 		kPlayStatusLimit,
-		Info::Profile::BadgeType::Premium)
-, _exteraBadge(
-		this,
-		st::infoPeerBadge,
-		session,
-		ExteraBadgeTypeFromPeer(session->user()),
-		nullptr,
-		std::move(animationPaused),
-		0,
-		Info::Profile::BadgeType::Extera | Info::Profile::BadgeType::ExteraSupporter | Info::Profile::BadgeType::ExteraCustom) {
+		Info::Profile::BadgeType::Premium) {
 	if (hasUnread) {
 		_unread = Badge::CreateUnread(this, rpl::single(
 			rpl::empty
@@ -182,16 +170,6 @@ ComposedBadge::ComposedBadge(
 		}
 	}, lifetime());
 
-	_exteraBadge.updated(
-	) | rpl::on_next([=] {
-		if (const auto widget = _exteraBadge.widget()) {
-			widget->widthValue(
-			) | rpl::start_to_stream(_exteraWidth, widget->lifetime());
-		} else {
-			_exteraWidth.fire(0);
-		}
-	}, lifetime());
-
 	auto textWidth = _text.value() | rpl::map([=] {
 		return button->fullTextWidth();
 	});
@@ -200,15 +178,11 @@ ComposedBadge::ComposedBadge(
 		_premiumWidth.events_starting_with(_badge.widget()
 			? _badge.widget()->width()
 			: 0),
-		_exteraWidth.events_starting_with(_exteraBadge.widget()
-			? _exteraBadge.widget()->width()
-			: 0),
 		std::move(textWidth),
 		button->sizeValue()
 	) | rpl::on_next([=](
 			int unreadWidth,
 			int premiumWidth,
-			int exteraWidth,
 			int textWidth,
 			const QSize &buttonSize) {
 		const auto &st = button->st();
@@ -216,13 +190,8 @@ ComposedBadge::ComposedBadge(
 		const auto textRightPosition = st.padding.left()
 			+ textWidth
 			+ skip;
-		const auto exteraGap = exteraWidth
-			? st::infoVerifiedCheckPosition.x()
-			: 0;
 		const auto minWidth = unreadWidth
 			+ premiumWidth
-			+ exteraGap
-			+ exteraWidth
 			+ skip;
 		const auto maxTextWidth = buttonSize.width()
 			- minWidth
@@ -236,10 +205,6 @@ ComposedBadge::ComposedBadge(
 
 		_badge.move(
 			0,
-			st.padding.top(),
-			buttonSize.height() - st.padding.top());
-		_exteraBadge.move(
-			premiumWidth,
 			st.padding.top(),
 			buttonSize.height() - st.padding.top());
 		if (_unread) {

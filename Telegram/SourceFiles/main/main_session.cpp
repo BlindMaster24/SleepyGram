@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 
 #include "apiwrap.h"
+#include "api/api_blocked_peers.h"
 #include "api/api_peer_colors.h"
 #include "api/api_updates.h"
 #include "api/api_user_privacy.h"
@@ -69,11 +70,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #ifndef TDESKTOP_DISABLE_SPELLCHECK
 #include "chat_helpers/spellchecker_common.h"
 #endif // TDESKTOP_DISABLE_SPELLCHECK
-
-// AyuGram includes
-#include "ayu/ayu_settings.h"
-#include "api/api_blocked_peers.h"
-
 
 namespace Main {
 namespace {
@@ -411,20 +407,10 @@ rpl::producer<> Session::downloaderTaskFinished() const {
 }
 
 bool Session::premium() const {
-	const auto &settings = AyuSettings::getInstance();
-	if (settings.localPremium()) {
-		return true;
-	}
-
 	return _user->isPremium();
 }
 
 bool Session::premiumPossible() const {
-	const auto &settings = AyuSettings::getInstance();
-	if (settings.localPremium()) {
-		return true;
-	}
-
 	return premium() || premiumCanBuy();
 }
 
@@ -442,11 +428,6 @@ rpl::producer<bool> Session::premiumPossibleValue() const {
 	}) | rpl::map([=] {
 		return _user->isPremium();
 	});
-
-	const auto &settings = AyuSettings::getInstance();
-	if (settings.localPremium()) {
-		premium = rpl::single(true);
-	}
 
 	return rpl::combine(
 		std::move(premium),

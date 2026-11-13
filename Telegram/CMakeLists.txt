@@ -139,8 +139,6 @@ set(ayugram_files
         ayu/ayu_state.h
         ayu/ayu_settings.cpp
         ayu/ayu_settings.h
-        ayu/ayu_lang.cpp
-        ayu/ayu_lang.h
         ayu/ayu_infra.cpp
         ayu/ayu_infra.h
         ayu/utils/ayu_mapper.cpp
@@ -150,8 +148,6 @@ set(ayugram_files
         ayu/utils/telegram_helpers.h
         ayu/utils/windows_utils.cpp
         ayu/utils/windows_utils.h
-        ayu/utils/rc_manager.cpp
-        ayu/utils/rc_manager.h
         ayu/ui/ayu_logo.cpp
         ayu/ui/ayu_logo.h
         ayu/ui/toasts.cpp
@@ -212,10 +208,6 @@ set(ayugram_files
         ayu/ui/boxes/theme_selector_box.h
         ayu/ui/boxes/message_shot_box.cpp
         ayu/ui/boxes/message_shot_box.h
-        ayu/ui/boxes/donate_qr_box.cpp
-        ayu/ui/boxes/donate_qr_box.h
-        ayu/ui/boxes/donate_info_box.cpp
-        ayu/ui/boxes/donate_info_box.h
         ayu/ui/boxes/plugin_info_box.cpp
         ayu/ui/boxes/plugin_info_box.h
         ayu/ui/components/image_view.cpp

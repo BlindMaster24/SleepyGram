@@ -154,10 +154,9 @@ struct PreparedFileThumbnail {
 		uint64 randomId) {
 	auto caption = item->originalText();
 	TextUtilities::Trim(caption);
-	const auto captionNormalized = reverseLocalPremiumEmoji(caption, item->history());
 	auto sentEntities = Api::EntitiesToMTP(
 		&item->history()->session(),
-		captionNormalized.entities,
+		caption.entities,
 		Api::ConvertOption::SkipLocal);
 	const auto flags = !sentEntities.v.isEmpty()
 		? MTPDinputSingleMedia::Flag::f_entities

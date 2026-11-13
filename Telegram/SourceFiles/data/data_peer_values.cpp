@@ -428,11 +428,6 @@ rpl::producer<bool> PeerPremiumValue(not_null<PeerData*> peer) {
 }
 
 rpl::producer<bool> AmPremiumValue(not_null<Main::Session*> session) {
-	const auto &settings = AyuSettings::getInstance();
-	if (settings.localPremium()) {
-		return rpl::single(true);
-	}
-
 	return PeerPremiumValue(session->user());
 }
 

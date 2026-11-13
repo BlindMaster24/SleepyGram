@@ -4993,10 +4993,9 @@ void ApiWrap::sendMessage(
 			sendFlags |= MTPmessages_SendMessage::Flag::f_silent;
 			mediaFlags |= MTPmessages_SendMedia::Flag::f_silent;
 		}
-		const auto sendingNormalized = reverseLocalPremiumEmoji(sending, history);
 		const auto sentEntities = Api::EntitiesToMTP(
 			_session,
-			sendingNormalized.entities,
+			sending.entities,
 			Api::ConvertOption::SkipLocal);
 		if (!sentEntities.v.isEmpty()) {
 			sendFlags |= MTPmessages_SendMessage::Flag::f_entities;
@@ -5485,10 +5484,9 @@ void ApiWrap::sendMediaWithRandomId(
 
 	auto caption = item->originalText();
 	TextUtilities::Trim(caption);
-	const auto captionNormalized = reverseLocalPremiumEmoji(caption, history);
 	auto sentEntities = Api::EntitiesToMTP(
 		_session,
-		captionNormalized.entities,
+		caption.entities,
 		Api::ConvertOption::SkipLocal);
 
 	const auto updateRecentStickers = Api::HasAttachedStickers(media);
@@ -5577,10 +5575,9 @@ void ApiWrap::sendMultiPaidMedia(
 
 	auto caption = item->originalText();
 	TextUtilities::Trim(caption);
-	const auto captionNormalized = reverseLocalPremiumEmoji(caption, history);
 	auto sentEntities = Api::EntitiesToMTP(
 		_session,
-		captionNormalized.entities,
+		caption.entities,
 		Api::ConvertOption::SkipLocal);
 	const auto starsPaid = std::min(
 		peer->starsPerMessageChecked(),

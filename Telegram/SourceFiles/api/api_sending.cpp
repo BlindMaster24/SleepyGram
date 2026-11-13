@@ -264,10 +264,9 @@ void SendExistingMedia(
 		TextUtilities::ConvertTextTagsToEntities(message.textWithTags.tags)
 	};
 	TextUtilities::Trim(caption);
-	const auto captionNormalized = reverseLocalPremiumEmoji(caption, history);
 	auto sentEntities = EntitiesToMTP(
 		session,
-		captionNormalized.entities,
+		caption.entities,
 		ConvertOption::SkipLocal);
 	if (!sentEntities.v.isEmpty()) {
 		sendFlags |= MTPmessages_SendMedia::Flag::f_entities;
@@ -489,7 +488,7 @@ void SendMusicSelectionBatch(
 			.localItem = localItem,
 			.localId = newId,
 			.randomId = randomId,
-			.caption = reverseLocalPremiumEmoji(itemCaption, history),
+			.caption = std::move(itemCaption),
 		});
 	}
 
