@@ -526,12 +526,17 @@ int getScheduleTime(int64 sumSize) {
 
 bool isMessageSavable(const not_null<HistoryItem*> item) {
 	const auto &settings = AyuSettings::getInstance();
+	const auto peer = item->history()->peer;
+	const auto policy = AyuMessages::deletedMessagePolicy(peer);
+	const auto enabled = (policy == AyuMessages::DeletedMessagePolicy::Inherit)
+		? settings.saveDeletedMessages()
+		: (policy == AyuMessages::DeletedMessagePolicy::On);
 
-	if (!settings.saveDeletedMessages()) {
+	if (!enabled) {
 		return false;
 	}
 
-	if (const auto possiblyBot = item->history()->peer->asUser()) {
+	if (const auto possiblyBot = peer->asUser()) {
 		return !possiblyBot->isBot() || (settings.saveForBots() && possiblyBot->isBot());
 	}
 	return true;

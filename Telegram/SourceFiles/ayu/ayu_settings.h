@@ -285,6 +285,8 @@ public:
 	void validate();
 
 	[[nodiscard]] bool saveDeletedMessages() const { return _saveDeletedMessages.current(); }
+	[[nodiscard]] int deletedMessagePolicy(uint64 accountId, int64 peerId) const;
+	void setDeletedMessagePolicy(uint64 accountId, int64 peerId, int policy);
 	[[nodiscard]] bool saveMessagesHistory() const { return _saveMessagesHistory.current(); }
 	[[nodiscard]] bool saveForBots() const { return _saveForBots.current(); }
 	[[nodiscard]] bool filtersEnabled() const { return _filtersEnabled.current(); }
@@ -727,6 +729,7 @@ private:
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
 	std::map<uint64, GhostReadState> _ghostReadStates;
+	std::map<std::pair<uint64, int64>, int> _deletedMessagePolicies;
 
 	MessageShotSettings _messageShotSettings;
 };

@@ -7,6 +7,7 @@
 #include "ayu/data/messages_storage.h"
 
 #include "ayu/data/ayu_database.h"
+#include "ayu/ayu_settings.h"
 #include "ayu/utils/ayu_mapper.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "base/unixtime.h"
@@ -120,6 +121,26 @@ void addDeletedMessage(not_null<HistoryItem*> item) {
 	}
 
 	AyuDatabase::addDeletedMessage(message);
+}
+
+DeletedMessagePolicy deletedMessagePolicy(not_null<PeerData*> peer) {
+	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
+	const auto value = AyuSettings::getInstance().deletedMessagePolicy(
+		userId,
+		getDialogIdFromPeer(peer));
+	return (value == 0 || value == 1)
+		? static_cast<DeletedMessagePolicy>(value)
+		: DeletedMessagePolicy::Inherit;
+}
+
+void setDeletedMessagePolicy(
+		not_null<PeerData*> peer,
+		DeletedMessagePolicy policy) {
+	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
+	AyuSettings::getInstance().setDeletedMessagePolicy(
+		userId,
+		getDialogIdFromPeer(peer),
+		static_cast<int>(policy));
 }
 
 std::vector<AyuMessageBase>

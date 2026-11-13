@@ -666,6 +666,30 @@ void AyuSettings::setSaveDeletedMessages(bool val) {
 	save();
 }
 
+int AyuSettings::deletedMessagePolicy(uint64 accountId, int64 peerId) const {
+	const auto i = _deletedMessagePolicies.find({ accountId, peerId });
+	return (i == end(_deletedMessagePolicies)) ? -1 : i->second;
+}
+
+void AyuSettings::setDeletedMessagePolicy(
+		uint64 accountId,
+		int64 peerId,
+		int policy) {
+	const auto key = std::make_pair(accountId, peerId);
+	if (policy < 0) {
+		if (!_deletedMessagePolicies.erase(key)) {
+			return;
+		}
+	} else {
+		const auto i = _deletedMessagePolicies.find(key);
+		if (i != end(_deletedMessagePolicies) && i->second == policy) {
+			return;
+		}
+		_deletedMessagePolicies[key] = policy;
+	}
+	save();
+}
+
 void AyuSettings::setSaveMessagesHistory(bool val) {
 	if (_saveMessagesHistory.current() == val) return;
 	_saveMessagesHistory = val;
@@ -1209,10 +1233,19 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 		}
 		ghostReadAccounts[std::to_string(accountId)] = std::move(watermarks);
 	}
+	auto deletedMessagePolicies = nlohmann::json::array();
+	for (const auto &[key, policy] : s._deletedMessagePolicies) {
+		deletedMessagePolicies.push_back({
+			{"accountId", key.first},
+			{"peerId", key.second},
+			{"policy", policy},
+		});
+	}
 
 	j = nlohmann::json{
 		{"ghostModeSettings", ghostAccounts},
 		{"ghostReadState", ghostReadAccounts},
+		{"deletedMessagePolicies", deletedMessagePolicies},
 		{"useGlobalGhostMode", s._useGlobalGhostMode.current()},
 		{"saveDeletedMessages", s._saveDeletedMessages.current()},
 		{"saveMessagesHistory", s._saveMessagesHistory.current()},
@@ -1350,6 +1383,19 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 				}
 			}
 			s._ghostReadStates[accountId].replace(std::move(entries));
+		}
+	}
+	if (j.contains("deletedMessagePolicies") && j["deletedMessagePolicies"].is_array()) {
+		for (const auto &entry : j["deletedMessagePolicies"]) {
+			try {
+				const auto accountId = entry.value("accountId", uint64(0));
+				const auto peerId = entry.value("peerId", int64(0));
+				const auto policy = entry.value("policy", -1);
+				if (accountId && peerId && (policy == 0 || policy == 1)) {
+					s._deletedMessagePolicies[{ accountId, peerId }] = policy;
+				}
+			} catch (...) {
+			}
 		}
 	}
 

@@ -259,11 +259,11 @@ void AddAyuGramActions(PeerData *peerData,
 	const auto user = peerData->asUser();
 	const auto showFilters = settings.filtersEnabled()
 		&& (!user || user->isBot());
-	const auto saveDeletedMessages = settings.saveDeletedMessages();
-	if (!showFilters && !saveDeletedMessages) {
-		return;
-	}
-
+	const auto policy = AyuMessages::deletedMessagePolicy(peerData);
+	const auto saveDeletedMessages = (policy == AyuMessages::DeletedMessagePolicy::Inherit)
+		? settings.saveDeletedMessages()
+		: (policy == AyuMessages::DeletedMessagePolicy::On);
+	const auto hasDeletedMessages = AyuMessages::hasDeletedMessages(peerData, 0);
 	const auto topic = peerData->isForum() && thread ? thread->asTopic() : nullptr;
 	const auto topicId = topic ? topic->rootId().bare : 0;
 
@@ -273,6 +273,31 @@ void AddAyuGramActions(PeerData *peerData,
 		.icon = &st::menuIconGroupReactions,
 		.fillSubmenu = [=](not_null<Ui::PopupMenu*> menu) {
 			const auto addAction = Ui::Menu::CreateAddActionCallback(menu);
+			addAction(
+				tr::ayu_DeletedMessagesPolicyInherit(tr::now),
+				[=] {
+					AyuMessages::setDeletedMessagePolicy(
+						peerData,
+						AyuMessages::DeletedMessagePolicy::Inherit);
+				},
+				&st::menuIconSettings);
+			addAction(
+				tr::ayu_DeletedMessagesPolicyOn(tr::now),
+				[=] {
+					AyuMessages::setDeletedMessagePolicy(
+						peerData,
+						AyuMessages::DeletedMessagePolicy::On);
+				},
+				&st::menuIconShowInChat);
+			addAction(
+				tr::ayu_DeletedMessagesPolicyOff(tr::now),
+				[=] {
+					AyuMessages::setDeletedMessagePolicy(
+						peerData,
+						AyuMessages::DeletedMessagePolicy::Off);
+				},
+				&st::menuIconCaptionHide);
+			addAction({ .isSeparator = true });
 			if (showFilters) {
 				addAction(
 					tr::ayu_ViewFiltersMenuText(tr::now),
@@ -299,7 +324,7 @@ void AddAyuGramActions(PeerData *peerData,
 						? &st::menuIconCaptionHide
 						: &st::menuIconCaptionShow);
 			}
-			if (saveDeletedMessages) {
+			if (saveDeletedMessages || hasDeletedMessages) {
 				addAction(
 					tr::ayu_ViewDeletedMenuText(tr::now),
 					[=]
