@@ -23,8 +23,6 @@
     &nbsp;·&nbsp;
     <a href="#highlights"><strong>Features</strong></a>
     &nbsp;·&nbsp;
-    <a href="#comparison"><strong>Comparison</strong></a>
-    &nbsp;·&nbsp;
     <a href="https://github.com/slpkbt/SleepyGram/issues"><strong>Report Issue / Request Feature</strong></a>
     &nbsp;·&nbsp;
     <a href="README-RU.md"><strong>Русский</strong></a>
@@ -69,19 +67,6 @@ AyuGram brought some of the best privacy and message-preservation features to Te
     </td>
   </tr>
 </table>
-
----
-
-## Comparison
-
-| Capability | Telegram Desktop | AyuGram Desktop | **SleepyGram Desktop** |
-| :--- | :---: | :---: | :---: |
-| **Upstream Telegram Base** | `v7.4.3` | Lags behind upstream | **`v7.4.3` (Actively Synced)** |
-| **Ghost Mode & Anti-Recall** | — | Yes | **Yes** |
-| **Edit History & Deleted Media Vault** | — | Yes | **Yes** |
-| **Max Multi-Select & Batch Forward** | 100 messages | 100 messages | **10,000 messages (Auto-Batched)** |
-| **Community Feature Requests** | Official roadmap only | Closed maintainer group | **Open & Community-Driven** |
-| **Runs Alongside Other Clients** | Separate profile | Separate profile | **Isolated (`SleepyGram`)** |
 
 ---
 
