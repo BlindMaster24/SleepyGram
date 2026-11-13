@@ -36,7 +36,9 @@ public:
 		not_null<Window::SessionController*> controller,
 		not_null<PeerData*> peer,
 		HistoryItem *item,
-		ID topicId);
+		ID topicId,
+		bool editedMessages = false,
+		ID editedMessageId = 0);
 
 	not_null<PeerData*> channel() const;
 	Dialogs::RowDescriptor activeChat() const override;
@@ -80,6 +82,8 @@ private:
 	object_ptr<Ui::PlainShadow> _fixedBarShadow;
 	HistoryItem *_item;
 	ID _topicId;
+	bool _editedMessages = false;
+	ID _editedMessageId = 0;
 
 };
 
@@ -88,10 +92,17 @@ class SectionMemento : public Window::SectionMemento
 public:
 	using Element = HistoryView::Element;
 
-	SectionMemento(not_null<PeerData*> peer, HistoryItem *item, ID topicId)
+	SectionMemento(
+		not_null<PeerData*> peer,
+		HistoryItem *item,
+		ID topicId,
+		bool editedMessages = false,
+		ID editedMessageId = 0)
 		: _peer(peer),
 		  _item(item),
-		  _topicId(topicId) {
+		  _topicId(topicId),
+		  _editedMessages(editedMessages),
+		  _editedMessageId(editedMessageId) {
 	}
 
 	object_ptr<Window::SectionWidget> createWidget(
@@ -102,6 +113,14 @@ public:
 
 	not_null<PeerData*> getPeer() const {
 		return _peer;
+	}
+
+	bool editedMessages() const {
+		return _editedMessages;
+	}
+
+	ID editedMessageId() const {
+		return _editedMessageId;
 	}
 
 	void setScrollTop(int scrollTop) {
@@ -151,6 +170,8 @@ private:
 	not_null<PeerData*> _peer;
 	HistoryItem *_item;
 	ID _topicId;
+	bool _editedMessages = false;
+	ID _editedMessageId = 0;
 	int _scrollTop = 0;
 	std::vector<OwnedItem> _items;
 	std::set<uint64> _messageIds;

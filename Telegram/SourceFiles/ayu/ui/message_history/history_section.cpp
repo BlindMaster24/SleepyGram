@@ -39,7 +39,8 @@ public:
 		QWidget *parent,
 		not_null<Window::SessionController*> controller,
 		not_null<PeerData*> peer,
-		bool searchEnabled);
+		bool searchEnabled,
+		bool editedMessages);
 
 	[[nodiscard]] rpl::producer<> searchCancelRequests() const;
 	[[nodiscard]] rpl::producer<QString> searchRequests() const;
@@ -95,7 +96,14 @@ object_ptr<Window::SectionWidget> SectionMemento::createWidget(
 	if (column == Window::Column::Third) {
 		return nullptr;
 	}
-	auto result = object_ptr<Widget>(parent, controller, _peer, _item, _topicId);
+	auto result = object_ptr<Widget>(
+		parent,
+		controller,
+		_peer,
+		_item,
+		_topicId,
+		_editedMessages,
+		_editedMessageId);
 	result->setInternalState(geometry, this);
 	return result;
 }
@@ -104,7 +112,8 @@ FixedBar::FixedBar(
 	QWidget *parent,
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
-	bool searchEnabled) : Ui::RpWidget(parent)
+	bool searchEnabled,
+	bool editedMessages) : Ui::RpWidget(parent)
 , _controller(controller)
 , _peer(peer)
 , _field(this, st::defaultMultiSelectSearchField, tr::lng_dlg_filter())
@@ -133,7 +142,9 @@ FixedBar::FixedBar(
 	}
 
 	Info::Profile::NameValue(peer) | rpl::on_next([=](QString name) {
-		_backButton->setText(name);
+		_backButton->setText(editedMessages
+			? tr::ayu_ViewEditedMessagesMenuText(tr::now)
+			: name);
 	}, _backButton->lifetime());
 	_backButton->setWidget(Ui::CreateChild<Ui::UserpicButton>(
 		_backButton.get(),
@@ -289,13 +300,17 @@ Widget::Widget(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
 	HistoryItem *item,
-	ID topicId)
+	ID topicId,
+	bool editedMessages,
+	ID editedMessageId)
 	: Window::SectionWidget(parent, controller, rpl::single<PeerData*>(peer)),
 	  _scroll(this, st::historyScroll, false),
-	  _fixedBar(this, controller, peer, !item),
+	  _fixedBar(this, controller, peer, !item && !editedMessageId, editedMessages),
 	  _fixedBarShadow(this),
 	  _item(item),
-	  _topicId(topicId) {
+	  _topicId(topicId),
+	  _editedMessages(editedMessages),
+	  _editedMessageId(editedMessageId) {
 	_fixedBar->move(0, 0);
 	_fixedBar->resizeToWidth(width());
 	_fixedBar->searchCancelRequests(
@@ -317,7 +332,14 @@ Widget::Widget(
 							 },
 							 lifetime());
 
-	_inner = _scroll->setOwnedWidget(object_ptr<InnerWidget>(this, controller, peer, item, topicId));
+	_inner = _scroll->setOwnedWidget(object_ptr<InnerWidget>(
+		this,
+		controller,
+		peer,
+		item,
+		topicId,
+		editedMessages,
+		editedMessageId));
 	_inner->scrollToSignal(
 	) | rpl::on_next([=](int top)
 							 {
@@ -373,7 +395,9 @@ bool Widget::showInternal(
 	not_null<Window::SectionMemento*> memento,
 	const Window::SectionShow &params) {
 	if (auto logMemento = dynamic_cast<SectionMemento*>(memento.get())) {
-		if (logMemento->getPeer() == channel()) {
+		if (logMemento->getPeer() == channel()
+			&& logMemento->editedMessages() == _editedMessages
+			&& logMemento->editedMessageId() == _editedMessageId) {
 			restoreState(logMemento);
 			return true;
 		}
@@ -404,7 +428,12 @@ void Widget::setupShortcuts() {
 }
 
 std::shared_ptr<Window::SectionMemento> Widget::createMemento() {
-	auto result = std::make_shared<SectionMemento>(channel(), _item, _topicId);
+	auto result = std::make_shared<SectionMemento>(
+		channel(),
+		_item,
+		_topicId,
+		_editedMessages,
+		_editedMessageId);
 	saveState(result.get());
 	return result;
 }

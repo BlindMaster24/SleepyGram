@@ -53,7 +53,9 @@ public:
 		not_null<Window::SessionController*> controller,
 		not_null<PeerData*> peer,
 		HistoryItem *item,
-		ID topicId);
+		ID topicId,
+		bool editedMessages = false,
+		ID editedMessageId = 0);
 
 	[[nodiscard]] Main::Session &session() const;
 
@@ -268,6 +270,8 @@ private:
 	const not_null<PeerData*> _peer;
 	HistoryItem *_item;
 	ID _topicId;
+	bool _editedMessages = false;
+	ID _editedMessageId = 0;
 	const not_null<History*> _history;
 	MTP::Sender _api;
 
@@ -277,6 +281,7 @@ private:
 	std::vector<OwnedItem> _items;
 	std::set<uint64> _messageIds;
 	std::map<not_null<const HistoryItem*>, not_null<Element*>> _itemsByData;
+	std::map<not_null<const HistoryItem*>, ID> _editedMessageOriginalIds;
 	base::flat_map<not_null<const HistoryItem*>, TimeId> _itemDates;
 	base::flat_set<FullMsgId> _animatedStickersPlayed;
 	base::flat_map<not_null<PeerData*>, Ui::PeerUserpicView> _userpics;

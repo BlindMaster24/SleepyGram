@@ -324,6 +324,18 @@ void AddAyuGramActions(PeerData *peerData,
 						? &st::menuIconCaptionHide
 						: &st::menuIconCaptionShow);
 			}
+			addAction(
+				tr::ayu_ViewEditedMessagesMenuText(tr::now),
+				[=] {
+					if (const auto window = sessionController->session().tryResolveWindow()) {
+						window->showSection(std::make_shared<MessageHistory::SectionMemento>(
+							peerData,
+							nullptr,
+							topicId,
+							true));
+					}
+				},
+				&st::ayuEditsHistoryIcon);
 			if (saveDeletedMessages || hasDeletedMessages) {
 				addAction(
 					tr::ayu_ViewDeletedMenuText(tr::now),

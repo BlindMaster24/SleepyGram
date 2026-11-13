@@ -18,6 +18,8 @@ enum class DeletedMessagePolicy {
 
 void addEditedMessage(not_null<HistoryItem *> item);
 std::vector<AyuMessageBase> getEditedMessages(not_null<HistoryItem*> item, ID minId, ID maxId, int totalLimit);
+std::vector<AyuMessageBase> getEditedMessages(not_null<PeerData*> peer, ID topicId, ID minId, ID maxId, int totalLimit, const QString &searchQuery = QString());
+std::vector<AyuMessageBase> getEditedMessageRevisions(not_null<PeerData*> peer, ID messageId, ID topicId, ID minId, ID maxId, int totalLimit);
 bool hasRevisions(not_null<HistoryItem*> item);
 
 void addDeletedMessage(not_null<HistoryItem*> item);

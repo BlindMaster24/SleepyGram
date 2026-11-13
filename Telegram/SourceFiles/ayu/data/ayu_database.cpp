@@ -289,6 +289,91 @@ std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageI
 	}
 }
 
+std::vector<EditedMessage> getEditedMessages(
+		ID userId,
+		ID dialogId,
+		ID topicId,
+		ID minId,
+		ID maxId,
+		int totalLimit,
+		const std::string &searchQuery) {
+	std::lock_guard lock(databaseMutex);
+	try {
+		const auto latestPerMessage = in(
+			&EditedMessage::fakeId,
+			select(
+				max(&EditedMessage::fakeId),
+				where(
+					column<EditedMessage>(&EditedMessage::userId) == userId and
+					column<EditedMessage>(&EditedMessage::dialogId) == dialogId and
+					(column<EditedMessage>(&EditedMessage::topicId) == topicId or topicId == 0)),
+				group_by(
+					&EditedMessage::messageId,
+					&EditedMessage::topicId)));
+		if (searchQuery.empty()) {
+			return storage.get_all<EditedMessage>(
+				where(
+					column<EditedMessage>(&EditedMessage::userId) == userId and
+					column<EditedMessage>(&EditedMessage::dialogId) == dialogId and
+					(column<EditedMessage>(&EditedMessage::topicId) == topicId or topicId == 0) and
+					latestPerMessage and
+					(column<EditedMessage>(&EditedMessage::fakeId) > minId or minId == 0) and
+					(column<EditedMessage>(&EditedMessage::fakeId) < maxId or maxId == 0)),
+				order_by(column<EditedMessage>(&EditedMessage::fakeId)).desc(),
+				limit(totalLimit));
+		}
+		auto escaped = std::string();
+		escaped.reserve(searchQuery.size());
+		for (const auto c : searchQuery) {
+			if (c == '%' || c == '_' || c == '\\') {
+				escaped += '\\';
+			}
+			escaped += c;
+		}
+		const auto pattern = "%" + escaped + "%";
+		return storage.get_all<EditedMessage>(
+			where(
+				column<EditedMessage>(&EditedMessage::userId) == userId and
+				column<EditedMessage>(&EditedMessage::dialogId) == dialogId and
+				(column<EditedMessage>(&EditedMessage::topicId) == topicId or topicId == 0) and
+				latestPerMessage and
+				(column<EditedMessage>(&EditedMessage::fakeId) > minId or minId == 0) and
+				(column<EditedMessage>(&EditedMessage::fakeId) < maxId or maxId == 0) and
+				like(column<EditedMessage>(&EditedMessage::text), pattern, "\\")),
+			order_by(column<EditedMessage>(&EditedMessage::fakeId)).desc(),
+			limit(totalLimit));
+	} catch (std::exception &ex) {
+		LOG(("Failed to get edited messages for dialog: %1").arg(ex.what()));
+		return {};
+	}
+}
+
+std::vector<EditedMessage> getEditedMessageRevisions(
+		ID userId,
+		ID dialogId,
+		ID messageId,
+		ID topicId,
+		ID minId,
+		ID maxId,
+		int totalLimit) {
+	std::lock_guard lock(databaseMutex);
+	try {
+		return storage.get_all<EditedMessage>(
+			where(
+				column<EditedMessage>(&EditedMessage::userId) == userId and
+				column<EditedMessage>(&EditedMessage::dialogId) == dialogId and
+				column<EditedMessage>(&EditedMessage::messageId) == messageId and
+				(column<EditedMessage>(&EditedMessage::topicId) == topicId or topicId == 0) and
+				(column<EditedMessage>(&EditedMessage::fakeId) > minId or minId == 0) and
+				(column<EditedMessage>(&EditedMessage::fakeId) < maxId or maxId == 0)),
+			order_by(column<EditedMessage>(&EditedMessage::fakeId)).desc(),
+			limit(totalLimit));
+	} catch (std::exception &ex) {
+		LOG(("Failed to get edited message revisions: %1").arg(ex.what()));
+		return {};
+	}
+}
+
 bool hasRevisions(ID userId, ID dialogId, ID messageId) {
 	std::lock_guard lock(databaseMutex);
 	try {

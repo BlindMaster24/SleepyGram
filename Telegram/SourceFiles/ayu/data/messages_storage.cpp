@@ -104,6 +104,42 @@ std::vector<AyuMessageBase> getEditedMessages(not_null<HistoryItem*> item, ID mi
 	return convertToBase(AyuDatabase::getEditedMessages(userId, dialogId, msgId, minId, maxId, totalLimit));
 }
 
+std::vector<AyuMessageBase> getEditedMessages(
+		not_null<PeerData*> peer,
+		ID topicId,
+		ID minId,
+		ID maxId,
+		int totalLimit,
+		const QString &searchQuery) {
+	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
+	return convertToBase(AyuDatabase::getEditedMessages(
+		userId,
+		getDialogIdFromPeer(peer),
+		topicId,
+		minId,
+		maxId,
+		totalLimit,
+		searchQuery.toStdString()));
+}
+
+std::vector<AyuMessageBase> getEditedMessageRevisions(
+		not_null<PeerData*> peer,
+		ID messageId,
+		ID topicId,
+		ID minId,
+		ID maxId,
+		int totalLimit) {
+	const auto userId = peer->session().userId().bare & PeerId::kChatTypeMask;
+	return convertToBase(AyuDatabase::getEditedMessageRevisions(
+		userId,
+		getDialogIdFromPeer(peer),
+		messageId,
+		topicId,
+		minId,
+		maxId,
+		totalLimit));
+}
+
 bool hasRevisions(not_null<HistoryItem*> item) {
 	const ID userId = item->history()->owner().session().userId().bare & PeerId::kChatTypeMask;
 	const auto dialogId = getDialogIdFromPeer(item->history()->peer);

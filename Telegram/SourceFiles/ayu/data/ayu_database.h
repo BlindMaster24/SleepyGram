@@ -23,6 +23,8 @@ void initialize();
 
 void addEditedMessage(const EditedMessage &message);
 std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit);
+std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery = "");
+std::vector<EditedMessage> getEditedMessageRevisions(ID userId, ID dialogId, ID messageId, ID topicId, ID minId, ID maxId, int totalLimit);
 bool hasRevisions(ID userId, ID dialogId, ID messageId);
 
 void addDeletedMessage(const DeletedMessage &message);

@@ -246,12 +246,16 @@ InnerWidget::InnerWidget(
 	not_null<Window::SessionController*> controller,
 	not_null<PeerData*> peer,
 	HistoryItem *item,
-	ID topicId)
+	ID topicId,
+	bool editedMessages,
+	ID editedMessageId)
 	: RpWidget(parent),
 	  _controller(controller),
 	  _peer(peer),
 	  _item(item),
 	  _topicId(topicId),
+	  _editedMessages(editedMessages),
+	  _editedMessageId(editedMessageId),
 	  _history(peer->owner().history(peer)),
 	  _api(&_peer->session().mtp()),
 	  _pathGradient(
@@ -663,6 +667,7 @@ void InnerWidget::saveState(not_null<SectionMemento*> memento) {
 		_items.clear();
 		_messageIds.clear();
 		_itemsByData.clear();
+		_editedMessageOriginalIds.clear();
 		_upLoaded = false;
 		_downLoaded = true;
 		return;
@@ -686,6 +691,7 @@ void InnerWidget::restoreState(not_null<SectionMemento*> memento) {
 		_items.clear();
 		_messageIds.clear();
 		_itemsByData.clear();
+		_editedMessageOriginalIds.clear();
 		_itemDates.clear();
 		_upLoaded = false;
 		_downLoaded = true;
@@ -725,6 +731,7 @@ void InnerWidget::applySearch(const QString &query) {
 		_items.clear();
 		_messageIds.clear();
 		_itemsByData.clear();
+		_editedMessageOriginalIds.clear();
 		_itemDates.clear();
 		updateMinMaxIds();
 		updateEmptyText();
@@ -752,6 +759,8 @@ void InnerWidget::preloadMore(Direction direction) {
 	const auto item = _item;
 	const auto peer = _peer;
 	const auto topicId = _topicId;
+	const auto editedMessages = _editedMessages;
+	const auto editedMessageId = _editedMessageId;
 	const auto searchQuery = _searchQuery;
 
 	const auto weak = base::make_weak(this);
@@ -760,6 +769,22 @@ void InnerWidget::preloadMore(Direction direction) {
 		std::vector<AyuMessageBase> messages;
 		if (item) { // viewing edited history
 			messages = AyuMessages::getEditedMessages(item, minId, maxId, perPage);
+		} else if (editedMessageId) {
+			messages = AyuMessages::getEditedMessageRevisions(
+				peer,
+				editedMessageId,
+				topicId,
+				minId,
+				maxId,
+				perPage);
+		} else if (editedMessages) {
+			messages = AyuMessages::getEditedMessages(
+				peer,
+				topicId,
+				minId,
+				maxId,
+				perPage,
+				searchQuery);
 		} else { // viewing deleted messages
 			messages = AyuMessages::getDeletedMessages(peer, topicId, minId, maxId, perPage, searchQuery);
 		}
@@ -800,7 +825,7 @@ void InnerWidget::addMessages(Direction direction, const std::vector<AyuMessageB
 	addToItems.reserve(oldItemsCount + messages.size() * 2);
 
 	for (const auto &message : messages) {
-		const auto id = _item
+		const auto id = (_item || _editedMessages || _editedMessageId)
 							? message.fakeId // viewing edited history
 							: message.messageId; // viewing deleted messages
 		if (_messageIds.find(id) != _messageIds.end()) {
@@ -817,6 +842,9 @@ void InnerWidget::addMessages(Direction direction, const std::vector<AyuMessageB
 			}
 			_messageIds.emplace(id);
 			_itemsByData.emplace(item->data(), item.get());
+			if (_editedMessages) {
+				_editedMessageOriginalIds.emplace(item->data(), message.messageId);
+			}
 			addToItems.push_back(std::move(item));
 			++count;
 		};
@@ -1341,6 +1369,27 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 									 },
 									 &st::menuIconCopy);
 				}
+			}
+		}
+		if (_editedMessages && item) {
+			if (const auto original = _editedMessageOriginalIds.find(item);
+				original != end(_editedMessageOriginalIds)) {
+				const auto messageId = original->second;
+				const auto itemFullId = FullMsgId(_peer->id, MsgId(messageId));
+				_menu->addAction(
+					tr::ayu_EditsHistoryMenuText(tr::now),
+					[=] {
+						const auto liveItem = session().data().message(itemFullId);
+						if (const auto window = session().tryResolveWindow()) {
+							window->showSection(std::make_shared<SectionMemento>(
+								_peer,
+								liveItem,
+								_topicId,
+								false,
+								liveItem ? 0 : messageId));
+						}
+					},
+					&st::ayuEditsHistoryIcon);
 			}
 		}
 
