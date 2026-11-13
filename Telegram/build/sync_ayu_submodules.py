@@ -21,14 +21,17 @@ TARGETS = [
 
 
 def run(cwd: pathlib.Path, *args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    proc = subprocess.run(
         ["git", *args],
         cwd=str(cwd),
-        check=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
+    if proc.returncode != 0:
+        print(f"[error] git {' '.join(args)} in {cwd} failed:\n{proc.stdout}", flush=True)
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, proc.stdout)
+    return proc
 
 
 def main() -> int:
@@ -36,6 +39,16 @@ def main() -> int:
         if not (path / ".git").exists():
             print(f"[skip] {path} is not initialized", flush=True)
             continue
+        shallow = subprocess.run(
+            ["git", "rev-parse", "--is-shallow-repository"],
+            cwd=str(path),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if shallow.returncode == 0 and shallow.stdout.strip() == "true":
+            print(f"[unshallow] {path.name}", flush=True)
+            run(path, "fetch", "--unshallow")
         already = subprocess.run(
             ["git", "merge-base", "--is-ancestor", commit, "HEAD"],
             cwd=str(path),

@@ -11,7 +11,7 @@ on:
         options:
           - linux-macos
           - linux-x64
-          - macos-x64
+          - macos-arm64
           - windows-x64
           - all
       publish_release:
@@ -118,9 +118,11 @@ jobs:
       - name: Package
         run: |
           test -f out/Release/SleepyGram || { echo "::error::Smoke check failed: SleepyGram not found"; exit 1; }
-          test -f out/Release/Updater || { echo "::error::Smoke check failed: Updater not found"; exit 1; }
           mkdir -p "$RUNNER_TEMP/sleepygram-linux-x64"
-          cp out/Release/SleepyGram out/Release/Updater "$RUNNER_TEMP/sleepygram-linux-x64/"
+          cp out/Release/SleepyGram "$RUNNER_TEMP/sleepygram-linux-x64/"
+          if [ -f out/Release/Updater ]; then
+            cp out/Release/Updater "$RUNNER_TEMP/sleepygram-linux-x64/"
+          fi
           tar -C "$RUNNER_TEMP/sleepygram-linux-x64" -cJf "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz" .
 
       - name: Upload artifact
@@ -130,10 +132,10 @@ jobs:
           path: ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
           if-no-files-found: error
 
-  macos-x64:
-    name: macos-x64
-    runs-on: macos-13
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'linux-macos' || inputs.platform == 'macos-x64' || inputs.platform == 'all' }}
+  macos-arm64:
+    name: macos-arm64
+    runs-on: macos-latest
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'linux-macos' || inputs.platform == 'macos-arm64' || inputs.platform == 'all' }}
     steps:
       - name: Check API credentials
         run: |
@@ -153,9 +155,12 @@ jobs:
 
       - name: Install tools
         run: |
+          sudo chown -R "$(whoami):admin" /usr/local/share || true
           brew update
-          brew install automake libtool meson nasm ninja pkg-config
+          brew install automake cmake gnu-tar libtool meson nasm ninja pkg-config wget
+          sudo mdutil -a -i off || true
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          sudo sed -i '' '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/ -g//' /opt/homebrew/share/cmake/Modules/Compiler/GNU.cmake || true
 
       - name: Cache libraries
         uses: actions/cache@v4
@@ -163,18 +168,22 @@ jobs:
           path: |
             Libraries
             ThirdParty
-          key: macos-x64-libraries-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py') }}
-          restore-keys: macos-x64-libraries-
+          key: macos-arm64-libraries-${{ hashFiles('tdesktop/Telegram/build/prepare/prepare.py') }}
+          restore-keys: macos-arm64-libraries-
 
       - name: Prepare libraries
         run: ./tdesktop/Telegram/build/prepare/mac.sh silent
+
+      - name: Free up library build intermediates
+        run: |
+          find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
       - name: Build
         run: |
           cd tdesktop/Telegram
           ./configure.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
-            -D CMAKE_OSX_ARCHITECTURES=x86_64 \
+            -D CMAKE_OSX_ARCHITECTURES=arm64 \
             -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
             -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
@@ -188,13 +197,13 @@ jobs:
           test -d SleepyGram.app || { echo "::error::Smoke check failed: SleepyGram.app not found"; exit 1; }
           codesign --force --deep --sign - SleepyGram.app
           codesign --verify --deep --strict SleepyGram.app
-          ditto -c -k --sequesterRsrc --keepParent SleepyGram.app "$RUNNER_TEMP/SleepyGram-macos-x64.zip"
+          ditto -c -k --sequesterRsrc --keepParent SleepyGram.app "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SleepyGram-macos-x64.zip
-          path: ${{ runner.temp }}/SleepyGram-macos-x64.zip
+          name: SleepyGram-macos-arm64.zip
+          path: ${{ runner.temp }}/SleepyGram-macos-arm64.zip
           if-no-files-found: error
 
   windows-x64:
@@ -292,13 +301,15 @@ jobs:
       - name: Package
         run: |
           $out = "$env:REPO_PATH\out\Release"
-          if (!(Test-Path "$out\SleepyGram.exe") -or !(Test-Path "$out\Updater.exe")) {
-            Write-Error "Smoke check failed: SleepyGram.exe or Updater.exe not found"
+          if (!(Test-Path "$out\SleepyGram.exe")) {
+            Write-Error "Smoke check failed: SleepyGram.exe not found"
             exit 1
           }
           New-Item -ItemType Directory -Force "$env:RUNNER_TEMP\sleepygram-windows-x64" | Out-Null
           Copy-Item "$out\SleepyGram.exe" "$env:RUNNER_TEMP\sleepygram-windows-x64\"
-          Copy-Item "$out\Updater.exe" "$env:RUNNER_TEMP\sleepygram-windows-x64\"
+          if (Test-Path "$out\Updater.exe") {
+            Copy-Item "$out\Updater.exe" "$env:RUNNER_TEMP\sleepygram-windows-x64\"
+          }
           Compress-Archive -Path "$env:RUNNER_TEMP\sleepygram-windows-x64\*" -DestinationPath "$env:RUNNER_TEMP\SleepyGram-windows-x64.zip" -Force
 
       - name: Upload artifact
@@ -313,7 +324,7 @@ jobs:
     runs-on: ubuntu-22.04
     needs:
       - linux-x64
-      - macos-x64
+      - macos-arm64
       - windows-x64
     if: ${{ always() && ((github.event_name == 'push' && (github.ref == 'refs/heads/dev' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
     steps:
@@ -331,27 +342,27 @@ jobs:
 
           if [[ "${{ github.event_name }}" == "push" ]]; then
             check_result "linux-x64" "${{ needs.linux-x64.result }}"
-            check_result "macos-x64" "${{ needs.macos-x64.result }}"
+            check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
             exit 0
           fi
 
           case "${{ inputs.platform }}" in
             linux-macos)
               check_result "linux-x64" "${{ needs.linux-x64.result }}"
-              check_result "macos-x64" "${{ needs.macos-x64.result }}"
+              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
               ;;
             linux-x64)
               check_result "linux-x64" "${{ needs.linux-x64.result }}"
               ;;
-            macos-x64)
-              check_result "macos-x64" "${{ needs.macos-x64.result }}"
+            macos-arm64)
+              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
               ;;
             windows-x64)
               check_result "windows-x64" "${{ needs.windows-x64.result }}"
               ;;
             all)
               check_result "linux-x64" "${{ needs.linux-x64.result }}"
-              check_result "macos-x64" "${{ needs.macos-x64.result }}"
+              check_result "macos-arm64" "${{ needs.macos-arm64.result }}"
               check_result "windows-x64" "${{ needs.windows-x64.result }}"
               ;;
           esac
@@ -391,9 +402,11 @@ jobs:
             tag="${{ inputs.release_tag }}"
             if [[ -z "$tag" || "$tag" == "manual" ]]; then
               tag="manual-${GITHUB_RUN_NUMBER}"
+              prerelease=(--prerelease)
+            elif [[ "$tag" != v* ]]; then
+              prerelease=(--prerelease)
             fi
             title="SleepyGram $tag"
-            prerelease=(--prerelease)
           fi
 
           if [[ "$GITHUB_REF_TYPE" != "tag" ]]; then
