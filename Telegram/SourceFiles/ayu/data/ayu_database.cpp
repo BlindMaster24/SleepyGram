@@ -595,6 +595,32 @@ void deleteAllExclusions() {
 	}
 }
 
+bool replaceAllRegexFilters(
+		const std::vector<RegexFilter> &filters,
+		const std::vector<RegexFilterGlobalExclusion> &exclusions) {
+	std::lock_guard lock(databaseMutex);
+	try {
+		storage.begin_transaction();
+		storage.remove_all<RegexFilterGlobalExclusion>();
+		storage.remove_all<RegexFilter>();
+		for (const auto &filter : filters) {
+			storage.replace(filter);
+		}
+		for (const auto &exclusion : exclusions) {
+			storage.insert(exclusion);
+		}
+		storage.commit();
+		return true;
+	} catch (const std::exception &ex) {
+		try {
+			storage.rollback();
+		} catch (...) {
+		}
+		LOG(("Failed to replace regex filters: %1").arg(ex.what()));
+		return false;
+	}
+}
+
 bool hasFilters() {
 	std::lock_guard lock(databaseMutex);
 	try {

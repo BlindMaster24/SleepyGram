@@ -15,6 +15,7 @@
 
 #include <map>
 #include <unordered_set>
+#include <QByteArray>
 
 
 namespace Main {
@@ -253,6 +254,12 @@ public:
 	static void load();
 	static void save();
 	static void reset();
+	[[nodiscard]] static QByteArray exportTransfer(uint64 accountId);
+	[[nodiscard]] static QString previewTransfer(
+		const QByteArray &data,
+		uint64 accountId,
+		QString *error);
+	static bool applyTransfer(const QByteArray &data, uint64 accountId);
 
 	[[nodiscard]] static GhostModeAccountSettings &ghost(not_null<Main::Session*> session);
 	[[nodiscard]] static GhostModeAccountSettings &ghost(uint64 userId);

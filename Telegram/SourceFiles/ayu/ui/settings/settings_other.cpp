@@ -13,6 +13,7 @@
 #include "ayu/ui/settings/settings_main.h"
 #include "boxes/abstract_box.h"
 #include "core/application.h"
+#include "core/file_utilities.h"
 #include "settings/settings_builder.h"
 #include "settings/settings_common.h"
 #include "styles/style_menu_icons.h"
@@ -20,6 +21,9 @@
 #include "ui/boxes/confirm_box.h"
 #include "ui/wrap/vertical_layout.h"
 #include "window/window_session_controller.h"
+
+#include <QFile>
+#include <QSaveFile>
 
 namespace Settings {
 
@@ -49,6 +53,85 @@ void BuildCrashReporting(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 void BuildOtherThings(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 
+	builder.addSkip();
+	builder.addButton({
+		.id = u"ayu/exportSettings"_q,
+		.title = tr::ayu_SettingsExport(),
+		.onClick = [=] {
+			FileDialog::GetWritePath(
+				controller->widget(),
+				tr::ayu_SettingsExport(tr::now),
+				u"JSON files (*.json)"_q,
+				u"sleepygram-settings.json"_q,
+				crl::guard(controller, [=](QString &&path) {
+					if (path.isEmpty()) {
+						return;
+					}
+					auto file = QSaveFile(path);
+					const auto data = AyuSettings::exportTransfer(
+						controller->session().userId().bare);
+					if (!file.open(QIODevice::WriteOnly)
+						|| file.write(data) != data.size()
+						|| !file.commit()) {
+						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+						return;
+					}
+					controller->showToast(tr::lng_box_done(tr::now));
+				}));
+		},
+	});
+	builder.addButton({
+		.id = u"ayu/importSettings"_q,
+		.title = tr::ayu_SettingsImport(),
+		.onClick = [=] {
+			FileDialog::GetOpenPath(
+				controller->widget(),
+				tr::ayu_SettingsImport(tr::now),
+				u"JSON files (*.json);;All files (*)"_q,
+				crl::guard(controller, [=](FileDialog::OpenResult &&result) {
+					if (result.paths.isEmpty()) {
+						return;
+					}
+					QFile file(result.paths.front());
+					if (!file.open(QIODevice::ReadOnly)
+						|| file.size() > 5 * 1024 * 1024) {
+						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+						return;
+					}
+					const auto data = file.read(5 * 1024 * 1024 + 1);
+					if (file.error() != QFileDevice::NoError
+						|| data.size() > 5 * 1024 * 1024) {
+						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+						return;
+					}
+					auto error = QString();
+					const auto preview = AyuSettings::previewTransfer(
+						data,
+						controller->session().userId().bare,
+						&error);
+					if (preview.isEmpty()) {
+						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+						return;
+					}
+					controller->show(Ui::MakeConfirmBox({
+						.text = tr::ayu_SettingsImportConfirmation(tr::now)
+							+ u"\n\n"_q
+							+ preview,
+						.confirmed = [=](Fn<void()> &&close) {
+							if (AyuSettings::applyTransfer(
+									data,
+									controller->session().userId().bare)) {
+								controller->showToast(tr::ayu_SettingsImportSuccess(tr::now));
+							} else {
+								controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+							}
+							close();
+						},
+						.confirmText = tr::ayu_SettingsImport(),
+					}));
+				}));
+		},
+	});
 	builder.addSkip();
 	builder.addButton({
 		.id = u"ayu/registerUrlScheme"_q,

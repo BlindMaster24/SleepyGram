@@ -9262,6 +9262,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_CrashReportingDescription" = "When this option is enabled, you'll be prompted to send a report after the app crashes. You can decide whether to send it or not.";
 "ayu_ResetSettings" = "Reset Settings";
 "ayu_ResetSettingsConfirmation" = "Are you sure you want to reset **all** SleepyGram preferences to their defaults?";
+"ayu_SettingsExport" = "Export SleepyGram Settings";
+"ayu_SettingsImport" = "Import SleepyGram Settings";
+"ayu_SettingsImportConfirmation" = "Import these settings? Existing SleepyGram app preferences and device-wide filters will be replaced. Device-wide filters affect all accounts. Local ghost-read markers are never copied; importing a disabled remember-read option clears local markers for the affected accounts.";
+"ayu_SettingsImportPreview" = "%1 app preferences, account ghost-mode preferences, %2 device-global filters (%3 chat-specific), and %4 exclusions will be imported. Device-global filters affect every account; chat-specific rules retain Telegram dialog IDs as mapping data. %5";
+"ayu_SettingsImportGhostGlobal" = "Ghost-mode preferences will be shared across all accounts.";
+"ayu_SettingsImportGhostAccount" = "Ghost-mode preferences will apply to the active account.";
+"ayu_SettingsImportSuccess" = "SleepyGram settings imported";
+"ayu_SettingsTransferFailure" = "Could not read or apply the settings file";
 "ayu_DisableColorfulCover" = "Disable adaptive color";
 "ayu_EnableColorfulCover" = "Enable adaptive color";
 "ayu_CustomizationHeader" = "Customization";

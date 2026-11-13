@@ -6,6 +6,9 @@
 // Copyright @Radolyn, 2026
 #include "ayu/ayu_settings.h"
 
+#include "ayu/ayu_infra.h"
+#include "ayu/data/ayu_database.h"
+#include "ayu/data/entities.h"
 #include "base/timer.h"
 #include "lang_auto.h"
 #include "tray.h"
@@ -23,11 +26,23 @@
 #include "main/main_session.h"
 #include "platform/platform_translate_provider.h"
 #include "rpl/combine.h"
+#include "window/main_window.h"
 #include "window/window_controller.h"
 
+#ifdef Q_OS_WIN
+#include "ayu/utils/windows_utils.h"
+#endif
+
 #include <charconv>
+#include <cmath>
 #include <fstream>
+#include <ranges>
+#include <set>
 #include <QApplication>
+#include <QFile>
+#include <QSaveFile>
+#include <QUuid>
+#include "unicode/regex.h"
 
 using json = nlohmann::json;
 
@@ -35,6 +50,394 @@ namespace {
 
 std::string getSettingsPath() {
 	return (cWorkingDir() + u"tdata/ayu_settings.json"_q).toStdString();
+}
+
+QString getSettingsFilePath() {
+	return QString::fromStdString(getSettingsPath());
+}
+
+const std::vector<std::string> &transferSettingKeys() {
+	static const auto keys = std::vector<std::string>{
+		"useGlobalGhostMode",
+		"saveDeletedMessages",
+		"saveMessagesHistory",
+		"saveForBots",
+		"filtersEnabled",
+		"filtersEnabledInChats",
+		"hideFromBlocked",
+		"semiTransparentDeletedMessages",
+		"disableAds",
+		"disableStories",
+		"disableCustomBackgrounds",
+		"hidePremiumStatuses",
+		"showOnlyAddedEmojisAndStickers",
+		"collapseSimilarChannels",
+		"hideSimilarChannels",
+		"messageBubbleRadius",
+		"wideMultiplier",
+		"increaseWebviewHeight",
+		"increaseWebviewWidth",
+		"materialSwitches",
+		"removeMessageTail",
+		"disableNotificationsDelay",
+		"showChannelReactions",
+		"showGroupReactions",
+		"showPrivateChatReactions",
+		"appIcon",
+		"simpleQuotesAndReplies",
+		"hideFastShare",
+		"replaceBottomInfoWithIcons",
+		"deletedMark",
+		"editedMark",
+		"unlimitedRecentStickers",
+		"showReactionsPanelInContextMenu",
+		"showViewsPanelInContextMenu",
+		"showHideMessageInContextMenu",
+		"showUserMessagesInContextMenu",
+		"showMessageDetailsInContextMenu",
+		"showRepeatMessageInContextMenu",
+		"showAddFilterInContextMenu",
+		"showAttachButtonInMessageField",
+		"showCommandsButtonInMessageField",
+		"showEmojiButtonInMessageField",
+		"showMicrophoneButtonInMessageField",
+		"showAutoDeleteButtonInMessageField",
+		"showGiftButtonInMessageField",
+		"showAiEditorButtonInMessageField",
+		"showAttachPopup",
+		"showEmojiPopup",
+		"showMyProfileInDrawer",
+		"showBotsInDrawer",
+		"showNewGroupInDrawer",
+		"showNewChannelInDrawer",
+		"showContactsInDrawer",
+		"showCallsInDrawer",
+		"showSavedMessagesInDrawer",
+		"showLReadToggleInDrawer",
+		"showSReadToggleInDrawer",
+		"showNightModeToggleInDrawer",
+		"showGhostToggleInDrawer",
+		"showStreamerToggleInDrawer",
+		"showGhostToggleInTray",
+		"showStreamerToggleInTray",
+		"monoFont",
+		"hideNotificationCounters",
+		"hideNotificationBadge",
+		"hideAllChatsFolder",
+		"channelBottomButton",
+		"quickAdminShortcuts",
+		"disableGreetingSticker",
+		"showPeerId",
+		"showMessageSeconds",
+		"showMessageShot",
+		"filterZalgo",
+		"stickerConfirmation",
+		"gifConfirmation",
+		"voiceConfirmation",
+		"roundConfirmation",
+		"translationProvider",
+		"adaptiveCoverColor",
+		"improveLinkPreviews",
+		"avatarCorners",
+		"singleCornerRadius",
+		"streamerMode",
+		"messageShotSettings",
+	};
+	return keys;
+}
+
+const std::vector<std::string> &messageShotTransferKeys() {
+	static const auto keys = std::vector<std::string>{
+		"showBackground",
+		"showDate",
+		"showReactions",
+		"showHeaderDecorations",
+		"showColorfulReplies",
+		"revealSpoilers",
+		"embeddedThemeType",
+		"embeddedThemeAccentColor",
+	};
+	return keys;
+}
+
+struct SettingsTransferData {
+	json settings;
+	json ghostMode;
+	std::vector<RegexFilter> filters;
+	std::vector<RegexFilterGlobalExclusion> exclusions;
+};
+
+bool hasExactKeys(const json &value, const std::vector<std::string> &keys) {
+	if (!value.is_object() || value.size() != keys.size()) {
+		return false;
+	}
+	return std::ranges::all_of(keys, [&](const auto &key) {
+		return value.contains(key);
+	});
+}
+
+bool matchesJsonType(const json &value, const json &example) {
+	if (example.is_boolean()) return value.is_boolean();
+	if (example.is_number_integer()) return value.is_number_integer();
+	if (example.is_number_float()) return value.is_number();
+	if (example.is_string()) return value.is_string();
+	return false;
+}
+
+bool validatePreferences(const json &preferences, QString *error) {
+	const auto current = json(AyuSettings::getInstance());
+	if (!hasExactKeys(preferences, transferSettingKeys())) {
+		*error = u"The settings section is incomplete or contains unsupported fields."_q;
+		return false;
+	}
+	for (const auto &key : transferSettingKeys()) {
+		if (key == "messageShotSettings") {
+			continue;
+		}
+		if (!matchesJsonType(preferences.at(key), current.at(key))) {
+			*error = u"A setting has an invalid value type."_q;
+			return false;
+		}
+	}
+	if (!hasExactKeys(preferences.at("messageShotSettings"), messageShotTransferKeys())) {
+		*error = u"The message shot settings section is invalid."_q;
+		return false;
+	}
+	for (const auto &key : messageShotTransferKeys()) {
+		if (!matchesJsonType(
+				preferences.at("messageShotSettings").at(key),
+				current.at("messageShotSettings").at(key))) {
+			*error = u"A message shot setting has an invalid value type."_q;
+			return false;
+		}
+	}
+	const auto numberInRange = [&](const char *key, double min, double max) {
+		const auto &value = preferences.at(key);
+		return value.is_number()
+			&& std::isfinite(value.get<double>())
+			&& value.get<double>() >= min
+			&& value.get<double>() <= max;
+	};
+	if (!numberInRange("messageBubbleRadius", 0, 16)
+		|| !numberInRange("wideMultiplier", 0.5, 4.0)
+		|| !numberInRange("avatarCorners", 0, AyuUiSettings::kMaxAvatarCorners)) {
+		*error = u"A numeric setting is outside its supported range."_q;
+		return false;
+	}
+	const auto enumInRange = [&](const char *key, int max) {
+		const auto &value = preferences.at(key);
+		return value.is_number_integer()
+			&& value.get<int64>() >= 0
+			&& value.get<int64>() <= max;
+	};
+	if (!enumInRange("showPeerId", 2)
+		|| !enumInRange("channelBottomButton", 2)
+		|| !enumInRange("showReactionsPanelInContextMenu", 2)
+		|| !enumInRange("showViewsPanelInContextMenu", 2)
+		|| !enumInRange("showHideMessageInContextMenu", 2)
+		|| !enumInRange("showUserMessagesInContextMenu", 2)
+		|| !enumInRange("showMessageDetailsInContextMenu", 2)
+		|| !enumInRange("showRepeatMessageInContextMenu", 2)
+		|| !enumInRange("showAddFilterInContextMenu", 2)) {
+		*error = u"An enum setting has an unsupported value."_q;
+		return false;
+	}
+	const auto &provider = preferences.at("translationProvider");
+	if (provider != "telegram" && provider != "google"
+		&& provider != "yandex" && provider != "native") {
+		*error = u"The translation provider is unsupported."_q;
+		return false;
+	}
+	if (provider == "native" && !Platform::IsTranslateProviderAvailable()) {
+		*error = u"The selected translation provider is unavailable on this device."_q;
+		return false;
+	}
+	const auto &icon = preferences.at("appIcon").get_ref<const std::string &>();
+	if (icon != "default" && icon != "alt" && icon != "discord"
+		&& icon != "spotify" && icon != "extera" && icon != "nothing"
+		&& icon != "bard" && icon != "yaplus" && icon != "win95"
+		&& icon != "chibi" && icon != "chibi2" && icon != "extera2") {
+		*error = u"The selected app icon is unsupported."_q;
+		return false;
+	}
+	const auto &shot = preferences.at("messageShotSettings");
+	if (shot.at("embeddedThemeType").get<int>() < -1
+		|| shot.at("embeddedThemeType").get<int>() > 3
+		|| shot.at("embeddedThemeAccentColor").get<int64>() < 0
+		|| shot.at("embeddedThemeAccentColor").get<uint64>() > 0xFFFFFFFFULL) {
+		*error = u"The message shot theme settings are invalid."_q;
+		return false;
+	}
+	for (const auto &key : { "appIcon", "deletedMark", "editedMark", "monoFont" }) {
+		if (preferences.at(key).get<std::string>().size() > 256) {
+			*error = u"A text setting is too long."_q;
+			return false;
+		}
+	}
+	return true;
+}
+
+bool validateGhostMode(const json &ghostMode, QString *error) {
+	GhostModeAccountSettings defaults;
+	const auto example = json(defaults);
+	std::vector<std::string> keys;
+	for (const auto &[key, value] : example.items()) {
+		keys.push_back(key);
+	}
+	if (!hasExactKeys(ghostMode, keys)) {
+		*error = u"The account settings section is incomplete or contains unsupported fields."_q;
+		return false;
+	}
+	for (const auto &[key, value] : example.items()) {
+		if (!matchesJsonType(ghostMode.at(key), value)) {
+			*error = u"An account setting has an invalid value type."_q;
+			return false;
+		}
+	}
+	const auto sound = ghostMode.at("sendWithoutSound");
+	if (sound.get<int64>() < 0 || sound.get<int64>() > 2) {
+		*error = u"The sound option has an unsupported value."_q;
+		return false;
+	}
+	return true;
+}
+
+bool parseSettingsTransfer(
+		const QByteArray &data,
+		SettingsTransferData *result,
+		QString *error) {
+	if (data.isEmpty() || data.size() > 5 * 1024 * 1024) {
+		*error = u"The settings file is empty or too large."_q;
+		return false;
+	}
+	try {
+		const auto bundle = json::parse(data.constData(), data.constData() + data.size());
+		const auto rootKeys = std::vector<std::string>{
+			"format", "version", "settings", "accountSettings", "filters", "exclusions",
+		};
+		if (!hasExactKeys(bundle, rootKeys)
+			|| bundle.at("format") != "SleepyGram.settings"
+			|| !bundle.at("version").is_number_integer()
+			|| bundle.at("version") != 1) {
+			*error = u"This is not a supported SleepyGram settings file."_q;
+			return false;
+		}
+		const auto &preferences = bundle.at("settings");
+		if (!validatePreferences(preferences, error)) {
+			return false;
+		}
+		const auto &account = bundle.at("accountSettings");
+		const auto accountKeys = std::vector<std::string>{ "ghostMode" };
+		if (!hasExactKeys(account, accountKeys)
+			|| !validateGhostMode(account.at("ghostMode"), error)) {
+			return false;
+		}
+		if (!bundle.at("filters").is_array()
+			|| !bundle.at("exclusions").is_array()
+			|| bundle.at("filters").size() > 1000
+			|| bundle.at("exclusions").size() > 5000) {
+			*error = u"The filter list is invalid or too large."_q;
+			return false;
+		}
+		const auto &filterJson = bundle.at("filters");
+		const auto filterKeys = std::vector<std::string>{
+			"dialogId", "text", "enabled", "reversed", "caseInsensitive",
+		};
+		auto filters = std::vector<RegexFilter>();
+		filters.reserve(filterJson.size());
+		for (const auto &entry : filterJson) {
+			if (!hasExactKeys(entry, filterKeys)
+				|| !entry.at("text").is_string()
+				|| !entry.at("enabled").is_boolean()
+				|| !entry.at("reversed").is_boolean()
+				|| !entry.at("caseInsensitive").is_boolean()
+				|| (!entry.at("dialogId").is_null()
+					&& !entry.at("dialogId").is_number_integer())) {
+				*error = u"A filter entry has invalid fields."_q;
+				return false;
+			}
+			const auto text = entry.at("text").get<std::string>();
+			if (text.empty() || text.size() > 4096) {
+				*error = u"A filter pattern is empty or too long."_q;
+				return false;
+			}
+			auto filter = RegexFilter();
+			const auto id = QUuid::createUuid().toRfc4122();
+			filter.id.assign(id.begin(), id.end());
+			filter.text = text;
+			filter.enabled = entry.at("enabled").get<bool>();
+			filter.reversed = entry.at("reversed").get<bool>();
+			filter.caseInsensitive = entry.at("caseInsensitive").get<bool>();
+			if (!entry.at("dialogId").is_null()) {
+				filter.dialogId = entry.at("dialogId").get<ID>();
+			}
+			int flags = UREGEX_MULTILINE;
+			if (filter.caseInsensitive) {
+				flags |= UREGEX_CASE_INSENSITIVE;
+			}
+			auto status = U_ZERO_ERROR;
+			auto pattern = std::unique_ptr<icu::RegexPattern>(icu::RegexPattern::compile(
+				icu::UnicodeString::fromUTF8(filter.text),
+				flags,
+				status));
+			if (!pattern || U_FAILURE(status)) {
+				*error = u"A filter contains an invalid regular expression."_q;
+				return false;
+			}
+			filters.push_back(std::move(filter));
+		}
+		auto exclusions = std::vector<RegexFilterGlobalExclusion>();
+		auto seen = std::set<std::pair<ID, std::size_t>>();
+		const auto exclusionKeys = std::vector<std::string>{ "dialogId", "filterIndex" };
+		for (const auto &entry : bundle.at("exclusions")) {
+			if (!hasExactKeys(entry, exclusionKeys)
+				|| !entry.at("dialogId").is_number_integer()
+				|| !entry.at("filterIndex").is_number_integer()) {
+				*error = u"A filter exclusion has invalid fields."_q;
+				return false;
+			}
+			const auto dialogId = entry.at("dialogId").get<ID>();
+			const auto index = entry.at("filterIndex").get<std::size_t>();
+			if (index >= filters.size() || !seen.emplace(dialogId, index).second) {
+				*error = u"A filter exclusion points to a missing or duplicate filter."_q;
+				return false;
+			}
+			exclusions.push_back({
+				.fakeId = 0,
+				.dialogId = dialogId,
+				.filterId = filters[index].id,
+			});
+		}
+		result->settings = preferences;
+		result->ghostMode = account.at("ghostMode");
+		result->filters = std::move(filters);
+		result->exclusions = std::move(exclusions);
+		return true;
+	} catch (const std::exception &) {
+		*error = u"The settings file contains invalid JSON data."_q;
+		return false;
+	}
+}
+
+bool writeSettingsFile(const json &contents) {
+	auto file = QSaveFile(getSettingsFilePath());
+	if (!file.open(QIODevice::WriteOnly)) {
+		return false;
+	}
+	const auto bytes = QByteArray::fromStdString(contents.dump(4));
+	return file.write(bytes) == bytes.size() && file.commit();
+}
+
+bool restoreSettingsFile(bool existed, const QByteArray &previous) {
+	if (!existed) {
+		return !QFile::exists(getSettingsFilePath())
+			|| QFile::remove(getSettingsFilePath());
+	}
+	auto file = QSaveFile(getSettingsFilePath());
+	if (!file.open(QIODevice::WriteOnly)) {
+		return false;
+	}
+	return file.write(previous) == previous.size() && file.commit();
 }
 
 void repaintApp() {
@@ -444,6 +847,217 @@ void AyuSettings::save() {
 	file.open(getSettingsPath());
 	file << p.dump(4);
 	file.close();
+}
+
+QByteArray AyuSettings::exportTransfer(uint64 accountId) {
+	const auto current = json(getInstance());
+	auto preferences = json::object();
+	for (const auto &key : transferSettingKeys()) {
+		preferences[key] = current.at(key);
+	}
+	auto messageShot = json::object();
+	for (const auto &key : messageShotTransferKeys()) {
+		messageShot[key] = current.at("messageShotSettings").at(key);
+	}
+	preferences["messageShotSettings"] = std::move(messageShot);
+
+	const auto ghostKey = getInstance().getOverriddenGhostUserId(accountId);
+	const auto ghost = getInstance()._ghostAccounts.find(ghostKey);
+	const auto ghostSettings = (ghost == end(getInstance()._ghostAccounts))
+		? json(GhostModeAccountSettings())
+		: json(*ghost->second);
+
+	const auto filters = AyuDatabase::getAllRegexFilters();
+	auto filterIndexes = std::map<std::vector<char>, std::size_t>();
+	auto filterData = json::array();
+	for (const auto &filter : filters) {
+		const auto index = filterData.size();
+		filterIndexes[filter.id] = index;
+		filterData.push_back({
+			{ "dialogId", filter.dialogId ? json(*filter.dialogId) : json(nullptr) },
+			{ "text", filter.text },
+			{ "enabled", filter.enabled },
+			{ "reversed", filter.reversed },
+			{ "caseInsensitive", filter.caseInsensitive },
+		});
+	}
+	auto exclusions = json::array();
+	for (const auto &exclusion : AyuDatabase::getAllFiltersExclusions()) {
+		const auto i = filterIndexes.find(exclusion.filterId);
+		if (i != end(filterIndexes)) {
+			exclusions.push_back({
+				{ "dialogId", exclusion.dialogId },
+				{ "filterIndex", i->second },
+			});
+		}
+	}
+	return QByteArray::fromStdString(json{
+		{ "format", "SleepyGram.settings" },
+		{ "version", 1 },
+		{ "settings", std::move(preferences) },
+		{ "accountSettings", {{ "ghostMode", ghostSettings }} },
+		{ "filters", std::move(filterData) },
+		{ "exclusions", std::move(exclusions) },
+	}.dump(4));
+}
+
+QString AyuSettings::previewTransfer(
+		const QByteArray &data,
+		uint64 accountId,
+		QString *error) {
+	Expects(error != nullptr);
+	if (!accountId) {
+		*error = u"The active account is unavailable."_q;
+		return QString();
+	}
+	auto parsed = SettingsTransferData();
+	if (!parseSettingsTransfer(data, &parsed, error)) {
+		return QString();
+	}
+	const auto chatFilterCount = std::ranges::count_if(
+		parsed.filters,
+		[](const auto &filter) { return filter.dialogId.has_value(); });
+	const auto ghostScope = parsed.settings.at("useGlobalGhostMode").get<bool>()
+		? tr::ayu_SettingsImportGhostGlobal(tr::now)
+		: tr::ayu_SettingsImportGhostAccount(tr::now);
+	return tr::ayu_SettingsImportPreview(tr::now)
+		.arg(int(transferSettingKeys().size() - 1 + messageShotTransferKeys().size()))
+		.arg(int(parsed.filters.size()))
+		.arg(int(chatFilterCount))
+		.arg(int(parsed.exclusions.size()))
+		.arg(ghostScope);
+}
+
+bool AyuSettings::applyTransfer(const QByteArray &data, uint64 accountId) {
+	auto error = QString();
+	auto parsed = SettingsTransferData();
+	if (!accountId || !parseSettingsTransfer(data, &parsed, &error)) {
+		return false;
+	}
+
+	const auto previousSettingsFileExists = QFile::exists(getSettingsFilePath());
+	auto previousSettingsFile = QByteArray();
+	if (previousSettingsFileExists) {
+		QFile file(getSettingsFilePath());
+		if (!file.open(QIODevice::ReadOnly)) {
+			return false;
+		}
+		previousSettingsFile = file.readAll();
+		if (file.error() != QFileDevice::NoError) {
+			return false;
+		}
+	}
+
+	const auto previousFilters = AyuDatabase::getAllRegexFilters();
+	const auto previousExclusions = AyuDatabase::getAllFiltersExclusions();
+	auto stagedJson = json(getInstance());
+	for (const auto &key : transferSettingKeys()) {
+		if (key == "messageShotSettings") {
+			continue;
+		}
+		stagedJson[key] = parsed.settings.at(key);
+	}
+	auto stagedMessageShot = stagedJson.at("messageShotSettings");
+	for (const auto &key : messageShotTransferKeys()) {
+		stagedMessageShot[key] = parsed.settings.at("messageShotSettings").at(key);
+	}
+	stagedJson["messageShotSettings"] = std::move(stagedMessageShot);
+	const auto importedGhostKey = parsed.settings.at("useGlobalGhostMode").get<bool>()
+		? uint64(0)
+		: accountId;
+	stagedJson["ghostModeSettings"][std::to_string(importedGhostKey)] = parsed.ghostMode;
+	if (!parsed.ghostMode.at("rememberGhostRead").get<bool>()) {
+		if (importedGhostKey) {
+			stagedJson["ghostReadState"].erase(std::to_string(accountId));
+		} else {
+			stagedJson["ghostReadState"] = json::object();
+		}
+	}
+
+	auto staged = AyuSettings();
+	try {
+		from_json(stagedJson, staged);
+	} catch (const std::exception &) {
+		return false;
+	}
+	const auto stagedDiskJson = json(staged);
+	if (!writeSettingsFile(stagedDiskJson)) {
+		return false;
+	}
+	if (!AyuDatabase::replaceAllRegexFilters(parsed.filters, parsed.exclusions)) {
+		if (!restoreSettingsFile(previousSettingsFileExists, previousSettingsFile)) {
+			LOG(("AyuGramSettings: could not restore settings file after filter import failure"));
+		}
+		return false;
+	}
+
+	auto &settings = getInstance();
+	auto previousLiveJson = json(settings);
+	auto previousLive = previousLiveJson;
+	previousLive.erase("ghostModeSettings");
+	previousLive.erase("ghostReadState");
+	previousLive.erase("deletedMessagePolicies");
+	const auto liveGhostKey = parsed.settings.at("useGlobalGhostMode").get<bool>()
+		? uint64(0)
+		: accountId;
+	const auto previousGhost = settings._ghostAccounts.find(liveGhostKey);
+	const auto hadPreviousGhost = previousGhost != end(settings._ghostAccounts);
+	const auto previousGhostJson = hadPreviousGhost
+		? json(*previousGhost->second)
+		: json();
+	auto liveImport = stagedDiskJson;
+	liveImport.erase("ghostModeSettings");
+	liveImport.erase("ghostReadState");
+	liveImport.erase("deletedMessagePolicies");
+	try {
+		from_json(liveImport, settings);
+		auto ghost = settings._ghostAccounts.find(liveGhostKey);
+		if (ghost == end(settings._ghostAccounts)) {
+			ghost = settings._ghostAccounts.emplace(
+				liveGhostKey,
+				std::make_unique<GhostModeAccountSettings>()).first;
+		}
+		from_json(parsed.ghostMode, *ghost->second);
+		if (!ghost->second->rememberGhostRead()) {
+			if (liveGhostKey) {
+				settings._ghostReadStates.erase(accountId);
+			} else {
+				settings._ghostReadStates.clear();
+			}
+		}
+	} catch (const std::exception &) {
+		try {
+			from_json(previousLive, settings);
+			if (hadPreviousGhost) {
+				from_json(previousGhostJson, *settings._ghostAccounts.at(liveGhostKey));
+			} else {
+				settings._ghostAccounts.erase(liveGhostKey);
+			}
+		} catch (const std::exception &) {
+			LOG(("AyuGramSettings: failed to restore live settings after apply failure"));
+		}
+		if (!AyuDatabase::replaceAllRegexFilters(previousFilters, previousExclusions)) {
+			LOG(("AyuGramSettings: failed to restore filters after settings apply failure"));
+		}
+		if (!restoreSettingsFile(previousSettingsFileExists, previousSettingsFile)) {
+			LOG(("AyuGramSettings: failed to restore settings after apply failure"));
+		}
+		return false;
+	}
+	AyuInfra::initUiSettings();
+	AyuFeatures::StreamerMode::apply(settings.streamerMode());
+#ifdef Q_OS_WIN
+	AyuAssets::loadAppIco();
+	reloadAppIconFromTaskBar();
+#endif
+	Window::OverrideApplicationIcon(AyuAssets::currentAppLogo());
+	Core::App().refreshApplicationIcon();
+	Core::App().tray().updateIconCounters();
+	Core::App().domain().notifyUnreadBadgeChanged();
+	FiltersCacheController::rebuildCache();
+	FiltersCacheController::fireUpdate();
+	repaintApp();
+	return true;
 }
 
 void AyuSettings::reset() {

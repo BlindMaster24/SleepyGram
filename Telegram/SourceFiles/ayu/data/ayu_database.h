@@ -52,6 +52,9 @@ void deleteExclusion(ID dialogId, std::vector<char> filterId);
 
 void deleteAllFilters();
 void deleteAllExclusions();
+bool replaceAllRegexFilters(
+	const std::vector<RegexFilter> &filters,
+	const std::vector<RegexFilterGlobalExclusion> &exclusions);
 
 bool hasFilters();
 bool hasPerDialogFilters();
