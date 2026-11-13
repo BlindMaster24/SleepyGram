@@ -1192,14 +1192,15 @@ private:
 
 	crl::time _firstContentDeadline = 0;
 	rpl::lifetime _viewerLifetime;
-	rpl::lifetime _latestSelectionLifetime;
+	rpl::lifetime _latestSelectionPageLifetime;
 	int _latestSelectionGeneration = 0;
 	int _latestSelectionTarget = 0;
 	Data::MessagePosition _latestSelectionAround;
 	std::vector<FullMsgId> _latestSelectionIds;
 	base::flat_set<FullMsgId> _latestSelectionSeen;
 	LatestSelectionDone _latestSelectionDone;
-	rpl::lifetime _rangeSelectionLifetime;
+	rpl::lifetime _rangeSelectionPageLifetime;
+	base::Timer _selectionPageTimeout;
 	int _rangeSelectionGeneration = 0;
 	FullMsgId _rangeSelectionFrom;
 	FullMsgId _rangeSelectionTo;

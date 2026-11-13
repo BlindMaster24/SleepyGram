@@ -110,6 +110,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtWidgets/QApplication>
 #include <QtCore/QMimeData>
 
+#include <memory>
+
 // AyuGram includes
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
@@ -127,6 +129,7 @@ constexpr auto kScrollDateHideOnDayCrossingTimeout = crl::time(3000);
 constexpr auto kSendingLandingArmTimeout = crl::time(1000);
 constexpr auto kSendingLandingSettleTimeout = crl::time(600);
 constexpr auto kSendingLandingCheckDelay = crl::time(100);
+constexpr auto kSelectionPageTimeout = crl::time(15000);
 
 [[nodiscard]] std::unique_ptr<TranslateTracker> MaybeTranslateTracker(
 		History *history) {
@@ -641,6 +644,15 @@ ListWidget::ListWidget(
 	}
 
 	_scrollDateHideTimer.setCallback([this] { scrollDateHideByTimer(); });
+	_selectionPageTimeout.setCallback([=] {
+		if (_rangeSelectionTo) {
+			_rangeSelectionPageLifetime.destroy();
+			finishRangeSelection(LatestSelectionStatus::Failed);
+		} else if (_latestSelectionTarget > 0) {
+			_latestSelectionPageLifetime.destroy();
+			finishLatestSelection(LatestSelectionStatus::Failed);
+		}
+	});
 
 	if (const auto window = controllerOrNull()) {
 		using PlayRequest = ChatHelpers::EmojiInteractionPlayRequest;
@@ -2235,8 +2247,6 @@ void ListWidget::selectItemsUpTo(not_null<HistoryItem*> item) {
 	if (!bounds) {
 		return;
 	}
-	_rangeSelectionLifetime.destroy();
-	_rangeSelectionLifetime = rpl::lifetime();
 	++_rangeSelectionGeneration;
 	_rangeSelectionFrom = bounds->first;
 	_rangeSelectionTo = bounds->second;
@@ -2306,7 +2316,6 @@ void ListWidget::cancelRangeSelection() {
 		return;
 	}
 	++_rangeSelectionGeneration;
-	_rangeSelectionLifetime.destroy();
 	finishRangeSelection(LatestSelectionStatus::Cancelled);
 }
 
@@ -2321,11 +2330,25 @@ void ListWidget::loadRangeSelectionPage() {
 		return;
 	}
 	constexpr auto kPageSize = 100;
+	_rangeSelectionPageLifetime.destroy();
+	_rangeSelectionPageLifetime = rpl::lifetime();
+	_selectionPageTimeout.callOnce(kSelectionPageTimeout);
+	const auto pageHandled = std::make_shared<bool>(false);
 	_delegate->listSource(around, 0, kPageSize
-	) | rpl::take(1) | rpl::on_next([=](Data::MessagesSlice &&slice) {
-		if (generation != _rangeSelectionGeneration) {
+	) | rpl::on_next_done([=](Data::MessagesSlice &&slice) {
+		if (*pageHandled
+			|| generation != _rangeSelectionGeneration
+			|| _rangeSelectionTo == FullMsgId()) {
 			return;
 		}
+		const auto settled = (int(slice.ids.size()) >= kPageSize)
+			|| slice.skippedAfter.has_value();
+		if (!settled) {
+			return;
+		}
+		*pageHandled = true;
+		_rangeSelectionPageLifetime.destroy();
+		_selectionPageTimeout.cancel();
 		auto ids = std::move(slice.ids);
 		ranges::sort(ids, [&](const FullMsgId &a, const FullMsgId &b) {
 			const auto first = session().data().message(a);
@@ -2366,19 +2389,25 @@ void ListWidget::loadRangeSelectionPage() {
 				finishRangeSelection(LatestSelectionStatus::Failed);
 			} else {
 				_rangeSelectionAround = newest->position();
-				loadRangeSelectionPage();
+				base::call_delayed(0, this, [=] {
+					if (generation == _rangeSelectionGeneration
+						&& _rangeSelectionTo) {
+						loadRangeSelectionPage();
+					}
+				});
 			}
 		}
-	}, _rangeSelectionLifetime) | rpl::on_next_done([=] {
-		if (generation == _rangeSelectionGeneration
+	}, [=] {
+		if (!*pageHandled && generation == _rangeSelectionGeneration
 			&& _rangeSelectionTo) {
 			finishRangeSelection(LatestSelectionStatus::Failed);
 		}
-	}, _rangeSelectionLifetime);
+	}, _rangeSelectionPageLifetime);
 }
 
 void ListWidget::finishRangeSelection(LatestSelectionStatus status) {
-	_rangeSelectionLifetime.destroy();
+	_selectionPageTimeout.cancel();
+	_rangeSelectionPageLifetime.destroy();
 	auto current = std::vector<FullMsgId>();
 	for (const auto &[id, data] : _selected) {
 		current.push_back(id);
@@ -2460,8 +2489,6 @@ void ListWidget::selectLatestMessages(
 		return;
 	}
 	clearSelected();
-	_latestSelectionLifetime.destroy();
-	_latestSelectionLifetime = rpl::lifetime();
 	++_latestSelectionGeneration;
 	_latestSelectionTarget = count;
 	_latestSelectionAround = Data::MaxMessagePosition;
@@ -2476,7 +2503,6 @@ void ListWidget::cancelLatestMessageSelection() {
 		return;
 	}
 	++_latestSelectionGeneration;
-	_latestSelectionLifetime.destroy();
 	finishLatestSelection(LatestSelectionStatus::Cancelled);
 }
 
@@ -2485,11 +2511,25 @@ void ListWidget::loadLatestSelectionPage() {
 	const auto generation = _latestSelectionGeneration;
 	const auto around = _latestSelectionAround;
 	constexpr auto kPageSize = 100;
+	_latestSelectionPageLifetime.destroy();
+	_latestSelectionPageLifetime = rpl::lifetime();
+	_selectionPageTimeout.callOnce(kSelectionPageTimeout);
+	const auto pageHandled = std::make_shared<bool>(false);
 	_delegate->listSource(around, kPageSize, 0
-	) | rpl::take(1) | rpl::on_next([=](Data::MessagesSlice &&slice) {
-		if (generation != _latestSelectionGeneration) {
+	) | rpl::on_next_done([=](Data::MessagesSlice &&slice) {
+		if (*pageHandled
+			|| generation != _latestSelectionGeneration
+			|| !_latestSelectionTarget) {
 			return;
 		}
+		const auto settled = (int(slice.ids.size()) >= kPageSize)
+			|| slice.skippedBefore.has_value();
+		if (!settled) {
+			return;
+		}
+		*pageHandled = true;
+		_latestSelectionPageLifetime.destroy();
+		_selectionPageTimeout.cancel();
 		auto ids = std::move(slice.ids);
 		ranges::sort(ids, [&](const FullMsgId &a, const FullMsgId &b) {
 			const auto first = session().data().message(a);
@@ -2522,18 +2562,24 @@ void ListWidget::loadLatestSelectionPage() {
 		} else {
 			_latestSelectionAround
 				= session().data().message(ids.front())->position();
-			loadLatestSelectionPage();
+			base::call_delayed(0, this, [=] {
+				if (generation == _latestSelectionGeneration
+					&& _latestSelectionTarget > 0) {
+					loadLatestSelectionPage();
+				}
+			});
 		}
-	}, _latestSelectionLifetime) | rpl::on_next_done([=] {
-		if (generation == _latestSelectionGeneration
+	}, [=] {
+		if (!*pageHandled && generation == _latestSelectionGeneration
 			&& _latestSelectionTarget > 0) {
 			finishLatestSelection(LatestSelectionStatus::Failed);
 		}
-	}, _latestSelectionLifetime);
+	}, _latestSelectionPageLifetime);
 }
 
 void ListWidget::finishLatestSelection(LatestSelectionStatus status) {
-	_latestSelectionLifetime.destroy();
+	_selectionPageTimeout.cancel();
+	_latestSelectionPageLifetime.destroy();
 	if ((status == LatestSelectionStatus::Completed
 			|| status == LatestSelectionStatus::Capped)
 		&& !_selected.empty()) {
