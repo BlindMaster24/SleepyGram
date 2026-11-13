@@ -1956,7 +1956,12 @@ void FillContextMenuItems(
 		Tgw::AddLogAction(result, view, list->controller()->uiShow());
 	}
 
-	AddCopyLinkAction(result, link);
+	const auto monospaceLink = link
+		&& dynamic_cast<const MonospaceClickHandler*>(link.get());
+	if (!monospaceLink
+		|| !list->hasCopyRestriction(view ? view->data() : item)) {
+		AddCopyLinkAction(result, link);
+	}
 	AddMessageActions(result, request, list);
 
 	const auto wasAmount = result->actions().size();

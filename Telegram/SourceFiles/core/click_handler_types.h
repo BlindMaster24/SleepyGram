@@ -251,6 +251,8 @@ public:
 	MonospaceClickHandler(const QString &text, EntityType type);
 
 	void onClick(ClickContext context) const override;
+	QString copyToClipboardText() const override;
+	QString copyToClipboardContextItemText() const override;
 
 	TextEntity getTextEntity() const override;
 

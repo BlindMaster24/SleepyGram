@@ -1003,6 +1003,19 @@ void BuildMessagesSection(SectionBuilder &builder) {
 
 	builder.add(nullptr, [] {
 		return SearchEntry{
+			.id = u"chat/copy-monospace"_q,
+			.title = tr::lng_settings_copy_monospace_on_click(tr::now),
+			.keywords = { u"code"_q, u"monospace"_q, u"copy"_q, u"click"_q },
+			.checkIcon = Core::App().settings().readPref<bool>(
+				Core::kCopyMonospaceOnClickKey,
+				false)
+				? SearchEntryCheckIcon::Checked
+				: SearchEntryCheckIcon::Unchecked,
+		};
+	});
+
+	builder.add(nullptr, [] {
+		return SearchEntry{
 			.id = u"chat/quick-reaction"_q,
 			.title = tr::lng_settings_chat_quick_action_react(tr::now),
 			.keywords = { u"quick"_q, u"reaction"_q, u"double"_q, u"click"_q },
@@ -1576,6 +1589,31 @@ void SetupMessages(
 		Core::App().settings().setSendSubmitWay(value);
 		Core::App().saveSettingsDelayed();
 	});
+
+	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
+
+	const auto copyMonospace = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_copy_monospace_on_click(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kCopyMonospaceOnClickKey,
+				false),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	copyMonospace->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kCopyMonospaceOnClickKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+	if (highlights) {
+		highlights->push_back({ u"chat/copy-monospace"_q, {
+			copyMonospace,
+			{ .radius = st::boxRadius },
+		} });
+	}
 
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
 

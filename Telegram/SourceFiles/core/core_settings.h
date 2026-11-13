@@ -39,6 +39,8 @@ namespace Core {
 
 inline constexpr auto kScreenReaderModeDisabledKey
 	= "screen-reader-mode-disabled"_cs;
+inline constexpr auto kCopyMonospaceOnClickKey
+	= "copy-monospace-on-click"_cs;
 
 struct WindowPosition {
 	int32 moncrc = 0;

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_keys.h"
 #include "chat_helpers/bot_command.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "core/local_url_handlers.h"
 #include "core/file_utilities.h"
 #include "mainwidget.h"
@@ -881,15 +882,50 @@ void MonospaceClickHandler::onClick(ClickContext context) const {
 	if (button != Qt::LeftButton && button != Qt::MiddleButton) {
 		return;
 	}
+	if (!Core::App().settings().readPref<bool>(
+			Core::kCopyMonospaceOnClickKey,
+			false)) {
+		return;
+	}
 	const auto my = context.other.value<ClickHandlerContext>();
-	if (const auto controller = my.sessionWindow.get()) {
+	const auto controller = my.sessionWindow.get();
+	const auto item = controller
+		? controller->session().data().message(my.itemId)
+		: nullptr;
+	if (item) {
+		const auto peer = item->history()->peer;
+		if (!peer->allowsForwarding() || item->forbidsForward()) {
+			if (controller) {
+				controller->showToast({
+					.text = { peer->isBroadcast()
+						? tr::lng_error_nocopy_channel(tr::now)
+						: peer->isUser()
+						? tr::lng_error_nocopy_user(tr::now)
+						: tr::lng_error_nocopy_group(tr::now) },
+				});
+			}
+			return;
+		}
+	}
+	if (controller) {
 		controller->showToast({
 			.text = { tr::lng_text_copied(tr::now) },
 			.iconLottie = u"toast/copy"_q,
 			.iconLottieSize = st::toastLottieIconSize,
 		});
 	}
-	TextUtilities::SetClipboardText(TextForMimeData::Simple(_text.trimmed()));
+	const auto text = (_entity.type() == EntityType::Pre)
+		? _text
+		: _text.trimmed();
+	TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
+}
+
+QString MonospaceClickHandler::copyToClipboardText() const {
+	return (_entity.type() == EntityType::Pre) ? _text : _text.trimmed();
+}
+
+QString MonospaceClickHandler::copyToClipboardContextItemText() const {
+	return tr::lng_context_copy_text(tr::now);
 }
 
 auto MonospaceClickHandler::getTextEntity() const -> TextEntity {

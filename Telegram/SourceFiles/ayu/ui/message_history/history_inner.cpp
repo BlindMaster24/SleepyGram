@@ -1347,7 +1347,12 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		const auto actionText = link
 									? link->copyToClipboardContextItemText()
 									: QString();
-		if (!actionText.isEmpty()) {
+		const auto monospace = dynamic_cast<MonospaceClickHandler*>(link.get());
+		const auto copyRestricted = item
+			&& (!item->history()->peer->allowsForwarding()
+				|| item->forbidsForward());
+		if (!actionText.isEmpty()
+			&& (!monospace || !copyRestricted)) {
 			_menu->addAction(
 				actionText,
 				[text = link->copyToClipboardText()]
@@ -1584,12 +1589,16 @@ void InnerWidget::mouseActionFinish(const QPoint &screenPos, Qt::MouseButton but
 	_wasSelectedText = false;
 
 	if (activated) {
+		const auto itemId = _mouseActionItem
+			? _mouseActionItem->data()->fullId()
+			: FullMsgId();
 		mouseActionCancel();
 		ActivateClickHandler(window(),
 							 activated,
 							 {
 								 button,
 								 QVariant::fromValue(ClickHandlerContext{
+									 .itemId = itemId,
 									 .elementDelegate = [weak = base::make_weak(this)]
 									 {
 										 return weak.get();

@@ -12,7 +12,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/event_filter.h"
 #include "base/unixtime.h"
 #include "base/weak_ptr.h"
+#include "core/application.h"
 #include "core/click_handler_types.h"
+#include "core/core_settings.h"
 #include "core/credits_amount.h"
 #include "core/file_utilities.h"
 #include "iv/iv_rich_message_html_export.h"
@@ -1584,7 +1586,9 @@ MarkdownArticleHitTestResult MarkdownDocumentWidget::dragActionFinish(
 			if (monospace || pre) {
 				clickHandlerContext = viewerToastClickHandlerContext();
 			}
-			if (monospace) {
+			if (monospace && Core::App().settings().readPref<bool>(
+					Core::kCopyMonospaceOnClickKey,
+					false)) {
 				showToast(tr::lng_code_copied(tr::now));
 			}
 			auto context = ClickContext();
