@@ -290,6 +290,10 @@ void Histories::readInboxTill(
 				tillId.bare);
 		}
 	}
+	const auto suppressed = !ghost.sendReadMessages();
+	if (suppressed) {
+		sendReadRequests();
+	}
 
 	DEBUG_LOG(("Reading: readInboxTill %1, force %2."
 		).arg(tillId.bare
@@ -320,6 +324,15 @@ void Histories::readInboxTill(
 		return;
 	} else if (!history->trackUnreadMessages()) {
 		DEBUG_LOG(("Reading: readInboxTill finish 2."));
+		return;
+	}
+	if (suppressed) {
+		const auto stillUnread = history->countStillUnreadLocal(tillId);
+		if (stillUnread) {
+			history->setInboxReadTill(tillId);
+			history->setUnreadCount(*stillUnread);
+			history->updateChatListEntry();
+		}
 		return;
 	}
 	const auto maybeState = lookup(history);

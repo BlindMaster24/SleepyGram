@@ -989,6 +989,10 @@ void RepliesList::readTill(
 		_unreadCount.current(),
 		_inboxReadTillId);
 	const auto fast = (tillIdItem && tillIdItem->out()) || !unreadCount.has_value();
+	const auto suppressed = !ghost.sendReadMessages();
+	if (suppressed && _readRequestTimer.isActive()) {
+		_readRequestTimer.cancel();
+	}
 	if (was < now || (fast && now == was)) {
 		setInboxReadTill(now, unreadCount);
 		const auto rootFullId = FullMsgId(_history->peer->id, _rootId);
@@ -997,10 +1001,12 @@ void RepliesList::readTill(
 				post->setCommentsInboxReadTill(now);
 			}
 		}
-		if (!_readRequestTimer.isActive()) {
-			_readRequestTimer.callOnce(fast ? 0 : kReadRequestTimeout);
-		} else if (fast && _readRequestTimer.remainingTime() > 0) {
-			_readRequestTimer.callOnce(0);
+		if (!suppressed) {
+			if (!_readRequestTimer.isActive()) {
+				_readRequestTimer.callOnce(fast ? 0 : kReadRequestTimeout);
+			} else if (fast && _readRequestTimer.remainingTime() > 0) {
+				_readRequestTimer.callOnce(0);
+			}
 		}
 	}
 	if (const auto topic = _history->peer->forumTopicFor(_rootId)) {
@@ -1031,7 +1037,8 @@ void RepliesList::sendReadTillRequest() {
 }
 
 void RepliesList::reloadUnreadCountIfNeeded() {
-	if (unreadCountKnown()) {
+	if (!AyuSettings::ghost(&_history->session()).sendReadMessages()
+		|| unreadCountKnown()) {
 		return;
 	} else if (inboxReadTillId() < computeInboxReadTillFull()) {
 		_readRequestTimer.callOnce(0);
