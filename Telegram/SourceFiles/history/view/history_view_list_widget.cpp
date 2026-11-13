@@ -2167,6 +2167,8 @@ bool ListWidget::isPressInSelectedText(
 }
 
 void ListWidget::cancelSelection() {
+	cancelRangeSelection();
+	cancelLatestMessageSelection();
 	const auto hadSelectedText = (_selectedTextItem != nullptr);
 	clearSelected();
 	clearTextSelection();
@@ -2212,90 +2214,352 @@ void ListWidget::selectItemAsGroup(not_null<HistoryItem*> item) {
 	}
 }
 
-std::vector<not_null<HistoryItem*>> ListWidget::collectBetween(
-		not_null<HistoryItem*> from,
-		not_null<HistoryItem*> to,
-		int max) const {
-	const auto fromView = viewForItem(from);
-	const auto toView = viewForItem(to);
-	if (!fromView || !toView) {
-		return {};
-	}
-	const auto fromIt = ranges::find(_items, not_null{ fromView });
-	const auto toIt = ranges::find(_items, not_null{ toView });
-	if (fromIt == end(_items) || toIt == end(_items) || toIt <= fromIt) {
-		return {};
-	}
-	auto result = std::vector<not_null<HistoryItem*>>();
-	result.reserve(max);
-	result.push_back(from);
-	result.push_back(to);
-	for (auto i = fromIt + 1; i != toIt; ++i) {
-		if (int(result.size()) > max) {
-			return {};
-		}
-		const auto item = (*i)->data();
-		if (_delegate->listIsItemGoodForSelection(item)) {
-			result.push_back(item);
-		}
-	}
-	if (int(result.size()) > max) {
-		return {};
-	}
-	return result;
-}
-
-std::vector<not_null<HistoryItem*>> ListWidget::selectionUpTo(
-		not_null<HistoryItem*> item) const {
-	if (_selected.empty()) {
-		return {};
-	}
-	const auto group = session().data().groups().find(item);
-	const auto toItem = group ? group->items.front() : item;
-	auto nearestItem = (HistoryItem*)nullptr;
-	auto topToBottom = false;
-	auto minDiff = int64(0);
-	for (const auto &entry : _selected) {
-		const auto selected = session().data().message(entry.first);
-		if (!selected) {
-			continue;
-		}
-		const auto diff = entry.first.msg.bare - toItem->fullId().msg.bare;
-		if (!nearestItem || std::abs(diff) < minDiff) {
-			nearestItem = selected;
-			minDiff = std::abs(diff);
-			topToBottom = (diff < 0);
-		}
-	}
-	if (!nearestItem) {
-		return {};
-	}
-	const auto startItem = topToBottom ? nearestItem : toItem.get();
-	const auto endItem = topToBottom ? toItem.get() : nearestItem;
-	const auto left = MaxSelectedItems
-		- int(_selected.size())
-		+ (topToBottom ? 0 : 1);
-	return collectBetween(startItem, endItem, left);
-}
-
 bool ListWidget::canSelectItemsUpTo(not_null<HistoryItem*> item) const {
-	return !hasSelectRestriction() && !selectionUpTo(item).empty();
+	const auto context = _delegate->listContext();
+	return (context == Context::History || context == Context::Replies)
+		&& !hasSelectRestriction()
+		&& !_selected.empty()
+		&& (viewForItem(item) != nullptr)
+		&& selectionBounds(item).has_value();
 }
 
 void ListWidget::selectItemsUpTo(not_null<HistoryItem*> item) {
-	if (hasSelectRestriction()) {
+	cancelLatestMessageSelection();
+	cancelRangeSelection();
+	const auto context = _delegate->listContext();
+	if (hasSelectRestriction()
+		|| (context != Context::History && context != Context::Replies)) {
 		return;
 	}
-	const auto list = selectionUpTo(item);
-	if (list.empty()) {
+	const auto bounds = selectionBounds(item);
+	if (!bounds) {
 		return;
 	}
-	clearTextSelection();
-	for (const auto &i : list) {
-		changeSelectionAsGroup(_selected, i, SelectAction::Select);
+	_rangeSelectionLifetime.destroy();
+	_rangeSelectionLifetime = rpl::lifetime();
+	++_rangeSelectionGeneration;
+	_rangeSelectionFrom = bounds->first;
+	_rangeSelectionTo = bounds->second;
+	_rangeSelectionAround = {};
+	_rangeSelectionIds.clear();
+	_rangeSelectionSeen.clear();
+	_rangeSelectionInitialSelected.clear();
+	for (const auto &[id, data] : _selected) {
+		_rangeSelectionInitialSelected.push_back(id);
 	}
-	pushSelectedItems();
-	update();
+	const auto from = session().data().message(_rangeSelectionFrom);
+	if (from) {
+		_rangeSelectionAround = from->position();
+		controller()->showToast(
+			tr::lng_context_select_latest_progress(tr::now));
+		loadRangeSelectionPage();
+	}
+}
+
+std::optional<std::pair<FullMsgId, FullMsgId>>
+ListWidget::selectionBounds(not_null<HistoryItem*> item) const {
+	if (_selected.empty()) {
+		return std::nullopt;
+	}
+	const auto group = session().data().groups().find(item);
+	const auto toItem = group ? group->items.front().get() : item.get();
+	const auto targetView = viewForItem(toItem);
+	if (!targetView) {
+		return std::nullopt;
+	}
+	const auto target = ranges::find(_items, not_null{ targetView });
+	if (target == end(_items)) {
+		return std::nullopt;
+	}
+	auto start = (HistoryItem*)(nullptr);
+	auto finish = (HistoryItem*)(nullptr);
+	auto nearest = std::numeric_limits<int>::max();
+	const auto targetIndex = int(target - begin(_items));
+	for (const auto before : { true, false }) {
+		for (auto distance = 1; ; ++distance) {
+			const auto index = targetIndex + (before ? -distance : distance);
+			if (index < 0 || index >= int(_items.size())) {
+				break;
+			}
+			const auto candidate = _items[index]->data();
+			if (_selected.contains(candidate->fullId())) {
+				if (distance < nearest) {
+					start = _delegate->listIsLessInOrder(candidate, toItem)
+						? candidate.get()
+						: toItem;
+					finish = (start == candidate.get())
+						? toItem
+						: candidate.get();
+					nearest = distance;
+				}
+				break;
+			}
+		}
+	}
+	return (start && finish)
+		? std::optional(std::pair{ start->fullId(), finish->fullId() })
+		: std::nullopt;
+}
+
+void ListWidget::cancelRangeSelection() {
+	if (!_rangeSelectionTo) {
+		return;
+	}
+	++_rangeSelectionGeneration;
+	_rangeSelectionLifetime.destroy();
+	finishRangeSelection(LatestSelectionStatus::Cancelled);
+}
+
+void ListWidget::loadRangeSelectionPage() {
+	Expects(_rangeSelectionTo);
+	const auto generation = _rangeSelectionGeneration;
+	const auto around = _rangeSelectionAround;
+	const auto from = session().data().message(_rangeSelectionFrom);
+	const auto to = session().data().message(_rangeSelectionTo);
+	if (!from || !to) {
+		finishRangeSelection(LatestSelectionStatus::Failed);
+		return;
+	}
+	constexpr auto kPageSize = 100;
+	_delegate->listSource(around, 0, kPageSize
+	) | rpl::take(1) | rpl::on_next([=](Data::MessagesSlice &&slice) {
+		if (generation != _rangeSelectionGeneration) {
+			return;
+		}
+		auto ids = std::move(slice.ids);
+		ranges::sort(ids, [&](const FullMsgId &a, const FullMsgId &b) {
+			const auto first = session().data().message(a);
+			const auto second = session().data().message(b);
+			return first && second
+				? _delegate->listIsLessInOrder(first, second)
+				: a < b;
+		});
+		auto foundEnd = false;
+		auto crossedEnd = false;
+		for (const auto &id : ids) {
+			const auto item = session().data().message(id);
+			if (!item) {
+				continue;
+			} else if (id == _rangeSelectionTo) {
+				foundEnd = true;
+			} else if (_delegate->listIsLessInOrder(to, item)) {
+				crossedEnd = true;
+				break;
+			} else if (_delegate->listIsItemGoodForSelection(item)
+				&& !_selected.contains(id)
+				&& _rangeSelectionSeen.emplace(id).second) {
+				_rangeSelectionIds.push_back(id);
+			}
+			if (int(_rangeSelectionIds.size() + _selected.size())
+				> MaxSelectedItems) {
+				finishRangeSelection(LatestSelectionStatus::Capped);
+				return;
+			}
+		}
+		if (foundEnd) {
+			finishRangeSelection(LatestSelectionStatus::Completed);
+		} else if (crossedEnd || slice.skippedAfter == 0 || ids.empty()) {
+			finishRangeSelection(LatestSelectionStatus::Failed);
+		} else {
+			const auto newest = session().data().message(ids.back());
+			if (!newest || !(around < newest->position())) {
+				finishRangeSelection(LatestSelectionStatus::Failed);
+			} else {
+				_rangeSelectionAround = newest->position();
+				loadRangeSelectionPage();
+			}
+		}
+	}, _rangeSelectionLifetime) | rpl::on_next_done([=] {
+		if (generation == _rangeSelectionGeneration
+			&& _rangeSelectionTo) {
+			finishRangeSelection(LatestSelectionStatus::Failed);
+		}
+	}, _rangeSelectionLifetime);
+}
+
+void ListWidget::finishRangeSelection(LatestSelectionStatus status) {
+	_rangeSelectionLifetime.destroy();
+	auto current = std::vector<FullMsgId>();
+	for (const auto &[id, data] : _selected) {
+		current.push_back(id);
+	}
+	if ((status == LatestSelectionStatus::Completed
+			|| status == LatestSelectionStatus::Capped)
+		&& (current != _rangeSelectionInitialSelected)) {
+		status = LatestSelectionStatus::Cancelled;
+	}
+	if (status == LatestSelectionStatus::Completed) {
+		auto selected = _selected;
+		for (const auto &id : _rangeSelectionIds) {
+			if (const auto item = session().data().message(id);
+				item && _delegate->listIsItemGoodForSelection(item)) {
+				const auto had = selected.contains(id);
+				changeSelectionAsGroup(selected, item, SelectAction::Select);
+				if (!had && !selected.contains(id)) {
+					status = LatestSelectionStatus::Capped;
+					break;
+				}
+			}
+		}
+		if (status == LatestSelectionStatus::Completed) {
+			_selected = std::move(selected);
+			clearTextSelection();
+			pushSelectedItems();
+			update();
+		}
+	}
+	const auto selectedCount = int(_selected.size());
+	_rangeSelectionFrom = FullMsgId();
+	_rangeSelectionTo = FullMsgId();
+	_rangeSelectionAround = Data::MessagePosition();
+	_rangeSelectionIds.clear();
+	_rangeSelectionSeen.clear();
+	_rangeSelectionInitialSelected.clear();
+	const auto show = _delegate->listUiShow();
+	switch (status) {
+	case LatestSelectionStatus::Completed:
+		show->showToast(tr::lng_context_select_latest_done(
+			tr::now,
+			lt_count,
+			selectedCount));
+		break;
+	case LatestSelectionStatus::Capped:
+		show->showToast(tr::lng_context_select_latest_capped(tr::now));
+		break;
+	case LatestSelectionStatus::Failed:
+		show->showToast(tr::lng_context_select_latest_failed(tr::now));
+		break;
+	case LatestSelectionStatus::Cancelled:
+		show->showToast(tr::lng_context_select_latest_cancelled(tr::now));
+		break;
+	case LatestSelectionStatus::Unsupported:
+		show->showToast(tr::lng_context_select_latest_unsupported(tr::now));
+		break;
+	}
+}
+
+void ListWidget::selectLatestMessages(
+		int count,
+		LatestSelectionDone done) {
+	cancelLatestMessageSelection();
+	cancelRangeSelection();
+	const auto context = _delegate->listContext();
+	if ((context != Context::History && context != Context::Replies)
+		|| hasSelectRestriction()) {
+		if (done) {
+			done(LatestSelectionStatus::Unsupported, 0);
+		}
+		return;
+	} else if (count <= 0 || count > MaxSelectedItems) {
+		if (done) {
+			done(count > MaxSelectedItems
+				? LatestSelectionStatus::Capped
+				: LatestSelectionStatus::Failed,
+				0);
+		}
+		return;
+	}
+	clearSelected();
+	_latestSelectionLifetime.destroy();
+	_latestSelectionLifetime = rpl::lifetime();
+	++_latestSelectionGeneration;
+	_latestSelectionTarget = count;
+	_latestSelectionAround = Data::MaxMessagePosition;
+	_latestSelectionIds.clear();
+	_latestSelectionSeen.clear();
+	_latestSelectionDone = std::move(done);
+	loadLatestSelectionPage();
+}
+
+void ListWidget::cancelLatestMessageSelection() {
+	if (!_latestSelectionTarget) {
+		return;
+	}
+	++_latestSelectionGeneration;
+	_latestSelectionLifetime.destroy();
+	finishLatestSelection(LatestSelectionStatus::Cancelled);
+}
+
+void ListWidget::loadLatestSelectionPage() {
+	Expects(_latestSelectionTarget > 0);
+	const auto generation = _latestSelectionGeneration;
+	const auto around = _latestSelectionAround;
+	constexpr auto kPageSize = 100;
+	_delegate->listSource(around, kPageSize, 0
+	) | rpl::take(1) | rpl::on_next([=](Data::MessagesSlice &&slice) {
+		if (generation != _latestSelectionGeneration) {
+			return;
+		}
+		auto ids = std::move(slice.ids);
+		ranges::sort(ids, [&](const FullMsgId &a, const FullMsgId &b) {
+			const auto first = session().data().message(a);
+			const auto second = session().data().message(b);
+			return first && second
+				? _delegate->listIsLessInOrder(first, second)
+				: a < b;
+		});
+		for (auto i = ids.rbegin(); i != ids.rend(); ++i) {
+			if (int(_latestSelectionIds.size()) >= _latestSelectionTarget) {
+				break;
+			} else if (_latestSelectionSeen.contains(*i)) {
+				continue;
+			}
+			if (const auto item = session().data().message(*i);
+				item && _delegate->listIsItemGoodForSelection(item)) {
+				_latestSelectionSeen.emplace(*i);
+				_latestSelectionIds.push_back(*i);
+			}
+		}
+		if (int(_latestSelectionIds.size()) >= _latestSelectionTarget) {
+			finishLatestSelection(LatestSelectionStatus::Completed);
+		} else if (slice.skippedBefore == 0) {
+			finishLatestSelection(LatestSelectionStatus::Completed);
+		} else if (ids.empty()
+			|| !session().data().message(ids.front())
+			|| !(session().data().message(ids.front())->position()
+				< _latestSelectionAround)) {
+			finishLatestSelection(LatestSelectionStatus::Failed);
+		} else {
+			_latestSelectionAround
+				= session().data().message(ids.front())->position();
+			loadLatestSelectionPage();
+		}
+	}, _latestSelectionLifetime) | rpl::on_next_done([=] {
+		if (generation == _latestSelectionGeneration
+			&& _latestSelectionTarget > 0) {
+			finishLatestSelection(LatestSelectionStatus::Failed);
+		}
+	}, _latestSelectionLifetime);
+}
+
+void ListWidget::finishLatestSelection(LatestSelectionStatus status) {
+	_latestSelectionLifetime.destroy();
+	if ((status == LatestSelectionStatus::Completed
+			|| status == LatestSelectionStatus::Capped)
+		&& !_selected.empty()) {
+		status = LatestSelectionStatus::Cancelled;
+	}
+	if (status == LatestSelectionStatus::Completed
+		|| status == LatestSelectionStatus::Capped) {
+		clearSelected();
+		for (const auto &id : _latestSelectionIds) {
+			if (const auto item = session().data().message(id);
+				item && _delegate->listIsItemGoodForSelection(item)) {
+				changeSelection(_selected, item, SelectAction::Select);
+			}
+		}
+		pushSelectedItems();
+		update();
+	}
+	_latestSelectionTarget = 0;
+	_latestSelectionAround = Data::MessagePosition();
+	_latestSelectionIds.clear();
+	_latestSelectionSeen.clear();
+	const auto selected = int(_selected.size());
+	auto done = std::move(_latestSelectionDone);
+	if (done) {
+		done(status, selected);
+	}
 }
 
 void ListWidget::showEditCaptionUploadLayer(not_null<HistoryItem*> item) {

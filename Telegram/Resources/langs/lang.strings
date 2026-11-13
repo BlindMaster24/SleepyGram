@@ -5407,6 +5407,17 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_context_auto_delete_in" = "auto-deletes in {duration}";
 "lng_context_select_msg" = "Select";
 "lng_context_select_msg_bulk" = "Select up to this message";
+"lng_context_select_latest" = "Select latest messages";
+"lng_context_select_latest_prompt" = "How many latest messages would you like to select?";
+"lng_context_select_latest_invalid" = "Enter a number from 1 to 10,000.";
+"lng_context_select_latest_progress" = "Loading messages for selection…";
+"lng_context_select_latest_cancel" = "Cancel message selection";
+"lng_context_select_latest_done#one" = "Selected {count} message.";
+"lng_context_select_latest_done#other" = "Selected {count} messages.";
+"lng_context_select_latest_capped" = "You can select up to 10,000 messages at a time.";
+"lng_context_select_latest_failed" = "Couldn't load messages for selection.";
+"lng_context_select_latest_unsupported" = "Message selection isn't available in this chat.";
+"lng_context_select_latest_cancelled" = "Message selection cancelled.";
 "lng_context_deselect_msg" = "Deselect";
 "lng_context_report_msg" = "Report";
 "lng_context_pin_msg" = "Pin";

@@ -69,6 +69,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/confirm_box.h"
 #include "ui/boxes/show_or_premium_box.h"
 #include "ui/widgets/fields/input_field.h"
+#include "ui/layers/generic_box.h"
+#include "styles/style_widgets.h"
 #include "ui/power_saving.h"
 #include "boxes/delete_messages_box.h"
 #include "boxes/moderate_messages_box.h"
@@ -1354,6 +1356,99 @@ void AddSelectionAction(
 	if (!AddClearSelectionAction(menu, request, list)) {
 		AddSelectMessageAction(menu, request, list);
 	}
+	const auto context = list->delegate()->listContext();
+	if (list->latestMessageSelectionInProgress()) {
+		menu->addAction(
+			tr::lng_context_select_latest_cancel(tr::now),
+			crl::guard(list, [=] {
+				list->cancelLatestMessageSelection();
+			}),
+			&st::menuIconCancel);
+		return;
+	} else if (list->rangeSelectionInProgress()) {
+		menu->addAction(
+			tr::lng_context_select_latest_cancel(tr::now),
+			crl::guard(list, [=] {
+				list->cancelRangeSelection();
+			}),
+			&st::menuIconCancel);
+		return;
+	} else if (list->hasSelectRestriction()
+		|| (context != Context::History && context != Context::Replies)) {
+		return;
+	}
+	menu->addAction(
+		tr::lng_context_select_latest(tr::now),
+		crl::guard(list, [=] {
+			const auto controller = list->controller();
+			controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+				box->setTitle(tr::lng_context_select_latest(tr::now));
+				const auto field = box->addRow(object_ptr<Ui::InputField>(
+					box,
+					st::defaultInputField,
+					Ui::InputField::Mode::SingleLine,
+					tr::lng_context_select_latest_prompt()));
+				field->setInputMethodHints(Qt::ImhDigitsOnly);
+				field->setMaxLength(5);
+				const auto submit = crl::guard(list, [=] {
+					bool valid = false;
+					const auto count = field->getLastText().toInt(&valid);
+					if (!valid || count <= 0) {
+						field->showError();
+						controller->showToast(
+							tr::lng_context_select_latest_invalid(tr::now));
+						return;
+					} else if (count > MaxSelectedItems) {
+						field->showError();
+						controller->showToast(
+							tr::lng_context_select_latest_capped(tr::now));
+						return;
+					}
+					box->closeBox();
+					controller->showToast(
+						tr::lng_context_select_latest_progress(tr::now));
+					list->selectLatestMessages(count, crl::guard(list, [=](
+							ListWidget::LatestSelectionStatus status,
+							int selected) {
+							switch (status) {
+							case ListWidget::LatestSelectionStatus::Completed:
+								controller->showToast(
+									tr::lng_context_select_latest_done(
+										tr::now,
+										lt_count,
+										selected));
+								break;
+							case ListWidget::LatestSelectionStatus::Capped:
+								controller->showToast(
+									tr::lng_context_select_latest_capped(
+										tr::now));
+								break;
+							case ListWidget::LatestSelectionStatus::Failed:
+								controller->showToast(
+									tr::lng_context_select_latest_failed(
+										tr::now));
+								break;
+							case ListWidget::LatestSelectionStatus::Unsupported:
+								controller->showToast(
+									tr::lng_context_select_latest_unsupported(
+										tr::now));
+								break;
+							case ListWidget::LatestSelectionStatus::Cancelled:
+								controller->showToast(
+									tr::lng_context_select_latest_cancelled(
+										tr::now));
+								break;
+							}
+						}));
+				});
+				field->submits(
+				) | rpl::on_next(submit, field->lifetime());
+				box->addButton(tr::lng_box_done(), submit);
+				box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+				box->setFocusCallback([=] { field->setFocusFast(); });
+			}));
+		}),
+		&st::menuIconSelect);
 }
 
 bool AddViewStatisticsAction(

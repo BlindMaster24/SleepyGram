@@ -51,6 +51,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/menu/menu_multiline_action.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/layers/generic_box.h"
+#include "ui/vertical_list.h"
+#include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/elastic_scroll.h"
 #include "ui/delayed_activation.h"
 #include "ui/power_saving.h"
@@ -136,6 +139,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/ui/dialogs_video_userpic.h"
 #include "styles/style_chat.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_widgets.h"
 
 #include <QtGui/QClipboard>
 #include <QtWidgets/QApplication>
@@ -909,6 +913,208 @@ bool HistoryInner::hasSelectRestriction() const {
 		return !channel->canDeleteMessages();
 	}
 	return true;
+}
+
+void HistoryInner::selectLatestMessages(
+		int count,
+		LatestSelectionDone done) {
+	cancelLatestMessageSelection();
+	if (_peer->isRepliesChat()) {
+		if (done) {
+			done(LatestSelectionStatus::Unsupported, 0);
+		}
+		return;
+	}
+	if (count <= 0 || count > MaxSelectedItems || hasSelectRestriction()) {
+		if (done) {
+			done(count > MaxSelectedItems
+				? LatestSelectionStatus::Capped
+				: LatestSelectionStatus::Failed,
+				0);
+		}
+		return;
+	}
+	clearSelected();
+	_latestSelectionGeneration++;
+	_latestSelectionTarget = count;
+	_latestSelectionHistory = _history;
+	_latestSelectionOffset = MsgId();
+	_latestSelectionIds.clear();
+	_latestSelectionSeen.clear();
+	_latestSelectionDone = std::move(done);
+	addLatestLocalMessages(_history);
+	if (int(_latestSelectionIds.size()) >= _latestSelectionTarget) {
+		finishLatestSelection(LatestSelectionStatus::Completed);
+		return;
+	}
+	loadLatestSelectionPage();
+}
+
+void HistoryInner::cancelLatestMessageSelection() {
+	if (_latestSelectionRequest) {
+		++_latestSelectionGeneration;
+		const auto request = _latestSelectionRequest;
+		_latestSelectionRequest = 0;
+		_latestSelectionHistory->owner().histories().cancelRequest(
+			request);
+		finishLatestSelection(LatestSelectionStatus::Cancelled);
+	}
+}
+
+void HistoryInner::loadLatestSelectionPage() {
+	Expects(_latestSelectionHistory != nullptr);
+	const auto history = _latestSelectionHistory;
+	const auto offset = _latestSelectionOffset;
+	const auto generation = _latestSelectionGeneration;
+	constexpr auto kPageSize = 100;
+	const auto request = history->owner().histories().sendRequest(
+		history,
+		Data::Histories::RequestType::History,
+		[=](Fn<void()> finish) {
+			return history->session().api().request(MTPmessages_GetHistory(
+				history->peer->input(),
+				MTP_int(offset),
+				MTP_int(0),
+				MTP_int(0),
+				MTP_int(kPageSize),
+				MTP_int(0),
+				MTP_int(0),
+				MTP_long(0)
+			)).done(crl::guard(this, [=](const MTPmessages_Messages &result) {
+				if (generation != _latestSelectionGeneration) {
+					finish();
+					return;
+				}
+				_latestSelectionRequest = 0;
+				auto messages = QVector<MTPMessage>();
+				switch (result.type()) {
+				case mtpc_messages_messages:
+					messages = result.c_messages_messages().vmessages().v;
+					break;
+				case mtpc_messages_messagesSlice:
+					messages = result.c_messages_messagesSlice().vmessages().v;
+					break;
+				case mtpc_messages_channelMessages:
+					messages = result.c_messages_channelMessages().vmessages().v;
+					break;
+				case mtpc_messages_messagesNotModified:
+					break;
+				}
+				history->owner().processExistingMessages(
+					history->peer->asChannel(),
+					result);
+				auto pageIds = std::vector<FullMsgId>();
+				auto oldest = MsgId();
+				for (const auto &message : messages) {
+					const auto id = IdFromMessage(message);
+					oldest = oldest ? std::min(oldest, id) : id;
+					pageIds.push_back(FullMsgId(history->peer->id, id));
+				}
+				ranges::sort(pageIds, ranges::less(), [&](const FullMsgId &id) {
+					const auto item = session().data().message(id);
+					return item ? item->position() : Data::MinMessagePosition;
+				});
+				for (const auto &id : ranges::views::reverse(pageIds)) {
+					if (int(_latestSelectionIds.size())
+						>= _latestSelectionTarget) {
+						break;
+					} else if (_latestSelectionSeen.contains(id)) {
+						continue;
+					}
+					if (const auto item = session().data().message(id);
+						item && item->canBeSelected()) {
+						_latestSelectionSeen.emplace(id);
+						_latestSelectionIds.push_back(id);
+					}
+				}
+				finish();
+				if (int(_latestSelectionIds.size()) >= _latestSelectionTarget) {
+					finishLatestSelection(LatestSelectionStatus::Completed);
+				} else if (messages.size() < kPageSize) {
+					if (_latestSelectionHistory == _history && _migrated) {
+						_latestSelectionHistory = _migrated;
+						_latestSelectionOffset = MsgId();
+						addLatestLocalMessages(_migrated);
+						if (int(_latestSelectionIds.size())
+							>= _latestSelectionTarget) {
+							finishLatestSelection(
+								LatestSelectionStatus::Completed);
+							return;
+						}
+						loadLatestSelectionPage();
+					} else {
+						finishLatestSelection(
+							LatestSelectionStatus::Completed);
+					}
+				} else if (!oldest || (offset && oldest >= offset)) {
+					finishLatestSelection(LatestSelectionStatus::Failed);
+				} else {
+					_latestSelectionOffset = oldest;
+					loadLatestSelectionPage();
+				}
+			})).fail(crl::guard(this, [=](const MTP::Error &) {
+				finish();
+				if (generation == _latestSelectionGeneration) {
+					_latestSelectionRequest = 0;
+					finishLatestSelection(LatestSelectionStatus::Failed);
+				}
+			})).send();
+		});
+	_latestSelectionRequest = request;
+}
+
+void HistoryInner::addLatestLocalMessages(not_null<History*> history) {
+	for (auto i = history->blocks.rbegin();
+		i != history->blocks.rend()
+			&& int(_latestSelectionIds.size()) < _latestSelectionTarget;
+		++i) {
+		for (auto j = (*i)->messages.rbegin();
+			j != (*i)->messages.rend()
+				&& int(_latestSelectionIds.size()) < _latestSelectionTarget;
+		++j) {
+			const auto item = (*j)->data();
+			const auto id = item->fullId();
+			if (item->isLocal()
+				&& item->canBeSelected()
+				&& _latestSelectionSeen.emplace(id).second) {
+				_latestSelectionIds.push_back(id);
+			}
+		}
+	}
+}
+
+void HistoryInner::finishLatestSelection(LatestSelectionStatus status) {
+	_latestSelectionRequest = 0;
+	if ((status == LatestSelectionStatus::Completed
+			|| status == LatestSelectionStatus::Capped)
+		&& !_selected.empty()) {
+		status = LatestSelectionStatus::Cancelled;
+	}
+	if (status == LatestSelectionStatus::Completed
+		|| status == LatestSelectionStatus::Capped) {
+		clearSelected();
+		for (const auto &id : _latestSelectionIds) {
+			if (const auto item = session().data().message(id);
+				item && item->canBeSelected()) {
+				changeSelection(
+					&_selected,
+					item,
+					SelectAction::Select);
+			}
+		}
+		update();
+		_widget->updateTopBarSelection();
+	}
+	_latestSelectionHistory = nullptr;
+	_latestSelectionTarget = 0;
+	_latestSelectionOffset = MsgId();
+	_latestSelectionIds.clear();
+	_latestSelectionSeen.clear();
+	const auto selected = int(_selected.size());
+	auto done = std::move(_latestSelectionDone);
+	if (done) {
+		done(status, selected);
+	}
 }
 
 void HistoryInner::messagesReceived(
@@ -3099,6 +3305,90 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		return;
 	}
 	const auto controller = _controller;
+	if (_latestSelectionRequest) {
+		_menu->addAction(
+			tr::lng_context_select_latest_cancel(tr::now),
+			crl::guard(this, [=] { cancelLatestMessageSelection(); }),
+			&st::menuIconCancel);
+	} else if (!hasSelectRestriction() && !_peer->isRepliesChat()) {
+		_menu->addAction(
+			tr::lng_context_select_latest(tr::now),
+			crl::guard(this, [=] {
+				controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+					box->setTitle(tr::lng_context_select_latest(tr::now));
+					const auto content = box->verticalLayout();
+					const auto field = content->add(
+						object_ptr<Ui::InputField>(
+							content,
+							st::defaultInputField,
+							Ui::InputField::Mode::SingleLine,
+							tr::lng_context_select_latest_prompt()),
+						st::boxRowPadding);
+					field->setInputMethodHints(Qt::ImhDigitsOnly);
+					field->setMaxLength(5);
+					const auto submit = crl::guard(this, [=] {
+						bool valid = false;
+						const auto count = field->getLastText().toInt(&valid);
+						if (!valid || count <= 0) {
+							field->showError();
+							controller->showToast(
+								tr::lng_context_select_latest_invalid(
+									tr::now));
+							return;
+						}
+						if (count > MaxSelectedItems) {
+							field->showError();
+							controller->showToast(
+								tr::lng_context_select_latest_capped(
+									tr::now));
+							return;
+						}
+						box->closeBox();
+						controller->showToast(
+							tr::lng_context_select_latest_progress(tr::now));
+						selectLatestMessages(count, crl::guard(this, [=](
+								LatestSelectionStatus status,
+								int selected) {
+								switch (status) {
+								case LatestSelectionStatus::Completed:
+									controller->showToast(
+										tr::lng_context_select_latest_done(
+											tr::now,
+											lt_count,
+											selected));
+									break;
+								case LatestSelectionStatus::Capped:
+									controller->showToast(
+										tr::lng_context_select_latest_capped(
+											tr::now));
+									break;
+								case LatestSelectionStatus::Failed:
+									controller->showToast(
+										tr::lng_context_select_latest_failed(
+											tr::now));
+									break;
+								case LatestSelectionStatus::Unsupported:
+									controller->showToast(
+										tr::lng_context_select_latest_unsupported(
+											tr::now));
+									break;
+								case LatestSelectionStatus::Cancelled:
+									controller->showToast(
+										tr::lng_context_select_latest_cancelled(
+											tr::now));
+									break;
+								}
+							}));
+					});
+				field->submits(
+				) | rpl::on_next(submit, field->lifetime());
+				box->addButton(tr::lng_box_done(), submit);
+				box->addButton(tr::lng_cancel(), [=] { box->closeBox(); });
+				box->setFocusCallback([=] { field->setFocusFast(); });
+			}));
+			}),
+			&st::menuIconSelect);
+	}
 	const auto canViewMessageStats = [&](HistoryItem *item) {
 		if (!item
 			|| item->isService()
@@ -3387,28 +3677,35 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 					return;
 				}
 				const auto toItem = groupLeaderOrSelf(item);
-				auto topToBottom = false;
-				auto nearestItem = (HistoryItem*)(nullptr);
-				{
-					auto minDiff = std::numeric_limits<int>::max();
-					for (const auto &item : _selected) {
-						const auto diff = item->fullId().msg.bare
-							- toItem->fullId().msg.bare;
-						if (std::abs(diff) < minDiff) {
-							nearestItem = item;
-							minDiff = std::abs(diff);
-							topToBottom = (diff < 0);
+				const auto left = MaxSelectedItems
+					- selectedState.count
+					+ 1;
+				HistoryItem *start = nullptr;
+				HistoryItem *end = nullptr;
+				auto nearestDistance = std::numeric_limits<int>::max();
+				const auto targetView = viewByItem(toItem);
+				for (const auto isBefore : { true, false }) {
+					auto current = targetView;
+					for (auto distance = 1; current; ++distance) {
+						current = isBefore
+							? prevItem(current)
+							: nextItem(current);
+						if (!current) {
+							break;
+						}
+						if (_selected.contains(current->data())) {
+							if (distance < nearestDistance) {
+								start = isBefore ? current->data() : toItem;
+								end = isBefore ? toItem : current->data();
+								nearestDistance = distance;
+							}
+							break;
 						}
 					}
 				}
-				if (!nearestItem) {
+				if (!start || !end) {
 					return;
 				}
-				const auto start = (topToBottom ? nearestItem : toItem);
-				const auto end = (topToBottom ? toItem : nearestItem);
-				const auto left = MaxSelectedItems
-					- selectedState.count
-					+ (topToBottom ? 0 : 1);
 				if (collectBetween(start, end, left).empty()) {
 					return;
 				}
@@ -5073,6 +5370,8 @@ void HistoryInner::setupThanosEffect() {
 }
 
 HistoryInner::~HistoryInner() {
+	_latestSelectionDone = nullptr;
+	cancelLatestMessageSelection();
 	if (_overlayHost) {
 		_overlayHost->hide();
 	}

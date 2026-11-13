@@ -118,6 +118,14 @@ class HistoryInner
 	, public Ui::AbstractTooltipShower {
 public:
 	using Element = HistoryView::Element;
+	enum class LatestSelectionStatus {
+		Completed,
+		Capped,
+		Failed,
+		Unsupported,
+		Cancelled,
+	};
+	using LatestSelectionDone = Fn<void(LatestSelectionStatus, int)>;
 
 	HistoryInner(
 		not_null<HistoryWidget*> historyWidget,
@@ -196,6 +204,8 @@ public:
 	[[nodiscard]] auto getSelectedEphemeral() const
 		-> std::vector<not_null<HistoryItem*>>;
 	[[nodiscard]] bool hasSelectedItems() const;
+	void selectLatestMessages(int count, LatestSelectionDone done);
+	void cancelLatestMessageSelection();
 	[[nodiscard]] HistoryView::SelectionModeResult inSelectionMode() const;
 	[[nodiscard]] HistoryView::SelectionModeResult inSelectionMode(
 		const Element *view) const;
@@ -516,6 +526,9 @@ private:
 		int fromitem,
 		int toblock,
 		int toitem) const;
+	void loadLatestSelectionPage();
+	void addLatestLocalMessages(not_null<History*> history);
+	void finishLatestSelection(LatestSelectionStatus status);
 	bool isSelected(
 		not_null<SelectedItems*> toItems,
 		not_null<HistoryItem*> item) const;
@@ -642,6 +655,14 @@ private:
 
 	style::cursor _cursor = style::cur_default;
 	SelectedItems _selected;
+	int _latestSelectionRequest = 0;
+	int _latestSelectionGeneration = 0;
+	int _latestSelectionTarget = 0;
+	History *_latestSelectionHistory = nullptr;
+	MsgId _latestSelectionOffset;
+	std::vector<FullMsgId> _latestSelectionIds;
+	base::flat_set<FullMsgId> _latestSelectionSeen;
+	LatestSelectionDone _latestSelectionDone;
 	HistoryItem *_selectedTextItem = nullptr;
 	MessageSelection _selectedTextSelection;
 	TextForMimeData _selectedText;

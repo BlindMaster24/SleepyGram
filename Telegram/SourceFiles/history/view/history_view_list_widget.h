@@ -345,6 +345,15 @@ class ListWidget final
 	, public ElementDelegate
 	, public Ui::AbstractTooltipShower {
 public:
+	enum class LatestSelectionStatus {
+		Completed,
+		Capped,
+		Failed,
+		Cancelled,
+		Unsupported,
+	};
+	using LatestSelectionDone = Fn<void(LatestSelectionStatus, int)>;
+
 	ListWidget(
 		QWidget *parent,
 		not_null<Main::Session*> session,
@@ -408,6 +417,15 @@ public:
 	void selectItem(not_null<HistoryItem*> item);
 	void selectItemAsGroup(not_null<HistoryItem*> item);
 	void selectItemsUpTo(not_null<HistoryItem*> item);
+	void selectLatestMessages(int count, LatestSelectionDone done);
+	void cancelLatestMessageSelection();
+	void cancelRangeSelection();
+	[[nodiscard]] bool rangeSelectionInProgress() const {
+		return bool(_rangeSelectionTo);
+	}
+	[[nodiscard]] bool latestMessageSelectionInProgress() const {
+		return _latestSelectionTarget > 0;
+	}
 	[[nodiscard]] bool canSelectItemsUpTo(
 		not_null<HistoryItem*> item) const;
 	void showEditCaptionUploadLayer(not_null<HistoryItem*> item);
@@ -869,12 +887,13 @@ private:
 		SelectAction action) const;
 	void changeAccessibilitySelection(int index, SelectAction action);
 	void extendAccessibilitySelection(int oldIndex, int newIndex);
-	[[nodiscard]] std::vector<not_null<HistoryItem*>> selectionUpTo(
-		not_null<HistoryItem*> item) const;
-	[[nodiscard]] std::vector<not_null<HistoryItem*>> collectBetween(
-		not_null<HistoryItem*> from,
-		not_null<HistoryItem*> to,
-		int max) const;
+	void loadLatestSelectionPage();
+	void finishLatestSelection(LatestSelectionStatus status);
+	void addLatestLocalMessages();
+	void loadRangeSelectionPage();
+	void finishRangeSelection(LatestSelectionStatus status);
+	[[nodiscard]] std::optional<std::pair<FullMsgId, FullMsgId>>
+	selectionBounds(not_null<HistoryItem*> item) const;
 
 	SelectedMap::iterator itemUnderPressSelection();
 	SelectedMap::const_iterator itemUnderPressSelection() const;
@@ -1173,6 +1192,21 @@ private:
 
 	crl::time _firstContentDeadline = 0;
 	rpl::lifetime _viewerLifetime;
+	rpl::lifetime _latestSelectionLifetime;
+	int _latestSelectionGeneration = 0;
+	int _latestSelectionTarget = 0;
+	Data::MessagePosition _latestSelectionAround;
+	std::vector<FullMsgId> _latestSelectionIds;
+	base::flat_set<FullMsgId> _latestSelectionSeen;
+	LatestSelectionDone _latestSelectionDone;
+	rpl::lifetime _rangeSelectionLifetime;
+	int _rangeSelectionGeneration = 0;
+	FullMsgId _rangeSelectionFrom;
+	FullMsgId _rangeSelectionTo;
+	Data::MessagePosition _rangeSelectionAround;
+	std::vector<FullMsgId> _rangeSelectionIds;
+	base::flat_set<FullMsgId> _rangeSelectionSeen;
+	std::vector<FullMsgId> _rangeSelectionInitialSelected;
 
 };
 
