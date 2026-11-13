@@ -299,7 +299,8 @@ public:
 		return reply && !reply->fields().manualQuote;
 	}
 	bool elementShownUnread(not_null<const Element*> view) override {
-		return view->data()->unread(view->data()->history());
+		const auto item = view->data();
+		return item->unread(item->history()) && !item->isGhostReadHidden();
 	}
 	void elementSendBotCommand(
 			const QString &command,

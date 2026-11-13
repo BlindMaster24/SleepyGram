@@ -308,7 +308,11 @@ int RepliesList::unreadCountCurrent() const {
 }
 
 rpl::producer<std::optional<int>> RepliesList::unreadCountValue() const {
-	return _unreadCount.value();
+	return _unreadCount.value() | rpl::map([=](std::optional<int> count) {
+		return count
+			? std::optional<int>(displayedUnreadCount())
+			: count;
+	});
 }
 
 void RepliesList::injectRootMessageAndReverse(not_null<Viewer*> viewer) {
@@ -863,6 +867,32 @@ void RepliesList::setUnreadCount(std::optional<int> count) {
 }
 
 int RepliesList::displayedUnreadCount() const {
+	const auto &ghost = AyuSettings::ghost(&_history->session());
+	if (ghost.isGhostModeActive()
+		&& !ghost.sendReadMessages()
+		&& ghost.rememberGhostRead()) {
+		const auto accountId = _history->session().userId().bare;
+		if (const auto watermark = AyuSettings::ghostReadState(accountId).find(
+				accountId,
+				_history->peer->id.value,
+				_rootId.bare);
+			watermark
+			&& !watermark->manuallyUnread
+			&& watermark->readTill > _inboxReadTillId.bare) {
+			const auto projected = ComputeUnreadCountLocally(
+				watermark->readTill,
+				_rootId,
+				_list,
+				_skippedBefore,
+				_skippedAfter,
+				_fullCount.current(),
+				_unreadCount.current(),
+				_inboxReadTillId);
+			if (projected) {
+				return *projected;
+			}
+		}
+	}
 	return (_inboxReadTillId > 1) ? unreadCountCurrent() : 0;
 }
 
@@ -938,6 +968,16 @@ void RepliesList::readTill(
 	const auto now = tillId;
 	if (now < was) {
 		return;
+	}
+	const auto &ghost = AyuSettings::ghost(&_history->session());
+	if (ghost.isGhostModeActive()
+		&& ghost.rememberGhostRead()
+		&& !ghost.sendReadMessages()) {
+		AyuSettings::advanceGhostRead(
+			_history->session().userId().bare,
+			_history->peer->id.value,
+			_rootId.bare,
+			now.bare);
 	}
 	const auto unreadCount = ComputeUnreadCountLocally(
 		now,

@@ -608,7 +608,8 @@ bool DefaultElementDelegate::elementHideReply(
 
 bool DefaultElementDelegate::elementShownUnread(
 		not_null<const Element*> view) {
-	return view->data()->unread(view->data()->history());
+	const auto item = view->data();
+	return item->unread(item->history()) && !item->isGhostReadHidden();
 }
 
 void DefaultElementDelegate::elementSendBotCommand(

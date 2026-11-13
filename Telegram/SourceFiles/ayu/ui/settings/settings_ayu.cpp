@@ -420,6 +420,19 @@ void BuildGhostEssentials(SectionBuilder &builder) {
 					[state] { return AyuSettings::ghost(state->selectedUserId.current()).sendOfflinePacketAfterOnlineLocked(); },
 					[state](bool v) { AyuSettings::ghost(state->selectedUserId.current()).setSendOfflinePacketAfterOnlineLocked(v); }
 				},
+				NestedEntry{
+					tr::ayu_RememberGhostRead(tr::now),
+					[state] { return AyuSettings::ghost(state->selectedUserId.current()).rememberGhostRead(); },
+					[state](bool v) {
+						if (!v) {
+							AyuSettings::clearGhostReadForPreference(state->selectedUserId.current());
+						}
+						AyuSettings::ghost(state->selectedUserId.current()).setRememberGhostRead(v);
+						AyuSettings::refreshGhostReadPresentation(state->selectedUserId.current());
+					},
+					[] { return false; },
+					[](bool) { }
+				},
 			};
 
 			auto collapsible = AddCollapsibleToggle(

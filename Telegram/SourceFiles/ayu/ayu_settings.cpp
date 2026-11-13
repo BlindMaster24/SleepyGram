@@ -6,6 +6,7 @@
 // Copyright @Radolyn, 2026
 #include "ayu/ayu_settings.h"
 
+#include "base/timer.h"
 #include "lang_auto.h"
 #include "tray.h"
 #include "ayu/ayu_ui_settings.h"
@@ -13,6 +14,7 @@
 #include "ayu/features/streamer_mode/streamer_mode.h"
 #include "ayu/ui/ayu_logo.h"
 #include "core/application.h"
+#include "data/data_histories.h"
 #include "features/filters/filters_cache_controller.h"
 #include "features/translator/ayu_translator.h"
 #include "main/main_domain.h"
@@ -21,6 +23,7 @@
 #include "rpl/combine.h"
 #include "window/window_controller.h"
 
+#include <charconv>
 #include <fstream>
 #include <QApplication>
 
@@ -39,6 +42,13 @@ void repaintApp() {
 }
 
 rpl::lifetime lifetime; // idk reactivity dies when placed in `GhostModeAccountSettings` as field
+
+base::Timer &ghostReadSaveTimer() {
+	static base::Timer timer([] {
+		AyuSettings::save();
+	});
+	return timer;
+}
 
 } // namespace
 
@@ -135,6 +145,12 @@ void GhostModeAccountSettings::setSuggestGhostModeBeforeViewingStory(bool val) {
 	AyuSettings::save();
 }
 
+void GhostModeAccountSettings::setRememberGhostRead(bool val) {
+	if (_rememberGhostRead.current() == val) return;
+	_rememberGhostRead = val;
+	AyuSettings::save();
+}
+
 void GhostModeAccountSettings::setGhostModeEnabled(bool val) {
 	if (!_sendReadMessagesLocked.current()) _sendReadMessages = !val;
 	if (!_sendReadStoriesLocked.current()) _sendReadStories = !val;
@@ -193,6 +209,7 @@ void to_json(nlohmann::json &j, const GhostModeAccountSettings &s) {
 		{"useScheduledMessages", s._useScheduledMessages.current()},
 		{"sendWithoutSound", s._sendWithoutSound.current()},
 		{"suggestGhostModeBeforeViewingStory", s._suggestGhostModeBeforeViewingStory.current()},
+		{"rememberGhostRead", s._rememberGhostRead.current()},
 		{"sendReadMessagesLocked", s._sendReadMessagesLocked.current()},
 		{"sendReadStoriesLocked", s._sendReadStoriesLocked.current()},
 		{"sendOnlinePacketsLocked", s._sendOnlinePacketsLocked.current()},
@@ -218,6 +235,7 @@ void from_json(const nlohmann::json &j, GhostModeAccountSettings &s) {
 			: SendWithoutSoundOption::Never)
 		: sendWithoutSound->get<SendWithoutSoundOption>();
 	s._suggestGhostModeBeforeViewingStory = j.value("suggestGhostModeBeforeViewingStory", true);
+	s._rememberGhostRead = j.value("rememberGhostRead", true);
 	s._sendReadMessagesLocked = j.value("sendReadMessagesLocked", false);
 	s._sendReadStoriesLocked = j.value("sendReadStoriesLocked", false);
 	s._sendOnlinePacketsLocked = j.value("sendOnlinePacketsLocked", false);
@@ -455,6 +473,114 @@ GhostModeAccountSettings &AyuSettings::ghost() {
 		}
 	}
 	return ghost(0);
+}
+
+const GhostReadState &AyuSettings::ghostReadState(uint64 accountId) {
+	const auto &states = getInstance()._ghostReadStates;
+	const auto i = states.find(accountId);
+	if (i != states.end()) {
+		return i->second;
+	}
+	static const auto Empty = GhostReadState();
+	return Empty;
+}
+
+void AyuSettings::advanceGhostRead(
+		uint64 accountId,
+		uint64 peerId,
+		uint64 topicRootId,
+		int64 readTill) {
+	if (!accountId || !peerId || readTill <= 0) {
+		return;
+	}
+	auto &state = getInstance()._ghostReadStates[accountId];
+	const auto previous = state.find(accountId, peerId, topicRootId);
+	if (previous
+		&& previous->readTill >= readTill
+		&& !previous->manuallyUnread) {
+		return;
+	}
+	state.advance(
+		accountId,
+		peerId,
+		topicRootId,
+		readTill);
+	ghostReadSaveTimer().callOnce(500);
+}
+
+void AyuSettings::markGhostReadManuallyUnread(
+		uint64 accountId,
+		uint64 peerId,
+		uint64 topicRootId) {
+	if (!accountId || !peerId) {
+		return;
+	}
+	auto &state = getInstance()._ghostReadStates[accountId];
+	const auto previous = state.find(accountId, peerId, topicRootId);
+	if (previous && previous->manuallyUnread) {
+		return;
+	}
+	state.markManuallyUnread(
+		accountId,
+		peerId,
+		topicRootId);
+	ghostReadSaveTimer().callOnce(500);
+}
+
+void AyuSettings::clearGhostRead(
+		uint64 accountId,
+		uint64 peerId,
+		uint64 topicRootId) {
+	if (!accountId || !peerId) {
+		return;
+	}
+	auto &states = getInstance()._ghostReadStates;
+	const auto i = states.find(accountId);
+	if (i == states.end() || !i->second.find(accountId, peerId, topicRootId)) {
+		return;
+	}
+	i->second.clear(
+		accountId,
+		peerId,
+		topicRootId);
+	ghostReadSaveTimer().callOnce(500);
+}
+
+void AyuSettings::clearGhostReadForPreference(uint64 userId) {
+	auto &settings = getInstance();
+	const auto key = settings.getOverriddenGhostUserId(userId);
+	if (!key) {
+		if (settings._ghostReadStates.empty()) {
+			return;
+		}
+		settings._ghostReadStates.clear();
+	} else if (const auto i = settings._ghostReadStates.find(key);
+		i != settings._ghostReadStates.end()) {
+		if (i->second.all().empty()) {
+			return;
+		}
+		i->second.clearAccount(key);
+	} else {
+		return;
+	}
+	ghostReadSaveTimer().callOnce(500);
+}
+
+void AyuSettings::refreshGhostReadPresentation(uint64 userId) {
+	if (!Core::IsAppLaunched()) {
+		return;
+	}
+	const auto key = getInstance().getOverriddenGhostUserId(userId);
+	for (const auto &[index, account] : Core::App().domain().accounts()) {
+		if (account) {
+			if (const auto session = account->maybeSession();
+				session
+				&& (!key || getInstance().getOverriddenGhostUserId(
+					session->userId().bare) == key)) {
+				session->data().histories().refreshGhostReadPresentation();
+			}
+		}
+	}
 }
 
 void AyuSettings::setUseGlobalGhostMode(bool val) {
@@ -1068,9 +1194,23 @@ void to_json(nlohmann::json &j, const AyuSettings &s) {
 	for (const auto &[key, value] : s._ghostAccounts) {
 		ghostAccounts[std::to_string(key)] = *value;
 	}
+	auto ghostReadAccounts = nlohmann::json::object();
+	for (const auto &[accountId, state] : s._ghostReadStates) {
+		auto watermarks = nlohmann::json::array();
+		for (const auto &[scope, watermark] : state.all()) {
+			watermarks.push_back({
+				{"peerId", scope.peerId},
+				{"topicRootId", scope.topicRootId},
+				{"readTill", watermark.readTill},
+				{"manuallyUnread", watermark.manuallyUnread}
+			});
+		}
+		ghostReadAccounts[std::to_string(accountId)] = std::move(watermarks);
+	}
 
 	j = nlohmann::json{
 		{"ghostModeSettings", ghostAccounts},
+		{"ghostReadState", ghostReadAccounts},
 		{"useGlobalGhostMode", s._useGlobalGhostMode.current()},
 		{"saveDeletedMessages", s._saveDeletedMessages.current()},
 		{"saveMessagesHistory", s._saveMessagesHistory.current()},
@@ -1171,6 +1311,43 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 			auto account = std::make_unique<GhostModeAccountSettings>();
 			value.get_to(*account);
 			s._ghostAccounts[std::stoull(key)] = std::move(account);
+		}
+	}
+	if (j.contains("ghostReadState") && j["ghostReadState"].is_object()) {
+		s._ghostReadStates.clear();
+		for (const auto &[accountKey, watermarks] : j["ghostReadState"].items()) {
+			auto accountId = uint64(0);
+			const auto parsed = std::from_chars(
+				accountKey.data(),
+				accountKey.data() + accountKey.size(),
+				accountId);
+			if (parsed.ec != std::errc()
+				|| parsed.ptr != accountKey.data() + accountKey.size()) {
+				continue;
+			}
+			if (!accountId) {
+				continue;
+			}
+			auto entries = std::map<GhostReadScope, GhostReadWatermark>();
+			if (!watermarks.is_array()) {
+				continue;
+			}
+			for (const auto &entry : watermarks) {
+				try {
+					const auto peerId = entry.value("peerId", uint64(0));
+					const auto topicRootId = entry.value("topicRootId", uint64(0));
+					const auto readTill = entry.value("readTill", int64(0));
+					const auto manuallyUnread = entry.value("manuallyUnread", false);
+					if (peerId && (readTill > 0 || manuallyUnread)) {
+						entries[{ accountId, peerId, topicRootId }] = {
+							readTill,
+						manuallyUnread
+						};
+					}
+				} catch (...) {
+				}
+			}
+			s._ghostReadStates[accountId].replace(std::move(entries));
 		}
 	}
 

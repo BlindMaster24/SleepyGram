@@ -8,6 +8,7 @@
 
 #include "ayu/libs/json.hpp"
 #include "ayu/libs/json_ext.hpp"
+#include "ayu/data/ghost_read_state.h"
 #include "rpl/lifetime.h"
 #include "rpl/producer.h"
 #include "rpl/variable.h"
@@ -96,6 +97,7 @@ public:
 	[[nodiscard]] SendWithoutSoundOption sendWithoutSound() const { return _sendWithoutSound.current(); }
 	[[nodiscard]] bool shouldSendWithoutSound() const;
 	[[nodiscard]] bool suggestGhostModeBeforeViewingStory() const { return _suggestGhostModeBeforeViewingStory.current(); }
+	[[nodiscard]] bool rememberGhostRead() const { return _rememberGhostRead.current(); }
 	[[nodiscard]] bool isGhostModeActive() const { return _ghostModeActive.current(); }
 	[[nodiscard]] bool isUseScheduledMessages() const { return isGhostModeActive() && useScheduledMessages(); }
 
@@ -114,6 +116,7 @@ public:
 	void setUseScheduledMessages(bool val);
 	void setSendWithoutSound(SendWithoutSoundOption val);
 	void setSuggestGhostModeBeforeViewingStory(bool val);
+	void setRememberGhostRead(bool val);
 	void setGhostModeEnabled(bool val);
 
 	void setSendReadMessagesLocked(bool val);
@@ -169,6 +172,7 @@ private:
 	rpl::variable<bool> _useScheduledMessages = false;
 	rpl::variable<SendWithoutSoundOption> _sendWithoutSound = SendWithoutSoundOption::Never;
 	rpl::variable<bool> _suggestGhostModeBeforeViewingStory = true;
+	rpl::variable<bool> _rememberGhostRead = true;
 	rpl::variable<bool> _ghostModeActive = false;
 
 	rpl::variable<bool> _sendReadMessagesLocked = false;
@@ -253,6 +257,19 @@ public:
 	[[nodiscard]] static GhostModeAccountSettings &ghost(not_null<Main::Session*> session);
 	[[nodiscard]] static GhostModeAccountSettings &ghost(uint64 userId);
 	[[nodiscard]] static GhostModeAccountSettings &ghost();
+	[[nodiscard]] static const GhostReadState &ghostReadState(uint64 accountId);
+	static void advanceGhostRead(
+		uint64 accountId,
+		uint64 peerId,
+		uint64 topicRootId,
+		int64 readTill);
+	static void markGhostReadManuallyUnread(
+		uint64 accountId,
+		uint64 peerId,
+		uint64 topicRootId);
+	static void clearGhostRead(uint64 accountId, uint64 peerId, uint64 topicRootId);
+	static void clearGhostReadForPreference(uint64 userId);
+	static void refreshGhostReadPresentation(uint64 userId);
 
 	[[nodiscard]] bool useGlobalGhostMode() const { return _useGlobalGhostMode.current(); }
 	void setUseGlobalGhostMode(bool val);
@@ -709,6 +726,7 @@ private:
 
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
+	std::map<uint64, GhostReadState> _ghostReadStates;
 
 	MessageShotSettings _messageShotSettings;
 };

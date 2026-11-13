@@ -57,6 +57,7 @@ public:
 
 	void unloadAll();
 	void clearAll();
+	void refreshGhostReadPresentation();
 
 	void readInbox(not_null<History*> history);
 	void readInboxTill(not_null<HistoryItem*> item);

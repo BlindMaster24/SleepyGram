@@ -854,7 +854,8 @@ bool PinnedWidget::listElementHideReply(not_null<const Element*> view) {
 }
 
 bool PinnedWidget::listElementShownUnread(not_null<const Element*> view) {
-	return view->data()->unread(view->data()->history());
+	const auto item = view->data();
+	return item->unread(item->history()) && !item->isGhostReadHidden();
 }
 
 bool PinnedWidget::listIsGoodForAroundPosition(

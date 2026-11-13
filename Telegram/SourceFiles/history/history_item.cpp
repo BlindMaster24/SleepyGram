@@ -4835,6 +4835,21 @@ bool HistoryItem::unread(not_null<Data::Thread*> thread) const {
 	return out() || (_flags & MessageFlag::ClientSideUnread);
 }
 
+bool HistoryItem::isGhostReadHidden() const {
+	const auto &ghost = AyuSettings::ghost(&_history->session());
+	if (!ghost.isGhostModeActive()
+		|| ghost.sendReadMessages()
+		|| !ghost.rememberGhostRead()) {
+		return false;
+	}
+	const auto accountId = _history->session().userId().bare;
+	return AyuSettings::ghostReadState(accountId).isHiddenAsRead(
+		accountId,
+		_history->peer->id.value,
+		topicRootId().bare,
+		id.bare);
+}
+
 MsgId HistoryItem::replyToId() const {
 	if (const auto reply = Get<HistoryMessageReply>()) {
 		return reply->messageId();

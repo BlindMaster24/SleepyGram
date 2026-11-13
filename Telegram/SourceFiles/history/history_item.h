@@ -269,6 +269,7 @@ public:
 		return _flags & MessageFlag::StoryInProfile;
 	}
 	[[nodiscard]] bool unread(not_null<Data::Thread*> thread) const;
+	[[nodiscard]] bool isGhostReadHidden() const;
 	[[nodiscard]] bool showNotification() const;
 	void markClientSideAsRead();
 	[[nodiscard]] bool mentionsMe() const;

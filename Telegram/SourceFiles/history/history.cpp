@@ -2892,7 +2892,26 @@ Dialogs::BadgesState History::adjustBadgesStateByFolder(
 
 Dialogs::UnreadState History::computeUnreadState() const {
 	auto result = Dialogs::UnreadState();
-	const auto count = _unreadCount.value_or(0);
+	auto count = _unreadCount.value_or(0);
+	const auto &ghost = AyuSettings::ghost(&session());
+	if (_unreadCount
+		&& ghost.isGhostModeActive()
+		&& !ghost.sendReadMessages()
+		&& ghost.rememberGhostRead()) {
+		const auto accountId = session().userId().bare;
+		if (const auto watermark = AyuSettings::ghostReadState(accountId).find(
+				accountId,
+				this->peer->id.value,
+				0);
+			watermark
+			&& !watermark->manuallyUnread
+			&& watermark->readTill > inboxReadTillId().bare) {
+			if (const auto projected = countStillUnreadLocal(
+					MsgId(watermark->readTill))) {
+				count = *projected;
+			}
+		}
+	}
 	const auto mark = !count && unreadMark();
 	const auto muted = this->muted();
 	result.messages = count;

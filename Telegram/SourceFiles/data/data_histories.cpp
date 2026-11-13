@@ -191,6 +191,12 @@ void Histories::clearAll() {
 	_map.clear();
 }
 
+void Histories::refreshGhostReadPresentation() {
+	for (const auto &entry : _map) {
+		entry.second->updateChatListEntry();
+	}
+}
+
 void Histories::readInbox(not_null<History*> history) {
 	DEBUG_LOG(("Reading: readInbox called."));
 	if (history->lastServerMessageKnown()) {
@@ -270,6 +276,20 @@ void Histories::readInboxTill(
 		MsgId tillId,
 		bool force) {
 	Expects(IsServerMsgId(tillId) || (!tillId && !force));
+	const auto &ghost = AyuSettings::ghost(&session());
+	if (IsServerMsgId(tillId)
+		&& ghost.isGhostModeActive()
+		&& ghost.rememberGhostRead()
+		&& !ghost.sendReadMessages()) {
+		const auto item = history->owner().message(history->peer->id, tillId);
+		if (!item || (!item->out() && item->isRegular())) {
+			AyuSettings::advanceGhostRead(
+				session().userId().bare,
+				history->peer->id.value,
+				item ? item->topicRootId().bare : 0,
+				tillId.bare);
+		}
+	}
 
 	DEBUG_LOG(("Reading: readInboxTill %1, force %2."
 		).arg(tillId.bare
@@ -557,6 +577,16 @@ void Histories::applyPeerDialogs(const MTPmessages_PeerDialogs &dialogs) {
 void Histories::changeDialogUnreadMark(
 		not_null<History*> history,
 		bool unread) {
+	const auto &ghost = AyuSettings::ghost(&_owner->session());
+	if (unread
+		&& ghost.isGhostModeActive()
+		&& ghost.rememberGhostRead()
+		&& !ghost.sendReadMessages()) {
+		AyuSettings::markGhostReadManuallyUnread(
+			_owner->session().userId().bare,
+			history->peer->id.value,
+			0);
+	}
 	history->setUnreadMark(unread);
 
 	using Flag = MTPmessages_MarkDialogUnread::Flag;
