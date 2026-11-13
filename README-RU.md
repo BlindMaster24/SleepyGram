@@ -5,7 +5,7 @@
 <h1 align="center">SleepyGram Desktop</h1>
 
 <p align="center">
-  Форк Telegram Desktop 6.8.2 с сохраненными privacy-функциями, историей сообщений и кастомизацией AyuGram.
+  Форк Telegram Desktop 7.4.3 с сохраненными privacy-функциями, историей сообщений и кастомизацией AyuGram.
 </p>
 
 <p align="center">

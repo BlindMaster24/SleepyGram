@@ -5,7 +5,7 @@
 <h1 align="center">SleepyGram Desktop</h1>
 
 <p align="center">
-  A Telegram Desktop fork based on Telegram Desktop 6.8.2 with AyuGram's privacy, history, and customization features kept alive.
+  A Telegram Desktop fork based on Telegram Desktop 7.4.3 with AyuGram's privacy, history, and customization features kept alive.
 </p>
 
 <p align="center">

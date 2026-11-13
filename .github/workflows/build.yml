@@ -60,10 +60,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Patch bundled dispatch
-        run: |
-          perl -0pi -e 's@return dmn->dmn_events & ~dmn->dmn_disarmed_events;@return dmn->dmn_events & ~(uint32_t)dmn->dmn_disarmed_events;@' Telegram/ThirdParty/dispatch/src/event/event_epoll.c
-          grep -q 'return dmn->dmn_events & ~(uint32_t)dmn->dmn_disarmed_events;' Telegram/ThirdParty/dispatch/src/event/event_epoll.c
+      - name: Sync AyuGram submodules
+        run: python3 Telegram/build/sync_ayu_submodules.py
 
       - name: Prepare Dockerfile
         run: |
@@ -150,10 +148,13 @@ jobs:
           submodules: recursive
           path: tdesktop
 
+      - name: Sync AyuGram submodules
+        run: python3 tdesktop/Telegram/build/sync_ayu_submodules.py
+
       - name: Install tools
         run: |
           brew update
-          brew install automake meson nasm ninja pkg-config
+          brew install automake libtool meson nasm ninja pkg-config
           sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
       - name: Cache libraries
@@ -225,11 +226,14 @@ jobs:
           submodules: recursive
           path: TBuild/tdesktop
 
+      - name: Sync AyuGram submodules
+        run: python "$env:REPO_PATH\Telegram\build\sync_ayu_submodules.py"
+
       - name: Read Windows SDK
         run: |
-          $doc = Get-Content "$env:REPO_PATH\docs\building-win-x64.md" -Raw
+          $doc = Get-Content "$env:REPO_PATH\docs\building-win.md" -Raw
           if ($doc -notmatch 'with \*\*(?<sdk>[^*]+)\*\* SDK version') {
-            Write-Error "Could not read Windows SDK version from docs/building-win-x64.md"
+            Write-Error "Could not read Windows SDK version from docs/building-win.md"
             exit 1
           }
           "SDK=$($Matches.sdk)" >> $env:GITHUB_ENV
