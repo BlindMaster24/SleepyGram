@@ -397,8 +397,26 @@ jobs:
 
       - name: NuGet sources
         run: |
-          nuget sources Disable -Name "Microsoft Visual Studio Offline Packages"
-          nuget sources Add -Source https://api.nuget.org/v3/index.json
+          $offline = & nuget sources Disable -Name "Microsoft Visual Studio Offline Packages" 2>&1
+          $offlineExit = $LASTEXITCODE
+          if ($offlineExit -ne 0) {
+            Write-Host "Offline NuGet source was not present or could not be disabled."
+          }
+
+          $update = & nuget sources Update -Name "nuget.org" -Source "https://api.nuget.org/v3/index.json" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $add = & nuget sources Add -Name "nuget.org" -Source "https://api.nuget.org/v3/index.json" 2>&1
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Could not configure nuget.org source."
+              exit 1
+            }
+          }
+
+          $enable = & nuget sources Enable -Name "nuget.org" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Could not enable nuget.org source."
+            exit 1
+          }
 
       - name: Prepare libraries
         shell: cmd
