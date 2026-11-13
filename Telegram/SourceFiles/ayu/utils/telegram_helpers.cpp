@@ -822,36 +822,10 @@ void searchPeerInner(const QString &peerId, Main::Session *session, const Userna
 				});
 
 			const auto text = message->match(
-				[&](const MTPDbotInlineMessageMediaAuto &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageText &data)
-				{
+				[](const MTPDbotInlineMessageText &data) {
 					return qs(data.vmessage());
 				},
-				[&](const MTPDbotInlineMessageMediaGeo &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaVenue &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaContact &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaInvoice &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaWebPage &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageRichMessage &data)
-				{
+				[](const auto &) {
 					return QString();
 				});
 
@@ -1343,36 +1317,10 @@ void getUserRegistrationDateInner(
 				});
 
 			const auto text = message->match(
-				[&](const MTPDbotInlineMessageMediaAuto &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageText &data)
-				{
+				[](const MTPDbotInlineMessageText &data) {
 					return qs(data.vmessage());
 				},
-				[&](const MTPDbotInlineMessageMediaGeo &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaVenue &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaContact &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaInvoice &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageMediaWebPage &data)
-				{
-					return QString();
-				},
-				[&](const MTPDbotInlineMessageRichMessage &data)
-				{
+				[](const auto &) {
 					return QString();
 				});
 
