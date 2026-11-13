@@ -54,10 +54,10 @@ namespace Settings {
 namespace {
 
 constexpr auto kMegabyte = int64(1024 * 1024);
-constexpr auto kTotalSizeLimitsCount = 18;
-constexpr auto kMediaSizeLimitsCount = 18;
+constexpr auto kTotalSizeLimitsCount = 21;
+constexpr auto kMediaSizeLimitsCount = 21;
 constexpr auto kMinimalSizeLimit = 100 * kMegabyte;
-constexpr auto kTimeLimitsCount = 16;
+constexpr auto kTimeLimitsCount = 17;
 constexpr auto kMaxTimeLimitValue = std::numeric_limits<size_type>::max();
 constexpr auto kFakeMediaCacheTag = uint16(0xFFFF);
 constexpr auto kClearingMinDuration = crl::time(1200);
@@ -84,8 +84,10 @@ int ChartIndexForTag(uint16 tag) {
 int64 TotalSizeLimitInMB(int index) {
 	if (index < 8) {
 		return int64(index + 2) * 100;
+	} else if (index < 18) {
+		return int64(index - 7) * 1024;
 	}
-	return int64(index - 7) * 1024;
+	return int64(1) << (index - 4);
 }
 
 int64 TotalSizeLimit(int index) {
@@ -95,8 +97,10 @@ int64 TotalSizeLimit(int index) {
 int64 MediaSizeLimitInMB(int index) {
 	if (index < 9) {
 		return int64(index + 1) * 100;
+	} else if (index < 18) {
+		return int64(index - 8) * 1024;
 	}
-	return int64(index - 8) * 1024;
+	return int64(1) << (index - 4);
 }
 
 int64 MediaSizeLimit(int index) {
@@ -112,11 +116,13 @@ QString SizeLimitText(int64 limit) {
 }
 
 size_type TimeLimitInDays(int index) {
-	if (index < 3) {
-		const auto weeks = (index + 1);
+	if (index == 0) {
+		return 1;
+	} else if (index < 4) {
+		const auto weeks = index;
 		return size_type(weeks) * 7;
-	} else if (index < 15) {
-		const auto month = (index - 2);
+	} else if (index < 16) {
+		const auto month = (index - 3);
 		return (size_type(month) * 30)
 			+ ((month >= 12) ? 5 :
 				(month >= 10) ? 4 :
@@ -138,14 +144,17 @@ size_type TimeLimit(int index) {
 }
 
 QString TimeLimitText(size_type limit) {
+	if (!limit || limit == kMaxTimeLimitValue) {
+		return tr::lng_local_storage_limit_never(tr::now);
+	}
 	const auto days = (limit / (24 * 60 * 60));
 	const auto weeks = (days / 7);
 	const auto months = (days / 29);
 	return (months > 0)
 		? tr::lng_months(tr::now, lt_count, months)
-		: (limit > 0)
+		: (days >= 7)
 		? tr::lng_weeks(tr::now, lt_count, weeks)
-		: tr::lng_local_storage_limit_never(tr::now);
+		: tr::lng_days(tr::now, lt_count, days);
 }
 
 size_type LimitToValue(size_type timeLimit) {
