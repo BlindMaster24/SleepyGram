@@ -384,6 +384,15 @@ TransitionResult BeginEffect(
 	if (!state) {
 		return TransitionResult::Rejected;
 	}
+	if (effect == JournalEffect::RemoteSessionRevoke) {
+		const auto account = std::ranges::find(
+			journal.accounts,
+			*accountId,
+			&JournalAccount::accountId);
+		if (account->localDataClear.state == EffectState::Succeeded) {
+			return TransitionResult::Rejected;
+		}
+	}
 	if (state->state == EffectState::InProgress
 		|| state->state == EffectState::Succeeded) {
 		return TransitionResult::AlreadyApplied;
@@ -407,7 +416,8 @@ TransitionResult ResolveEffect(
 		JournalEffect effect,
 		EffectResult result,
 		std::optional<AccountId> accountId) {
-	if (!ValidJournal(journal)) {
+	if (!ValidJournal(journal)
+		|| uint8_t(result) > uint8_t(EffectResult::Unconfirmed)) {
 		return TransitionResult::Rejected;
 	}
 	const auto state = FindEffect(journal, effect, accountId);
@@ -516,10 +526,9 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		return std::nullopt;
 	}
 	result.safeDestination = SafeDestinationKind(value);
-	if (!reader.string(&result.safeProfileId.value)) {
-		if (result.safeDestination != SafeDestinationKind::Profile) {
-			return std::nullopt;
-		}
+	if (!reader.string(&result.safeProfileId.value)
+		&& result.safeDestination == SafeDestinationKind::Profile) {
+		return std::nullopt;
 	}
 	uint16_t count = 0;
 	if (!reader.u16(&count) || count > kMaxAccounts) {

@@ -1,0 +1,358 @@
+#include "ayu/features/emergency_actions/emergency_action_coordinator.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace {
+
+using namespace Ayu::EmergencyActions;
+
+int failures = 0;
+
+void Check(const char *name, bool condition) {
+	std::printf("%s %s\n", condition ? "PASS" : "FAIL", name);
+	failures += !condition;
+}
+
+DryRunPlan Plan(size_t count = 2) {
+	auto result = DryRunPlan{
+		.operationId = OperationId("op-coordinator"),
+		.ruleId = RuleId("rule-coordinator"),
+		.installationId = InstallationId("install-coordinator"),
+		.action = EmergencyAction::ResetAccountData,
+		.targetScope = TargetScope::SelectedAccounts,
+		.safeDestination = SafeDestinationKind::AddAccount,
+	};
+	for (auto i = size_t(0); i != count; ++i) {
+		const auto letter = char('a' + i);
+		const auto account = std::string("account-") + letter;
+		const auto session = std::string("session-") + letter;
+		result.accounts.push_back({
+			.accountId = AccountId(account),
+			.wouldClearLocalData = true,
+			.remoteTarget = RemoteSessionTargetKind::SelectedSessions,
+			.remoteTargetWasConfigured = true,
+			.sessionIdsForRevokeRequest = { SessionId(session) },
+		});
+	}
+	return result;
+}
+
+struct FixtureStore final : JournalStore {
+	std::map<std::string, std::vector<std::byte>> values;
+	int writes = 0;
+	int failWrite = 0;
+
+	std::vector<std::byte> read(
+			const OperationId &id,
+			size_t maximumBytes) override {
+		const auto i = values.find(id.value);
+		return (i == values.end() || i->second.size() > maximumBytes)
+			? std::vector<std::byte>()
+			: i->second;
+	}
+
+	bool writeAtomically(
+			const OperationId &id,
+			std::span<const std::byte> bytes) override {
+		++writes;
+		if (writes == failWrite) {
+			return false;
+		}
+		auto temporary = std::vector<std::byte>(bytes.begin(), bytes.end());
+		values[id.value].swap(temporary);
+		return true;
+	}
+};
+
+struct FakeClock final : CoordinatorClock {
+	TimePoint value;
+
+	TimePoint now() const override {
+		return value;
+	}
+
+	void advance(std::chrono::seconds duration) {
+		value += duration;
+	}
+};
+
+struct FakeRemote final : RemoteSessionEffect {
+	FakeRemote(
+			FixtureStore *store,
+			FakeClock *clock,
+			std::vector<std::string> *events)
+	: store(store), clock(clock), events(events) {
+	}
+
+	FixtureStore *store = nullptr;
+	FakeClock *clock = nullptr;
+	std::vector<std::string> *events = nullptr;
+	std::map<std::string, EffectResult> results;
+	std::vector<std::string> calledAccountIds;
+	std::vector<CoordinatorClock::TimePoint> deadlines;
+	std::vector<std::vector<SessionId>> targets;
+	std::chrono::seconds advanceAfterFirstCall = std::chrono::seconds(0);
+	int calls = 0;
+	bool claimsObserved = true;
+
+	EffectResult revoke(
+			const AccountId &accountId,
+			std::span<const SessionId> sessionIds,
+			CoordinatorClock::TimePoint deadline) override {
+		++calls;
+	calledAccountIds.push_back(accountId.value);
+		deadlines.push_back(deadline);
+		targets.emplace_back(sessionIds.begin(), sessionIds.end());
+		const auto persisted = LoadJournal(*store, OperationId("op-coordinator"));
+		const auto claimSaved = persisted && [&] {
+			const auto account = std::ranges::find(
+				persisted->accounts,
+				accountId,
+				&JournalAccount::accountId);
+			return account != persisted->accounts.end()
+				&& account->remoteSessionRevoke.state == EffectState::InProgress;
+		}();
+		claimsObserved = claimsObserved
+			&& claimSaved;
+		events->push_back("remote:" + accountId.value);
+		if (calls == 1 && advanceAfterFirstCall.count()) {
+			clock->advance(advanceAfterFirstCall);
+		}
+		const auto i = results.find(accountId.value);
+		return (i == results.end())
+			? EffectResult::ConfirmedSuccess
+			: i->second;
+	}
+};
+
+struct FakeLocal final : LocalAccountEffect {
+	FakeLocal(FixtureStore *store, std::vector<std::string> *events)
+	: store(store), events(events) {
+	}
+
+	FixtureStore *store = nullptr;
+	std::vector<std::string> *events = nullptr;
+	std::vector<std::string> calls;
+	bool claimsObserved = true;
+
+	EffectResult clear(const AccountId &accountId) override {
+		calls.push_back(accountId.value);
+		const auto persisted = LoadJournal(*store, OperationId("op-coordinator"));
+		const auto claimSaved = persisted && [&] {
+			const auto account = std::ranges::find(
+				persisted->accounts,
+				accountId,
+				&JournalAccount::accountId);
+			return account != persisted->accounts.end()
+				&& account->localDataClear.state == EffectState::InProgress;
+		}();
+		claimsObserved = claimsObserved
+			&& claimSaved;
+		events->push_back("local:" + accountId.value);
+		return EffectResult::ConfirmedSuccess;
+	}
+};
+
+struct FakeDestination final : SafeDestinationEffect {
+	FakeDestination(FixtureStore *store, std::vector<std::string> *events)
+	: store(store), events(events) {
+	}
+
+	FixtureStore *store = nullptr;
+	std::vector<std::string> *events = nullptr;
+	bool claimsObserved = true;
+	int calls = 0;
+
+	EffectResult activate(
+			SafeDestinationKind kind,
+			const ProfileId &) override {
+		++calls;
+		const auto persisted = LoadJournal(*store, OperationId("op-coordinator"));
+		claimsObserved = claimsObserved
+			&& persisted
+			&& persisted->safeDestinationActivation.state == EffectState::InProgress;
+		claimsObserved = claimsObserved
+			&& kind == SafeDestinationKind::AddAccount;
+		events->push_back("destination");
+		return EffectResult::ConfirmedSuccess;
+	}
+};
+
+struct Fixtures final {
+	Fixtures()
+	: remote(&store, &clock, &events)
+	, local(&store, &events)
+	, destination(&store, &events)
+	, journal(MakeJournal(Plan()).value()) {
+	}
+
+	FixtureStore store;
+	FakeClock clock;
+	std::vector<std::string> events;
+	FakeRemote remote;
+	FakeLocal local;
+	FakeDestination destination;
+	EmergencyActionJournal journal;
+};
+
+void RemoteClaimsAndSharedDeadlinePrecedeLocalEffects() {
+	auto f = Fixtures();
+	const auto report = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	const auto deadline = CoordinatorClock::TimePoint{} + std::chrono::seconds(5);
+	Check("remote-claims-are-saved-before-injected-effects",
+		f.remote.claimsObserved && f.local.claimsObserved
+		&& f.destination.claimsObserved);
+	Check("remote-phase-uses-exact-stable-targets-and-one-deadline",
+		f.remote.calls == 2
+		&& f.remote.targets == std::vector<std::vector<SessionId>>{
+			{ SessionId("session-a") }, { SessionId("session-b") } }
+		&& f.remote.deadlines == std::vector<CoordinatorClock::TimePoint>{
+			deadline, deadline });
+	Check("order-is-remote-then-local-then-safe-destination",
+		f.events == std::vector<std::string>{
+			"remote:account-a",
+			"remote:account-b",
+			"local:account-a",
+			"local:account-b",
+			"destination" });
+	Check("full-success-is-recorded-as-complete",
+		report.result == CoordinatorResult::Complete
+		&& report.journalStatus == JournalStatus::Complete
+		&& report.remoteAttempts == 2
+		&& report.localAttempts == 2);
+}
+
+void OneFiveSecondBudgetIsSharedAcrossAccounts() {
+	auto f = Fixtures();
+	f.remote.advanceAfterFirstCall = std::chrono::seconds(6);
+	const auto report = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("expired-shared-budget-skips-later-remote-call",
+		report.remoteDeadlineReached
+		&& f.remote.calls == 1
+		&& f.local.calls.size() == 2);
+	Check("unattempted-target-remains-explicitly-pending",
+		f.journal.accounts[1].remoteSessionRevoke.state == EffectState::Pending
+		&& f.journal.accounts[1].remoteSessionRevoke.networkOutcome
+			== NetworkOutcome::NotAttempted);
+	Check("local-clear-prevents-a-late-remote-retry",
+		BeginEffect(
+			f.journal,
+			JournalEffect::RemoteSessionRevoke,
+			AccountId("account-b"),
+			RetryMode::ExplicitlyRetryUnconfirmed) == TransitionResult::Rejected);
+	Check("deadline-leaves-a-partial-result",
+		report.result == CoordinatorResult::Partial
+		&& report.journalStatus == JournalStatus::Ready);
+}
+
+void UnconfirmedRemoteResultDoesNotBlockLocalCleanup() {
+	auto f = Fixtures();
+	f.remote.results["account-a"] = EffectResult::Unconfirmed;
+	const auto report = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("unconfirmed-remains-unconfirmed-after-cleanup",
+		f.journal.accounts[0].remoteSessionRevoke.networkOutcome
+			== NetworkOutcome::Unconfirmed
+		&& f.journal.accounts[0].localDataClear.state == EffectState::Succeeded);
+	Check("safe-destination-follows-successful-local-clears",
+		report.safeDestinationAttempted
+		&& f.destination.calls == 1
+		&& f.events.back() == "destination");
+	Check("remote-is-never-retried-after-local-clear",
+		BeginEffect(
+			f.journal,
+			JournalEffect::RemoteSessionRevoke,
+			AccountId("account-a"),
+			RetryMode::ExplicitlyRetryUnconfirmed) == TransitionResult::Rejected);
+	Check("report-does-not-claim-full-success",
+		report.result == CoordinatorResult::Partial
+		&& report.journalStatus == JournalStatus::NeedsAttention);
+}
+
+void FailedClaimDoesNotCallAnEffect() {
+	auto f = Fixtures();
+	f.store.failWrite = 1;
+	const auto report = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("claim-write-failure-stops-before-side-effect",
+		report.result == CoordinatorResult::CheckpointFailed
+		&& f.remote.calls == 0
+		&& f.local.calls.empty()
+		&& f.destination.calls == 0
+		&& f.journal.accounts[0].remoteSessionRevoke.state == EffectState::Pending);
+}
+
+void LostOutcomeCheckpointRecoversAsUnconfirmed() {
+	auto f = Fixtures();
+	f.store.failWrite = 2;
+	const auto first = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("outcome-save-failure-stops-before-next-effect",
+		first.result == CoordinatorResult::CheckpointFailed
+		&& f.remote.calls == 1
+		&& f.local.calls.empty());
+	f.store.failWrite = 0;
+	auto recovered = LoadJournal(f.store, OperationId("op-coordinator"));
+	if (!recovered) {
+		Check("persisted-claim-is-recoverable", false);
+		return;
+	}
+	const auto second = RunResetCoordinator(
+		*recovered,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("persisted-in-flight-network-claim-becomes-unknown",
+		std::ranges::count(f.remote.calledAccountIds, "account-a") == 1
+		&& recovered->accounts[0].remoteSessionRevoke.networkOutcome
+			== NetworkOutcome::Unconfirmed);
+	Check("recovery-continues-local-work-without-duplicate-network-call",
+		f.local.calls.size() == 2
+		&& second.result == CoordinatorResult::Partial);
+}
+
+} // namespace
+
+int main() {
+	RemoteClaimsAndSharedDeadlinePrecedeLocalEffects();
+	OneFiveSecondBudgetIsSharedAcrossAccounts();
+	UnconfirmedRemoteResultDoesNotBlockLocalCleanup();
+	FailedClaimDoesNotCallAnEffect();
+	LostOutcomeCheckpointRecoversAsUnconfirmed();
+	return failures ? 1 : 0;
+}
