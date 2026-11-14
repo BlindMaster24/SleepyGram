@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_download_manager.h"
 #include "data/data_photo.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
 
 FileClickHandler::FileClickHandler(FullMsgId context)
@@ -93,7 +94,16 @@ void DocumentSaveClickHandler::Save(
 		// If we call file dialog synchronously, it will stop
 		// background thread timers from working which would
 		// stop audio playback in voice chats / live streams.
-		if (mode != Mode::ToNewFile && data->saveFromData()) {
+		const auto itemId = v::is<FullMsgId>(origin.data)
+			? v::get<FullMsgId>(origin.data)
+			: FullMsgId();
+		const auto hasPeerFolder = mode != Mode::ToNewFile
+			&& !Core::App().settings().askDownloadPath()
+			&& itemId
+			&& File::HasDownloadPathForPeer(&data->session(), itemId.peer);
+		if (mode != Mode::ToNewFile
+			&& !hasPeerFolder
+			&& data->saveFromData()) {
 			if (started) {
 				started();
 			}
@@ -107,16 +117,45 @@ void DocumentSaveClickHandler::Save(
 		const auto filename = filepath.isEmpty()
 			? QString()
 			: fileinfo.fileName();
-		const auto savename = DocumentFileNameForSave(
-			data,
-			(mode == Mode::ToNewFile),
-			filename,
-			filedir);
-		if (!savename.isEmpty()) {
-			data->save(origin, savename);
-			if (started) {
-				started();
+		const auto saveTo = [=](const QDir &directory) {
+			const auto savename = DocumentFileNameForSave(
+				data,
+				(mode == Mode::ToNewFile),
+				filename,
+				directory);
+			if (!savename.isEmpty()) {
+				data->save(origin, savename);
+				if (started) {
+					started();
+				}
 			}
+		};
+		if (hasPeerFolder) {
+			const auto path = File::DownloadPathForPeer(
+				&data->session(),
+				itemId.peer);
+			if (!path.isEmpty()) {
+				saveTo(QDir(path));
+			} else {
+				FileDialog::GetFolder(
+					nullptr,
+					tr::lng_download_path_choose(tr::now),
+					QString(),
+					crl::guard(&data->session(), [=](QString &&result) {
+						if (result.isEmpty()
+							|| data->isNull()
+							|| data->forbidsFileSave()) {
+							return;
+						}
+						File::SetDownloadPathForPeer(
+							&data->session(),
+							itemId.peer,
+							result);
+						saveTo(QDir(result));
+					}));
+			}
+		} else {
+			saveTo(filedir);
 		}
 	}));
 }

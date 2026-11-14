@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
+#include "data/data_peer_id.h"
+
 #include <QtCore/QUrl>
 
 namespace Main {
@@ -48,6 +50,16 @@ void ShowInFolder(const QString &filepath);
 [[nodiscard]] QString DefaultDownloadPathFolder(
 	not_null<Main::Session*> session);
 [[nodiscard]] QString DefaultDownloadPath(not_null<Main::Session*> session);
+[[nodiscard]] QString DownloadPathForPeer(
+	not_null<Main::Session*> session,
+	PeerId peer);
+[[nodiscard]] bool HasDownloadPathForPeer(
+	not_null<Main::Session*> session,
+	PeerId peer);
+void SetDownloadPathForPeer(
+	not_null<Main::Session*> session,
+	PeerId peer,
+	const QString &path);
 
 namespace internal {
 

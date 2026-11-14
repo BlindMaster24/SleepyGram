@@ -521,6 +521,39 @@ void AddAction(
 	const auto shouldShowToast = documents.empty();
 
 	const auto weak = base::make_weak(controller);
+	const auto peers = [&] {
+		auto result = base::flat_set<PeerId>();
+		for (const auto &[document, origin] : documents) {
+			result.emplace(origin.peer);
+		}
+		for (const auto &[photo, origin] : photos) {
+			result.emplace(origin.peer);
+		}
+		return result;
+	}();
+	if (peers.size() == 1) {
+		const auto peer = *peers.begin();
+		menu->addAction(tr::lng_download_path_choose(tr::now), [=] {
+			const auto controller = weak.get();
+			if (!controller) {
+				return;
+			}
+			const auto session = &controller->session();
+			FileDialog::GetFolder(
+				controller->window().widget().get(),
+				tr::lng_download_path_choose(tr::now),
+				File::DownloadPathForPeer(session, peer),
+				crl::guard(controller, [=](QString &&result) {
+					if (const auto strong = weak.get();
+						strong && !result.isEmpty()) {
+						File::SetDownloadPathForPeer(
+							&strong->session(),
+							peer,
+							result);
+					}
+				}));
+		}, &st::menuIconDownload);
+	}
 	const auto saveImages = [=](const QString &folderPath) {
 		const auto controller = weak.get();
 		if (!controller) {
@@ -712,7 +745,54 @@ void AddAction(
 				initialPath,
 				handleFolder);
 		} else {
-			save(QString());
+			const auto session = &controller->session();
+			auto configured = false;
+			auto complete = true;
+			auto same = true;
+			auto initialPath = QString();
+			for (const auto peer : peers) {
+				const auto assigned = File::HasDownloadPathForPeer(
+					session,
+					peer);
+				const auto path = File::DownloadPathForPeer(session, peer);
+				configured |= assigned;
+				complete &= assigned && !path.isEmpty();
+				if (assigned && path.isEmpty()) {
+					same = false;
+				} else if (!path.isEmpty()) {
+					if (initialPath.isEmpty()) {
+						initialPath = path;
+					} else if (initialPath != path) {
+						same = false;
+					}
+				}
+			}
+			if (configured && complete && same) {
+				save(initialPath);
+			} else if (configured) {
+				const auto handleFolder = [=](const QString &result) {
+					if (result.isEmpty()) {
+						return;
+					}
+					const auto folderPath = result.endsWith('/')
+						? result
+						: (result + '/');
+					for (const auto peer : peers) {
+						File::SetDownloadPathForPeer(
+							session,
+							peer,
+							folderPath);
+					}
+					save(folderPath);
+				};
+				FileDialog::GetFolder(
+					controller->window().widget().get(),
+					tr::lng_download_path_choose(tr::now),
+					initialPath,
+					handleFolder);
+			} else {
+				save(QString());
+			}
 		}
 	}, icon);
 }

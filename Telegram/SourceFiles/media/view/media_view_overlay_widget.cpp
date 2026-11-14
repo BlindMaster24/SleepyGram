@@ -3535,7 +3535,36 @@ void OverlayWidget::downloadMedia() {
 
 	QString path;
 	const auto session = _photo ? &_photo->session() : &_document->session();
-	if (Core::App().settings().downloadPath().isEmpty()) {
+	if (_message
+		&& File::HasDownloadPathForPeer(session, _message->history()->peer->id)) {
+		path = File::DownloadPathForPeer(
+			session,
+			_message->history()->peer->id);
+		if (path.isEmpty()) {
+			const auto messageId = _message->fullId();
+			const auto document = _document;
+			const auto photo = _photo;
+			FileDialog::GetFolder(
+				_widget,
+				tr::lng_download_path_choose(tr::now),
+				QString(),
+				crl::guard(this, [=](QString &&result) {
+					if (result.isEmpty()
+						|| !_message
+						|| _message->fullId() != messageId
+						|| _document != document
+						|| _photo != photo) {
+						return;
+					}
+					File::SetDownloadPathForPeer(
+						session,
+						messageId.peer,
+						result);
+					downloadMedia();
+				}));
+			return;
+		}
+	} else if (Core::App().settings().downloadPath().isEmpty()) {
 		path = File::DefaultDownloadPath(session);
 	} else if (Core::App().settings().downloadPath() == FileDialog::Tmp()) {
 		path = session->local().tempDirectory();

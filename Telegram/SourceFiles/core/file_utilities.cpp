@@ -17,7 +17,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "platform/platform_file_bookmark.h"
 #include "platform/platform_file_utilities.h"
+#include "platform/platform_specific.h"
 #include "storage/localstorage.h"
 #include "storage/storage_account.h"
 #include "ui/chat/attach/attach_extensions.h"
@@ -26,12 +28,18 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwindow.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QFileInfo>
+#include <QtCore/QDir>
 #include <QtCore/QStandardPaths>
 #include <QtGui/QDesktopServices>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QFileDialog>
 
 #include <array>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <string>
 
 bool filedialogGetSaveFile(
 		QPointer<QWidget> parent,
@@ -131,6 +139,111 @@ QString filedialogNextFilename(
 }
 
 namespace File {
+
+namespace {
+
+std::string PeerDownloadPathPref(PeerId peer) {
+	return "peer-download-path-" + std::to_string(peer.value);
+}
+
+std::string PeerDownloadBookmarkPref(PeerId peer) {
+	return PeerDownloadPathPref(peer) + "-bookmark";
+}
+
+std::string PeerDownloadAccessKey(
+		not_null<Main::Session*> session,
+		PeerId peer) {
+	return std::to_string(reinterpret_cast<std::uintptr_t>(session.get()))
+		+ '-'
+		+ std::to_string(peer.value);
+}
+
+struct ActivePeerDownloadAccess {
+	QString sourcePath;
+	QString path;
+	std::shared_ptr<Platform::FileBookmark> bookmark;
+};
+
+std::map<std::string, ActivePeerDownloadAccess> &ActivePeerDownloadAccesses() {
+	static auto result = std::map<std::string, ActivePeerDownloadAccess>();
+	return result;
+}
+
+} // namespace
+
+QString DownloadPathForPeer(
+		not_null<Main::Session*> session,
+		PeerId peer) {
+	if (!peer) {
+		return QString();
+	}
+	const auto key = PeerDownloadPathPref(peer);
+	const auto path = session->local().readPref<QString>(key);
+	if (path.isEmpty()) {
+		return QString();
+	}
+	const auto accessKey = PeerDownloadAccessKey(session, peer);
+	auto &active = ActivePeerDownloadAccesses();
+	if (const auto i = active.find(accessKey); i != end(active)) {
+		if (i->second.sourcePath == path) {
+			return QDir(i->second.path).absolutePath() + '/';
+		}
+		active.erase(i);
+	}
+	const auto bookmark = std::make_shared<Platform::FileBookmark>(
+		session->local().readPref<QByteArray>(
+			PeerDownloadBookmarkPref(peer)));
+	if (!bookmark->enable()) {
+		return QString();
+	}
+	const auto resolved = bookmark->name(path);
+	const auto info = QFileInfo(resolved);
+	if (info.isDir() && info.isWritable()) {
+		active.emplace(accessKey, ActivePeerDownloadAccess{
+			.sourcePath = path,
+			.path = resolved,
+			.bookmark = bookmark,
+		});
+		return QDir(resolved).absolutePath() + '/';
+	}
+	bookmark->disable();
+	return QString();
+}
+
+bool HasDownloadPathForPeer(
+		not_null<Main::Session*> session,
+		PeerId peer) {
+	return peer && !session->local().readPref<QString>(
+		PeerDownloadPathPref(peer)).isEmpty();
+}
+
+void SetDownloadPathForPeer(
+		not_null<Main::Session*> session,
+		PeerId peer,
+		const QString &path) {
+	if (!peer) {
+		return;
+	}
+	const auto key = PeerDownloadPathPref(peer);
+	if (path.isEmpty()) {
+		session->local().clearPref(key);
+		session->local().clearPref(PeerDownloadBookmarkPref(peer));
+	} else {
+		const auto normalized = QDir(path).absolutePath();
+		session->local().writePref<QString>(key, normalized);
+		session->local().writePref<QByteArray>(
+			PeerDownloadBookmarkPref(peer),
+			psDownloadPathBookmark(normalized));
+	}
+	if (const auto i = ActivePeerDownloadAccesses().find(
+			PeerDownloadAccessKey(session, peer));
+		i != end(ActivePeerDownloadAccesses())) {
+		ActivePeerDownloadAccesses().erase(i);
+	}
+	if (!path.isEmpty()) {
+		DownloadPathForPeer(session, peer);
+	}
+}
 
 bool IsUrlSchemeAllowed(const QString &scheme) {
 	static const auto kSchemes = std::array{
