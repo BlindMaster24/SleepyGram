@@ -89,7 +89,7 @@ QByteArray SessionSettings::serialize() const {
 	size += sizeof(qint32) // _moderateCommonGroups size
 		+ (_moderateCommonGroups.size() * sizeof(qint32));
 	size += sizeof(qint32) + _pinnedNotificationSuppressions.size()
-		* (sizeof(quint64) + sizeof(qint64) + sizeof(qint32));
+		* (sizeof(quint64) + sizeof(qint32));
 	size += sizeof(qint32); // _disableSharingBoxShowsCount
 	size += sizeof(qint32) // _subsectionTabsModes size
 		+ _subsectionTabsModes.size() * (sizeof(quint64) + sizeof(qint32));
@@ -194,10 +194,7 @@ QByteArray SessionSettings::serialize() const {
 		stream << qint32(_stashHintShowsCount);
 		stream << qint32(_pinnedNotificationSuppressions.size());
 		for (const auto &[key, value] : _pinnedNotificationSuppressions) {
-			stream
-				<< SerializePeerId(key.peerId)
-				<< qint64(key.topicRootId.bare)
-				<< qint32(value ? 1 : 0);
+			stream << SerializePeerId(key) << qint32(value ? 1 : 0);
 		}
 	}
 
@@ -279,7 +276,7 @@ void SessionSettings::addFromSerialized(
 	qint32 phoneNumberHidden = 0;
 	std::vector<Data::ReactionId> extraFavoriteReactions;
 	qint32 stashHintShowsCount = 0;
-	base::flat_map<ThreadId, bool> pinnedNotificationSuppressions;
+	base::flat_map<PeerId, bool> pinnedNotificationSuppressions;
 
 	stream >> versionTag;
 	if (versionTag == kVersionTag) {
@@ -771,20 +768,17 @@ void SessionSettings::addFromSerialized(
 		if (stream.status() == QDataStream::Ok) {
 			for (auto i = 0; i != count; ++i) {
 				auto peerId = quint64();
-				auto topicRootId = qint64();
 				auto suppressed = qint32();
-				stream >> peerId >> topicRootId >> suppressed;
+				stream >> peerId >> suppressed;
 				if (stream.status() != QDataStream::Ok) {
 					LOG(("App Error: "
 						"Bad data for SessionSettings::addFromSerialized()"
 						"with pinnedNotificationSuppressions"));
 					return;
 				}
-				pinnedNotificationSuppressions.emplace(ThreadId{
+				pinnedNotificationSuppressions.emplace(
 					DeserializePeerId(peerId),
-					topicRootId,
-					PeerId(0),
-				}, suppressed == 1);
+					suppressed == 1);
 			}
 		}
 	}
@@ -995,34 +989,18 @@ void SessionSettings::setHiddenPinnedMessageId(
 	}
 }
 
-bool SessionSettings::pinnedNotificationsSuppressed(
-		PeerId peerId,
-		MsgId topicRootId) const {
-	const auto exact = _pinnedNotificationSuppressions.find({
-		peerId,
-		topicRootId,
-		PeerId(0),
-	});
-	if (exact != end(_pinnedNotificationSuppressions)) {
-		return exact->second;
-	}
-	const auto peer = _pinnedNotificationSuppressions.find({
-		peerId,
-		MsgId(0),
-		PeerId(0),
-	});
-	return (peer != end(_pinnedNotificationSuppressions)) && peer->second;
+bool SessionSettings::pinnedNotificationsSuppressed(PeerId peerId) const {
+	const auto i = _pinnedNotificationSuppressions.find(peerId);
+	return (i != end(_pinnedNotificationSuppressions)) && i->second;
 }
 
 void SessionSettings::setPinnedNotificationsSuppressed(
 		PeerId peerId,
-		MsgId topicRootId,
 		bool suppressed) {
-	const auto id = ThreadId{ peerId, topicRootId, PeerId(0) };
-	if (topicRootId || suppressed) {
-		_pinnedNotificationSuppressions[id] = suppressed;
+	if (suppressed) {
+		_pinnedNotificationSuppressions[peerId] = true;
 	} else {
-		_pinnedNotificationSuppressions.remove(id);
+		_pinnedNotificationSuppressions.remove(peerId);
 	}
 }
 

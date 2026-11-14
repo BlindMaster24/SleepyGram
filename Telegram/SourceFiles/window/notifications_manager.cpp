@@ -348,8 +348,7 @@ System::SkipState System::computeSkipState(
 		&& item->Has<HistoryServicePinned>()
 		&& item->history()->session().settings()
 			.pinnedNotificationsSuppressed(
-				item->history()->peer->id,
-				item->topicRootId())) {
+				item->history()->peer->id)) {
 		return { SkipState::Skip };
 	}
 	const auto thread = item->notificationThread();

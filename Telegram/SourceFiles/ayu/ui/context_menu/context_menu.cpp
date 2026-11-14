@@ -328,9 +328,8 @@ void AddAyuGramActions(PeerData *peerData,
 			}
 			if (peerData->isChat() || peerData->isMegagroup()) {
 				const auto &sessionSettings = sessionController->session().settings();
-				const auto suppressed = sessionSettings.pinnedNotificationsSuppressed(
-					peerData->id,
-					MsgId(topicId));
+				const auto suppressed = sessionSettings
+					.pinnedNotificationsSuppressed(peerData->id);
 				addAction(
 					suppressed
 						? tr::ayu_EnablePinnedNotificationsHere(tr::now)
@@ -339,8 +338,9 @@ void AddAyuGramActions(PeerData *peerData,
 						sessionController->session().settings()
 							.setPinnedNotificationsSuppressed(
 								peerData->id,
-								MsgId(topicId),
 								!suppressed);
+								!suppressed);
+						sessionController->session().saveSettingsDelayed();
 					},
 					suppressed
 						? &st::menuIconShowInChat
