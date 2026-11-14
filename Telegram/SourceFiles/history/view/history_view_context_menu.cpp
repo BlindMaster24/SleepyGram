@@ -1219,8 +1219,7 @@ void AddDownloadFilesAction(
 		const ContextMenuRequest &request,
 		not_null<ListWidget*> list) {
 	if (!request.overSelection
-		|| request.selectedItems.empty()
-		|| list->hasCopyRestrictionForSelected()) {
+		|| request.selectedItems.empty()) {
 		return;
 	}
 	Menu::AddDownloadFilesAction(

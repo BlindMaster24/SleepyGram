@@ -9206,6 +9206,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_DeletedMessagesPolicyOn" = "Deleted Messages: Always Save";
 "ayu_DeletedMessagesPolicyOff" = "Deleted Messages: Never Save";
 "ayu_BulkDownloadTitle" = "Save Selected Files";
+"ayu_BulkDownloadAction" = "Save selected attachments: {count}";
 "ayu_BulkDownloadLimit" = "Concurrent downloads";
 "ayu_BulkDownloadProgress" = "Saved {saved} of {total} · {running} active · {failed} failed · {cancelled} cancelled";
 "ayu_BulkDownloadStart" = "Start";

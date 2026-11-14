@@ -221,6 +221,9 @@ public:
 	void setCustomServiceLink(ClickHandlerPtr link);
 
 	[[nodiscard]] bool isAyuNoForwards() const;
+	[[nodiscard]] bool isNoForwards() const {
+		return _flags & MessageFlag::NoForwards;
+	}
 
 	void addLogEntryOriginal(
 		WebPageId localId,

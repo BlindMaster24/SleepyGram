@@ -47,6 +47,7 @@ namespace {
 
 using Documents = std::vector<std::pair<not_null<DocumentData*>, FullMsgId>>;
 using Photos = std::vector<std::pair<not_null<PhotoData*>, FullMsgId>>;
+using MessageIds = base::flat_set<FullMsgId>;
 
 constexpr auto kBulkDownloadLimitPref = "bulk-download-limit";
 constexpr auto kBulkDownloadLimits = { 1, 2, 3, 5 };
@@ -475,24 +476,32 @@ void ShowBulkSaveQueue(
 	}));
 }
 
-[[nodiscard]] bool Collected(
+void Collect(
 		HistoryItem *item,
+		MessageIds &messageIds,
 		Documents &documents,
 		Photos &photos) {
-	if (!item) {
-		return false;
-	} else if (item->forbidsSaving()) {
-		return true;
-	} else if (const auto media = item->media()) {
-		if (const auto photo = media->photo()) {
+	if (!item
+		|| item->isDeleted()
+		|| item->isEphemeral()
+		|| !item->allowsMediaDownloadControls()
+		|| item->isAyuNoForwards()
+		|| item->isNoForwards()
+		|| item->from()->isAyuNoForwards()
+		|| item->history()->peer->isAyuNoForwards()
+		|| !messageIds.emplace(item->fullId()).second) {
+		return;
+	} else if (const auto media = item->media();
+		media && !media->ttlSeconds()) {
+		if (const auto photo = media->photo(); photo && !photo->isNull()) {
 			photos.emplace_back(photo, item->fullId());
-			return true;
-		} else if (const auto document = media->document()) {
+			return;
+		} else if (const auto document = media->document();
+			document && !document->isNull()) {
 			documents.emplace_back(document, item->fullId());
-			return true;
+			return;
 		}
 	}
-	return false;
 }
 
 void AddAction(
@@ -501,9 +510,11 @@ void AddAction(
 		Documents &&documents,
 		Photos &&photos,
 		Fn<void()> callback) {
-	const auto text = documents.empty()
-		? tr::lng_context_save_images_selected(tr::now)
-		: tr::lng_context_save_documents_selected(tr::now);
+	const auto count = int(documents.size() + photos.size());
+	const auto text = tr::ayu_BulkDownloadAction(
+		tr::now,
+		lt_count,
+		QString::number(count));
 	const auto icon = documents.empty()
 		? &st::menuIconSaveImage
 		: &st::menuIconDownload;
@@ -716,15 +727,14 @@ void AddDownloadFilesAction(
 	if (selectedItems.empty()) {
 		return;
 	}
+	auto messageIds = MessageIds();
 	auto docs = Documents();
 	auto photos = Photos();
 	for (const auto &selectedItem : selectedItems) {
 		const auto &id = selectedItem.msgId;
 		const auto item = window->session().data().message(id);
 
-		if (!Collected(item, docs, photos)) {
-			return;
-		}
+		Collect(item, messageIds, docs, photos);
 	}
 	std::sort(docs.begin(), docs.end(), [](const auto &a, const auto &b) {
 		return a.second < b.second;
@@ -751,12 +761,11 @@ void AddDownloadFilesAction(
 	if (items.empty()) {
 		return;
 	}
+	auto messageIds = MessageIds();
 	auto docs = Documents();
 	auto photos = Photos();
 	for (const auto &item : items) {
-		if (!Collected(item, docs, photos)) {
-			return;
-		}
+		Collect(item, messageIds, docs, photos);
 	}
 	std::sort(docs.begin(), docs.end(), [](const auto &a, const auto &b) {
 		return a.second < b.second;

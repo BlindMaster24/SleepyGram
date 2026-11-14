@@ -3889,12 +3889,14 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				}, &st::menuIconDelete);
 			}
 			addUnpinSelectedAction();
-			if (selectedState.count > 0 && !hasCopyRestrictionForSelected()) {
+			if (selectedState.count > 0) {
 				Menu::AddDownloadFilesAction(
 					_menu,
 					controller,
 					selectedItemsForExport(),
 					this);
+			}
+			if (selectedState.count > 0 && !hasCopyRestrictionForSelected()) {
 				Iv::AddSaveRichMessageHtmlAction(
 					_menu,
 					controller,
@@ -4204,12 +4206,14 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 				}, &st::menuIconDelete);
 			}
 			addUnpinSelectedAction();
-			if (selectedState.count > 0 && !hasCopyRestrictionForSelected()) {
+			if (selectedState.count > 0) {
 				Menu::AddDownloadFilesAction(
 					_menu,
 					controller,
 					selectedItemsForExport(),
 					this);
+			}
+			if (selectedState.count > 0 && !hasCopyRestrictionForSelected()) {
 				Iv::AddSaveRichMessageHtmlAction(
 					_menu,
 					controller,
