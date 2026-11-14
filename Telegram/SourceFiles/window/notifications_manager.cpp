@@ -57,6 +57,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/utils/telegram_helpers.h"
 
 
@@ -515,7 +516,10 @@ System::SkipState System::skipNotification(
 	const auto type = notification.type;
 	const auto messageType = (type == Data::ItemNotificationType::Message);
 	const auto thread = item->maybeNotificationThread();
-	if (!thread
+	if (Ayu::ChatLock::IsChatLocked(
+			&item->history()->session(),
+			item->history()->peer->id)
+		|| !thread
 		|| !thread->currentNotification()
 		|| (messageType && item->skipNotification())
 		|| (type == Data::ItemNotificationType::Reaction

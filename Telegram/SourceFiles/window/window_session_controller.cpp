@@ -136,6 +136,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ui/widgets/chat_filters_tabs_visibility.h"
 
 
@@ -1386,6 +1387,24 @@ void SessionNavigation::showRepliesForMessage(
 		MsgId rootId,
 		MsgId commentId,
 		const SectionShow &params) {
+	if (Ayu::ChatLock::IsChatLocked(_session, history->peer->id)) {
+		const auto peerId = history->peer->id;
+		Ayu::ChatLock::ShowUnlockDialog(
+			parentController(),
+			peerId,
+			[weak = base::make_weak(this), peerId, rootId, commentId, params](bool unlocked) {
+				if (unlocked) {
+					if (const auto strong = weak.get()) {
+						strong->showRepliesForMessage(
+							strong->_session->data().history(peerId),
+							rootId,
+							commentId,
+							params);
+					}
+				}
+			});
+		return;
+	}
 	if (const auto topic = history->peer->forumTopicFor(rootId)) {
 		auto replies = topic->replies();
 		if (replies->unreadCountKnown()) {
@@ -1520,6 +1539,11 @@ void SessionNavigation::showSublist(
 		not_null<Data::SavedSublist*> sublist,
 		MsgId itemId,
 		const SectionShow &params) {
+	const auto history = sublist->owningHistory();
+	if (Ayu::ChatLock::IsChatLocked(_session, history->peer->id)) {
+		showPeerHistory(history->peer->id, params, itemId);
+		return;
+	}
 	using namespace HistoryView;
 	auto memento = std::make_shared<ChatMemento>(
 		ChatViewId{
@@ -1535,6 +1559,10 @@ void SessionNavigation::showThread(
 		not_null<Data::Thread*> thread,
 		MsgId itemId,
 		const SectionShow &params) {
+	if (Ayu::ChatLock::IsChatLocked(_session, thread->peer()->id)) {
+		showPeerHistory(thread->peer()->id, params, itemId);
+		return;
+	}
 	if (const auto topic = thread->asTopic()) {
 		showTopic(topic, itemId, params);
 	} else if (const auto sublist = thread->asSublist()) {
@@ -1742,6 +1770,26 @@ SessionController::SessionController(
 , _defaultChatTheme(std::make_shared<Ui::ChatTheme>())
 , _chatStyle(std::make_unique<Ui::ChatStyle>(session->colorIndicesValue())) {
 	init();
+
+	Ayu::ChatLock::Changes() | rpl::filter([=](const auto &change) {
+		return change.accountId == session->userId().bare;
+	}) | rpl::on_next([=](const Ayu::ChatLock::Change &change) {
+		if (change.peerId) {
+			if (const auto history = session->data().historyLoaded(change.peerId)) {
+				Core::App().notifications().clearIncomingFromHistory(history);
+			}
+		} else {
+			Core::App().notifications().clearAllFast();
+		}
+		const auto thread = activeChatCurrent().thread();
+		if (!thread || (change.peerId && thread->peer()->id != change.peerId)) {
+			return;
+		}
+		if (!Ayu::ChatLock::IsChatLocked(session, thread->peer()->id)) {
+			return;
+		}
+		showPeerHistory(PeerId(0), SectionShow::Way::ClearStack);
+	}, _lifetime);
 
 	// WHY: the window keeps a raw pointer to its root topic or sublist, and
 	// subscribing before its sections lets this close destroy their later
@@ -3354,6 +3402,15 @@ void SessionController::showPeerHistory(
 		PeerId peerId,
 		const SectionShow &params,
 		MsgId msgId) {
+	if (Ayu::ChatLock::IsChatLocked(&session(), peerId)) {
+		const auto weak = base::make_weak(this);
+		Ayu::ChatLock::ShowUnlockDialog(this, peerId, [=](bool unlocked) {
+			if (unlocked && weak) {
+				weak->showPeerHistory(peerId, params, msgId);
+			}
+		});
+		return;
+	}
 	if (const auto peer = session().data().peerLoaded(peerId)) {
 		if (const auto channel = peer->asChannel()) {
 			if (channel->isCommunity()) {
@@ -3368,10 +3425,28 @@ void SessionController::showPeerHistory(
 void SessionController::showMessage(
 		not_null<const HistoryItem*> item,
 		const SectionShow &params) {
+	const auto fullId = item->fullId();
 	_window->invokeForSessionController(
 		&item->history()->session().account(),
 		item->history()->peer,
 		[&](not_null<SessionController*> controller) {
+			if (Ayu::ChatLock::IsChatLocked(
+					&item->history()->session(),
+					item->history()->peer->id)) {
+				const auto session = &item->history()->session();
+				const auto weak = base::make_weak(controller.get());
+				Ayu::ChatLock::ShowUnlockDialog(
+					controller,
+					item->history()->peer->id,
+					[=](bool unlocked) {
+						if (unlocked && weak) {
+							if (const auto current = session->data().message(fullId)) {
+								weak->showMessage(current, params);
+							}
+						}
+					});
+				return;
+			}
 			if (item->isScheduled()) {
 				controller->showSection(
 					std::make_shared<HistoryView::ScheduledMemento>(

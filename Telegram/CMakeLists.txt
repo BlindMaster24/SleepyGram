@@ -234,6 +234,8 @@ set(ayugram_files
         ayu/features/streamer_mode/platform/platform_streamer_mode.h
         ayu/features/streamer_mode/streamer_mode.cpp
         ayu/features/streamer_mode/streamer_mode.h
+        ayu/features/chat_lock/chat_lock.cpp
+        ayu/features/chat_lock/chat_lock.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp

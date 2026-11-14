@@ -28,6 +28,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "data/data_peer_values.h" // Data::AmPremiumValue.
 
+// AyuGram includes
+#include "ayu/features/chat_lock/chat_lock.h"
+
 namespace Main {
 
 Domain::Domain(const QString &dataName)
@@ -571,6 +574,12 @@ void Domain::activate(not_null<Main::Account*> account) {
 	if (_active.current() == account.get()) {
 		return;
 	}
+	const auto previousSession = _active.current()
+		? _active.current()->maybeSession()
+		: nullptr;
+	const auto previousUserId = previousSession
+		? previousSession->userId().bare
+		: uint64(0);
 	const auto i = ranges::find(_accounts, account.get(), [](
 			const AccountWithIndex &value) {
 		return value.account.get();
@@ -588,6 +597,10 @@ void Domain::activate(not_null<Main::Account*> account) {
 	_active = account.get();
 	_active.current()->sessionValue(
 	) | rpl::start_to_stream(_activeSessions, _activeLifetime);
+	const auto currentSession = _active.current()->maybeSession();
+	Ayu::ChatLock::OnAccountSwitch(
+		previousUserId,
+		currentSession ? currentSession->userId().bare : uint64(0));
 
 	if (changed) {
 		if (wasAuthed) {

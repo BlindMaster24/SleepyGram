@@ -9658,3 +9658,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_ArchiveBackupInvalidFile" = "The archive file is invalid, uses another account, or has the wrong password.";
 "ayu_ArchiveBackupImportPreview" = "Import this encrypted text archive?\n\n{preview}";
 "ayu_ArchiveBackupImportResult" = "Added {added_count} records; skipped {skipped_count} duplicates.";
+
+"lng_ayu_chat_pin" = "Chat Lock";
+"lng_ayu_chat_pin_protect" = "Protect Chat with PIN";
+"lng_ayu_chat_pin_unlock" = "Unlock Chat";
+"lng_ayu_chat_pin_lock" = "Lock Chat Now";
+"lng_ayu_chat_pin_lock_all" = "Lock All Protected Chats";
+"lng_ayu_chat_pin_remove" = "Remove PIN Protection";

@@ -146,6 +146,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
@@ -356,6 +357,7 @@ private:
 	void addHidePromotion();
 	void addTogglePin();
 	void addToggleMuteSubmenu(bool addSeparator);
+	void addChatPinPolicy();
 	void addKeywordAlerts();
 	void addReadReceiptPolicy();
 	void addSupportInfo();
@@ -686,6 +688,45 @@ void Filler::addReadReceiptPolicy() {
 			add(tr::lng_ayu_read_receipts_inherit(tr::now), ChatReadReceiptPolicy::Inherit);
 			add(tr::lng_ayu_read_receipts_local(tr::now), ChatReadReceiptPolicy::ReadLocally);
 			add(tr::lng_ayu_read_receipts_send(tr::now), ChatReadReceiptPolicy::SendReceipts);
+		},
+	});
+}
+
+void Filler::addChatPinPolicy() {
+	const auto history = _request.key.history();
+	if (!history || _topic || _sublist) {
+		return;
+	}
+	const auto session = &history->session();
+	const auto peerId = history->peer->id;
+	const auto protectedChat = Ayu::ChatLock::IsPeerProtected(session, peerId);
+	if (!Ayu::ChatLock::HasPin(session) || !protectedChat) {
+		_addAction(
+			tr::lng_ayu_chat_pin_protect(tr::now),
+			[=] { Ayu::ChatLock::ShowProtectDialog(_controller, peerId); },
+			&st::menuIconLock);
+		return;
+	}
+	const auto locked = Ayu::ChatLock::IsChatLocked(session, peerId);
+	_addAction(PeerMenuCallback::Args{
+		.text = tr::lng_ayu_chat_pin(tr::now),
+		.handler = nullptr,
+		.fillSubmenu = [=](not_null<Ui::PopupMenu*> menu) {
+			menu->addAction(tr::lng_ayu_chat_pin_lock_all(tr::now), [=] {
+				Ayu::ChatLock::LockAccount(session->userId().bare);
+			});
+			if (locked) {
+				menu->addAction(tr::lng_ayu_chat_pin_unlock(tr::now), [=] {
+					Ayu::ChatLock::ShowUnlockDialog(_controller, peerId);
+				});
+			} else {
+				menu->addAction(tr::lng_ayu_chat_pin_lock(tr::now), [=] {
+					Ayu::ChatLock::LockPeer(session->userId().bare, peerId);
+				});
+				menu->addAction(tr::lng_ayu_chat_pin_remove(tr::now), [=] {
+					Ayu::ChatLock::SetPeerProtected(session, peerId, false);
+				});
+			}
 		},
 	});
 }
@@ -2014,6 +2055,7 @@ void Filler::fillContextMenuActions() {
 	addToggleMuteSubmenu(false);
 	addKeywordAlerts();
 	addReadReceiptPolicy();
+	addChatPinPolicy();
 	addToggleUnreadMark();
 	addToggleTopicClosed();
 	addToggleFolder();
@@ -2034,6 +2076,7 @@ void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
 	addKeywordAlerts();
 	addReadReceiptPolicy();
+	addChatPinPolicy();
 	AyuUi::AddAyuGramActions(_peer, _thread, _controller, _addAction);
 	addCreateTopic();
 	addInfo();
