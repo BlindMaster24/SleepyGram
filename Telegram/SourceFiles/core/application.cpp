@@ -2179,30 +2179,43 @@ void Application::startShortcuts() {
 	Shortcuts::Requests(
 	) | rpl::on_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
-		const auto answerCall = request->check(Command::AnswerIncomingCall);
+		const auto window = (Ui::AppInFocus() && !passcodeLocked())
+			? activeWindow()
+			: nullptr;
+		const auto session = window ? window->maybeSession() : nullptr;
+		const auto call = _calls->currentCall();
+		const auto canHandleCallShortcut = window
+			&& session
+			&& call
+			&& &call->user()->session() == session
+			&& call->isIncomingWaiting();
+		const auto answerCall = canHandleCallShortcut
+			&& request->check(Command::AnswerIncomingCall);
 		const auto rejectCall = !answerCall
+			&& canHandleCallShortcut
 			&& request->check(Command::RejectIncomingCall);
-		if ((answerCall || rejectCall)
-			&& Ui::AppInFocus()
-			&& activeWindow()
-			&& activeWindow()->maybeSession()) {
-			const auto call = _calls->currentCall();
-			if (call
-				&& &call->user()->session() == activeWindow()->maybeSession()
-				&& call->isIncomingWaiting()) {
-				request->handle([=] {
-					if (answerCall) {
-						if (_shortcutAnswerPendingCall == call) {
-							return true;
-						}
-						_shortcutAnswerPendingCall = call;
-						call->answer();
-					} else {
-						call->hangup();
+		if (answerCall || rejectCall) {
+			request->handle([=] {
+				if (passcodeLocked()
+					|| !Ui::AppInFocus()
+					|| activeWindow() != window
+					|| window->maybeSession() != session
+					|| _calls->currentCall() != call
+					|| &call->user()->session() != session
+					|| !call->isIncomingWaiting()) {
+					return false;
+				}
+				if (answerCall) {
+					if (_shortcutAnswerPendingCall == call) {
+						return true;
 					}
-					return true;
-				});
-			}
+					_shortcutAnswerPendingCall = call;
+					call->answer();
+				} else {
+					call->hangup();
+				}
+				return true;
+			});
 		}
 		request->check(Command::Quit) && request->handle([] {
 			Quit();
