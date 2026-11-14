@@ -1,5 +1,9 @@
 # CI package checks
 
+On build failure, `build_diagnostics.py` adds the first compiler or linker
+errors to the job's check annotations. Read them in the job's Annotations
+section or with `gh api repos/slpkbt/SleepyGram/check-runs/JOB_ID/annotations`.
+
 The platform jobs package with `tar`, `Compress-Archive`, and `ditto` and use
 `build_artifact.py` to write or verify a safe `build-manifest.json` in each
 archive. The manifest records the source commit,

@@ -122,7 +122,7 @@ jobs:
 
       - name: Build
         run: |
-          docker run --rm \
+          python3 .github/ci/build_diagnostics.py -- docker run --rm \
             -u "$(id -u)" \
             -v "$PWD:/usr/src/tdesktop" \
             -e CONFIG=Release \
@@ -277,7 +277,7 @@ jobs:
           QT: ${{ env.CI_QT_VERSION }}
         run: |
           cd tdesktop/Telegram
-          ./configure.sh \
+          python3 ../.github/ci/build_diagnostics.py -- ./configure.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D CMAKE_OSX_ARCHITECTURES=arm64 \
             -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
@@ -285,7 +285,7 @@ jobs:
             -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
             -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
-          cmake --build ../out --config Release --parallel
+          python3 ../.github/ci/build_diagnostics.py -- cmake --build ../out --config Release --parallel
 
       - name: Package, sign, and verify
         shell: bash
@@ -446,8 +446,9 @@ jobs:
             -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=
 
       - name: Build
-        shell: cmd
-        run: cmake --build "%REPO_PATH%\out" --config Release --parallel
+        run: |
+          python "$env:REPO_PATH\.github\ci\build_diagnostics.py" -- cmake --build "$env:REPO_PATH\out" --config Release --parallel
+          exit $LASTEXITCODE
 
       - name: Package, smoke, and verify
         run: |
