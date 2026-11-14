@@ -1091,13 +1091,13 @@ GhostModeAccountSettings &AyuSettings::ghost() {
 	return ghost(0);
 }
 
-const GhostReadState &AyuSettings::ghostReadState(uint64 accountId) {
+const Ayu::GhostReadState &AyuSettings::ghostReadState(uint64 accountId) {
 	const auto &states = getInstance()._ghostReadStates;
 	const auto i = states.find(accountId);
 	if (i != states.end()) {
 		return i->second;
 	}
-	static const auto Empty = GhostReadState();
+	static const auto Empty = Ayu::GhostReadState();
 	return Empty;
 }
 
@@ -2019,7 +2019,7 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 			if (!accountId) {
 				continue;
 			}
-			auto entries = std::map<GhostReadScope, GhostReadWatermark>();
+			auto entries = std::map<Ayu::GhostReadScope, Ayu::GhostReadWatermark>();
 			if (!watermarks.is_array()) {
 				continue;
 			}

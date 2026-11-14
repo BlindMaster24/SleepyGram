@@ -264,7 +264,7 @@ public:
 	[[nodiscard]] static GhostModeAccountSettings &ghost(not_null<Main::Session*> session);
 	[[nodiscard]] static GhostModeAccountSettings &ghost(uint64 userId);
 	[[nodiscard]] static GhostModeAccountSettings &ghost();
-	[[nodiscard]] static const GhostReadState &ghostReadState(uint64 accountId);
+	[[nodiscard]] static const Ayu::GhostReadState &ghostReadState(uint64 accountId);
 	static void advanceGhostRead(
 		uint64 accountId,
 		uint64 peerId,
@@ -739,7 +739,7 @@ private:
 
 	rpl::variable<bool> _useGlobalGhostMode = true;
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
-	std::map<uint64, GhostReadState> _ghostReadStates;
+	std::map<uint64, Ayu::GhostReadState> _ghostReadStates;
 	std::map<std::pair<uint64, uint64>, int> _deletedMessagePolicies;
 
 	MessageShotSettings _messageShotSettings;
