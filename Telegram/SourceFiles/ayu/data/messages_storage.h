@@ -7,6 +7,13 @@
 #pragma once
 
 #include "ayu/data/entities.h"
+#include "ayu/data/ayu_database.h"
+
+#include <optional>
+
+namespace Main {
+class Session;
+} // namespace Main
 
 namespace AyuMessages {
 
@@ -15,6 +22,19 @@ enum class DeletedMessagePolicy {
 	Off = 0,
 	On = 1,
 };
+
+using ArchiveSearchType = AyuDatabase::ArchiveSearchType;
+using ArchiveSearchCursor = AyuDatabase::ArchiveSearchCursor;
+using ArchiveSearchResult = AyuDatabase::ArchiveSearchResult;
+
+std::vector<ArchiveSearchResult> searchArchive(
+	ID userId,
+	const QString &searchQuery,
+	ArchiveSearchType type,
+	int dateFrom,
+	int dateTo,
+	std::optional<ArchiveSearchCursor> cursor,
+	int pageLimit);
 
 void addEditedMessage(not_null<HistoryItem *> item);
 std::vector<AyuMessageBase> getEditedMessages(not_null<HistoryItem*> item, ID minId, ID maxId, int totalLimit);

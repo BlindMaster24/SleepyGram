@@ -8,22 +8,37 @@
 
 #include "lang_auto.h"
 #include "ayu/ayu_settings.h"
+#include "ayu/data/messages_storage.h"
+#include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
 #include "ayu/ui/settings/settings_main.h"
 #include "boxes/abstract_box.h"
 #include "core/application.h"
 #include "core/file_utilities.h"
+#include "data/data_peer_id.h"
+#include "data/data_session.h"
+#include "main/main_session.h"
 #include "settings/settings_builder.h"
 #include "settings/settings_common.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/widgets/buttons.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/fields/input_field.h"
+#include "ui/widgets/labels.h"
 #include "ui/wrap/vertical_layout.h"
+#include "window/window_controller.h"
 #include "window/window_session_controller.h"
+
+#include "styles/style_boxes.h"
+#include "styles/style_widgets.h"
 
 #include <QFile>
 #include <QSaveFile>
+#include <QtCore/QDate>
+#include <QtCore/QDateTime>
 
 namespace Settings {
 
@@ -50,8 +65,265 @@ void BuildCrashReporting(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 #endif
 }
 
+PeerData *FindArchivedPeer(
+		Main::Session &session,
+		const AyuMessageBase &message) {
+	auto &data = session.data();
+	const auto id = message.peerId;
+	switch (message.peerType) {
+	case 1:
+		return data.peerLoaded(PeerId(UserId(id)));
+	case 2:
+		return data.peerLoaded(PeerId(ChatId(id)));
+	case 3:
+		return data.peerLoaded(PeerId(ChannelId(id)));
+	default:
+		if (message.dialogId > 0) {
+			return data.peerLoaded(PeerId(UserId(id)));
+		} else {
+			const auto channel = data.peerLoaded(PeerId(ChannelId(id)));
+			const auto chat = data.peerLoaded(PeerId(ChatId(id)));
+			return (channel && !chat) ? channel : (chat && !channel) ? chat : nullptr;
+		}
+	}
+}
+
+void OpenArchivedMessage(
+		not_null<Window::SessionController*> controller,
+		AyuDatabase::ArchiveSearchResult result,
+		const QString &searchQuery) {
+	const auto &session = controller->session();
+	const auto peer = FindArchivedPeer(session, result.message);
+	const auto window = session.tryResolveWindow();
+	if (peer && window) {
+		if (result.type == AyuDatabase::ArchiveSearchType::Edited) {
+			window->showSection(std::make_shared<MessageHistory::SectionMemento>(
+				peer,
+				nullptr,
+				result.message.topicId,
+				false,
+				result.message.messageId));
+		} else {
+			auto memento = std::make_shared<MessageHistory::SectionMemento>(
+				peer,
+				nullptr,
+				result.message.topicId);
+			memento->setSearchQuery(searchQuery);
+			window->showSection(std::move(memento));
+		}
+		return;
+	}
+	controller->show(Ui::MakeInformBox(
+		tr::ayu_ArchiveTextFallback(tr::now)
+		+ u"\n\n"_q
+		+ QString::fromStdString(result.message.text)));
+}
+
+void LoadArchiveSearchPage(
+		not_null<Ui::GenericBox*> box,
+		not_null<Window::SessionController*> controller,
+		not_null<Ui::VerticalLayout*> resultsLayout,
+		QString query,
+		AyuDatabase::ArchiveSearchType type,
+		int dateFrom,
+		int dateTo,
+		std::optional<AyuDatabase::ArchiveSearchCursor> cursor,
+		Ui::LinkButton *loadMore = nullptr) {
+	if (loadMore) {
+		loadMore->setDisabled(true);
+	}
+	const auto weak = base::make_weak(box);
+	const auto sessionId = controller->session().userId().bare
+		& PeerId::kChatTypeMask;
+	crl::async([=] {
+		const auto page = AyuMessages::searchArchive(
+			sessionId,
+			query.toStdString(),
+			type,
+			dateFrom,
+			dateTo,
+			cursor,
+			25);
+		crl::on_main([=, page = std::move(page)]() mutable {
+			if (!weak) {
+				return;
+			}
+			if (page.empty() && !cursor) {
+				resultsLayout->add(object_ptr<Ui::FlatLabel>(
+					resultsLayout,
+					tr::ayu_ArchiveSearchEmpty(tr::now),
+					st::boxLabel),
+					st::boxPadding);
+				return;
+			}
+			for (const auto &entry : page) {
+				auto preview = QString::fromStdString(entry.message.text)
+					.simplified();
+				constexpr auto kPreviewLength = 120;
+				if (preview.size() > kPreviewLength) {
+					preview = preview.left(kPreviewLength) + u"…"_q;
+				}
+				const auto date = QDateTime::fromSecsSinceEpoch(
+					entry.date).toLocalTime().date().toString(Qt::ISODate);
+				const auto kind = (entry.type
+					== AyuDatabase::ArchiveSearchType::Edited)
+					? tr::ayu_ArchiveSearchEdited(tr::now)
+					: tr::ayu_ArchiveSearchDeleted(tr::now);
+				const auto label = kind + u"  ·  "_q + date + u"\n"_q + preview;
+				const auto link = resultsLayout->add(
+					object_ptr<Ui::LinkButton>(
+						resultsLayout,
+						label,
+						st::boxLinkButton),
+					st::boxRowPadding);
+				link->setClickedCallback([=] {
+					OpenArchivedMessage(controller, entry, query);
+				});
+			}
+			if (page.size() == 25) {
+				const auto &last = page.back();
+				const auto nextCursor = AyuDatabase::ArchiveSearchCursor{
+					.date = last.date,
+					.type = last.type,
+					.rowId = last.rowId,
+				};
+				const auto more = resultsLayout->add(
+					object_ptr<Ui::LinkButton>(
+						resultsLayout,
+						tr::ayu_ArchiveSearchMore(tr::now),
+						st::boxLinkButton),
+					st::boxRowPadding);
+				more->setClickedCallback([=] {
+					LoadArchiveSearchPage(
+						box,
+						controller,
+						resultsLayout,
+						query,
+						type,
+						dateFrom,
+						dateTo,
+						nextCursor,
+						more);
+				});
+			}
+		});
+	});
+}
+
+void ArchiveSearchResultsBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<Window::SessionController*> controller,
+		QString query,
+		AyuDatabase::ArchiveSearchType type,
+		int dateFrom,
+		int dateTo) {
+	box->setTitle(tr::ayu_ArchiveSearchTitle());
+	box->setWidth(st::boxWideWidth);
+	const auto resultsLayout = box->verticalLayout()->add(
+		object_ptr<Ui::VerticalLayout>(box),
+		st::boxPadding);
+	LoadArchiveSearchPage(
+		box,
+		controller,
+		resultsLayout,
+		std::move(query),
+		type,
+		dateFrom,
+		dateTo,
+		std::nullopt);
+	box->addButton(tr::lng_box_done(), [=] { box->closeBox(); });
+}
+
+void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
+	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
+		box->setTitle(tr::ayu_ArchiveSearchTitle());
+		box->setWidth(st::boxWideWidth);
+		box->addRow(object_ptr<Ui::FlatLabel>(
+			box,
+			tr::ayu_ArchiveSearchDescription(tr::now),
+			st::boxLabel), st::boxPadding);
+		const auto query = box->addRow(object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			Ui::InputField::Mode::SingleLine,
+			tr::ayu_ArchiveSearchQuery()),
+			st::boxPadding);
+		const auto fromDate = box->addRow(object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			Ui::InputField::Mode::SingleLine,
+			tr::ayu_ArchiveSearchFromDate()),
+			st::boxPadding);
+		const auto toDate = box->addRow(object_ptr<Ui::InputField>(
+			box,
+			st::defaultInputField,
+			Ui::InputField::Mode::SingleLine,
+			tr::ayu_ArchiveSearchToDate()),
+			st::boxPadding);
+		const auto edited = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			tr::ayu_ArchiveSearchEdited(tr::now),
+			true,
+			st::defaultBoxCheckbox), st::boxPadding);
+		const auto deleted = box->addRow(object_ptr<Ui::Checkbox>(
+			box,
+			tr::ayu_ArchiveSearchDeleted(tr::now),
+			true,
+			st::defaultBoxCheckbox), st::boxPadding);
+		box->addButton(tr::ayu_ArchiveSearchStart(), [=] {
+			if (!edited->checked() && !deleted->checked()) {
+				controller->show(Ui::MakeInformBox(
+					tr::ayu_ArchiveSearchInvalidType(tr::now)));
+				return;
+			}
+			const auto parseDate = [](QString value, bool endOfDay)
+			-> std::optional<int> {
+				value = value.trimmed();
+				if (value.isEmpty()) {
+					return 0;
+				}
+				const auto date = QDate::fromString(value, Qt::ISODate);
+				if (!date.isValid()) {
+					return std::nullopt;
+				}
+				const auto time = endOfDay
+					? QTime(23, 59, 59)
+					: QTime(0, 0, 0);
+				return int(QDateTime(date, time, Qt::LocalTime).toSecsSinceEpoch());
+			};
+			const auto from = parseDate(fromDate->getLastText(), false);
+			const auto till = parseDate(toDate->getLastText(), true);
+			if (!from || !till || (*from && *till && *from > *till)) {
+				controller->show(Ui::MakeInformBox(
+					tr::ayu_ArchiveSearchInvalidDate(tr::now)));
+				return;
+			}
+			const auto type = (edited->checked() && deleted->checked())
+				? AyuDatabase::ArchiveSearchType::All
+				: edited->checked()
+				? AyuDatabase::ArchiveSearchType::Edited
+				: AyuDatabase::ArchiveSearchType::Deleted;
+			const auto search = query->getLastText().trimmed();
+			box->closeBox();
+			controller->show(Box(
+				ArchiveSearchResultsBox,
+				controller,
+				search,
+				type,
+				*from,
+				*till));
+		});
+	}));
+}
+
 void BuildOtherThings(SectionBuilder &builder) {
 	const auto controller = builder.controller();
+
+	builder.addButton({
+		.id = u"ayu/archiveSearch"_q,
+		.title = tr::ayu_ArchiveSearchTitle(),
+		.onClick = [=] { ShowArchiveSearchBox(controller); },
+	});
 
 	builder.addSkip();
 	builder.addButton({

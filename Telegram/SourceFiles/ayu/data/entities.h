@@ -18,6 +18,7 @@ public:
 	ID dialogId;
 	ID groupedId;
 	ID peerId;
+	int peerType = 0;
 	ID fromId;
 	ID topicId;
 	int messageId;

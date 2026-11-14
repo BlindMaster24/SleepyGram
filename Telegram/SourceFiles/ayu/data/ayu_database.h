@@ -8,7 +8,9 @@
 
 #include "ayu/data/entities.h"
 
+#include <cstdint>
 #include <functional>
+#include <optional>
 
 class SchemaVersion
 {
@@ -18,6 +20,25 @@ public:
 };
 
 namespace AyuDatabase {
+
+enum class ArchiveSearchType : uint8_t {
+	All,
+	Edited,
+	Deleted,
+};
+
+struct ArchiveSearchCursor {
+	int date = 0;
+	ArchiveSearchType type = ArchiveSearchType::All;
+	ID rowId = 0;
+};
+
+struct ArchiveSearchResult {
+	ArchiveSearchType type = ArchiveSearchType::Edited;
+	int date = 0;
+	ID rowId = 0;
+	AyuMessageBase message;
+};
 
 void initialize();
 
@@ -32,6 +53,15 @@ std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicI
 bool hasDeletedMessages(ID userId, ID dialogId, ID topicId);
 void removeDeletedMessage(ID userId, ID dialogId, ID messageId);
 void clearDeletedMessages(ID userId, ID dialogId, ID topicId);
+
+std::vector<ArchiveSearchResult> searchArchive(
+	ID userId,
+	const std::string &searchQuery,
+	ArchiveSearchType type,
+	int dateFrom,
+	int dateTo,
+	std::optional<ArchiveSearchCursor> cursor,
+	int pageLimit);
 
 std::vector<RegexFilter> getAllRegexFilters();
 RegexFilter getById(std::vector<char> id);

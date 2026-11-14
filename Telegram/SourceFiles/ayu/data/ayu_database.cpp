@@ -10,6 +10,7 @@
 #include "ayu/libs/sqlite/sqlite_orm.h"
 #include "base/unixtime.h"
 
+#include <algorithm>
 #include <mutex>
 
 using namespace sqlite_orm;
@@ -32,6 +33,14 @@ auto storage = make_storage(
 			   column<EditedMessage>(&EditedMessage::userId),
 			   column<EditedMessage>(&EditedMessage::dialogId),
 			   column<EditedMessage>(&EditedMessage::messageId)),
+	make_index("idx_edited_archive_search",
+			   column<EditedMessage>(&EditedMessage::userId),
+			   column<EditedMessage>(&EditedMessage::editDate),
+			   column<EditedMessage>(&EditedMessage::fakeId)),
+	make_index("idx_deleted_archive_search",
+			   column<DeletedMessage>(&DeletedMessage::userId),
+			   column<DeletedMessage>(&DeletedMessage::date),
+			   column<DeletedMessage>(&DeletedMessage::fakeId)),
 	make_table<DeletedMessage>(
 		"DeletedMessage",
 		make_column("fakeId", &DeletedMessage::fakeId, primary_key().autoincrement()),
@@ -39,6 +48,7 @@ auto storage = make_storage(
 		make_column("dialogId", &DeletedMessage::dialogId),
 		make_column("groupedId", &DeletedMessage::groupedId),
 		make_column("peerId", &DeletedMessage::peerId),
+		make_column("peerType", &DeletedMessage::peerType, default_value(0)),
 		make_column("fromId", &DeletedMessage::fromId),
 		make_column("topicId", &DeletedMessage::topicId),
 		make_column("messageId", &DeletedMessage::messageId),
@@ -75,6 +85,7 @@ auto storage = make_storage(
 		make_column("dialogId", &EditedMessage::dialogId),
 		make_column("groupedId", &EditedMessage::groupedId),
 		make_column("peerId", &EditedMessage::peerId),
+		make_column("peerType", &EditedMessage::peerType, default_value(0)),
 		make_column("fromId", &EditedMessage::fromId),
 		make_column("topicId", &EditedMessage::topicId),
 		make_column("messageId", &EditedMessage::messageId),
@@ -495,6 +506,139 @@ void clearDeletedMessages(ID userId, ID dialogId, ID topicId) {
 			)
 		);
 	} catch (std::exception &) {
+	}
+}
+
+std::vector<ArchiveSearchResult> searchArchive(
+		ID userId,
+		const std::string &searchQuery,
+		ArchiveSearchType type,
+		int dateFrom,
+		int dateTo,
+		std::optional<ArchiveSearchCursor> cursor,
+		int pageLimit) {
+	std::lock_guard lock(databaseMutex);
+	const auto pageSize = std::clamp(pageLimit, 1, 100);
+	const auto hasCursor = cursor.has_value();
+	const auto cursorDate = hasCursor ? cursor->date : 0;
+	const auto cursorRowId = hasCursor ? cursor->rowId : 0;
+	const auto query = [&] {
+		auto escaped = std::string();
+		escaped.reserve(searchQuery.size());
+		for (const auto c : searchQuery) {
+			if (c == '%' || c == '_' || c == '\\') {
+				escaped += '\\';
+			}
+			escaped += c;
+		}
+		return escaped;
+	}();
+	const auto wantsEdited = (type != ArchiveSearchType::Deleted);
+	const auto wantsDeleted = (type != ArchiveSearchType::Edited);
+	try {
+		auto result = std::vector<ArchiveSearchResult>();
+		if (wantsEdited) {
+			const auto continueEditedDate = cursor
+				&& cursor->type == ArchiveSearchType::Edited;
+			const auto cursorAfter
+				= (column<EditedMessage>(&EditedMessage::editDate) < cursorDate)
+				|| ((column<EditedMessage>(&EditedMessage::editDate)
+					== cursorDate)
+					&& (continueEditedDate
+						&& column<EditedMessage>(&EditedMessage::fakeId)
+							< cursorRowId));
+			const auto common = column<EditedMessage>(&EditedMessage::userId)
+				== userId and
+				(dateFrom == 0
+					or column<EditedMessage>(&EditedMessage::editDate) >= dateFrom) and
+				(dateTo == 0
+					or column<EditedMessage>(&EditedMessage::editDate) <= dateTo) and
+				(!hasCursor or cursorAfter);
+			auto rows = query.empty()
+				? storage.get_all<EditedMessage>(
+					where(common),
+					order_by(
+						column<EditedMessage>(&EditedMessage::editDate).desc(),
+						column<EditedMessage>(&EditedMessage::fakeId).desc()),
+					limit(pageSize))
+				: storage.get_all<EditedMessage>(
+					where(common and like(
+						column<EditedMessage>(&EditedMessage::text),
+						"%" + query + "%",
+						"\\")),
+					order_by(
+						column<EditedMessage>(&EditedMessage::editDate).desc(),
+						column<EditedMessage>(&EditedMessage::fakeId).desc()),
+					limit(pageSize));
+			for (const auto &row : rows) {
+				result.push_back({
+					.type = ArchiveSearchType::Edited,
+					.date = row.editDate,
+					.rowId = row.fakeId,
+					.message = static_cast<AyuMessageBase>(row),
+				});
+			}
+		}
+		if (wantsDeleted) {
+			const auto continueAfterEditedDate = (type == ArchiveSearchType::All
+				&& cursor
+				&& cursor->type == ArchiveSearchType::Edited);
+			const auto continueDeletedDate = cursor
+				&& cursor->type == ArchiveSearchType::Deleted;
+			const auto cursorAfter
+				= (column<DeletedMessage>(&DeletedMessage::date) < cursorDate)
+				|| ((column<DeletedMessage>(&DeletedMessage::date) == cursorDate)
+					&& (continueAfterEditedDate
+						|| (continueDeletedDate
+							&& column<DeletedMessage>(&DeletedMessage::fakeId)
+								< cursorRowId)));
+			const auto common = column<DeletedMessage>(&DeletedMessage::userId)
+				== userId and
+				(dateFrom == 0
+					or column<DeletedMessage>(&DeletedMessage::date) >= dateFrom) and
+				(dateTo == 0
+					or column<DeletedMessage>(&DeletedMessage::date) <= dateTo) and
+				(!hasCursor or cursorAfter);
+			auto rows = query.empty()
+				? storage.get_all<DeletedMessage>(
+					where(common),
+					order_by(
+						column<DeletedMessage>(&DeletedMessage::date).desc(),
+						column<DeletedMessage>(&DeletedMessage::fakeId).desc()),
+					limit(pageSize))
+				: storage.get_all<DeletedMessage>(
+					where(common and like(
+						column<DeletedMessage>(&DeletedMessage::text),
+						"%" + query + "%",
+						"\\")),
+					order_by(
+						column<DeletedMessage>(&DeletedMessage::date).desc(),
+						column<DeletedMessage>(&DeletedMessage::fakeId).desc()),
+					limit(pageSize));
+			for (const auto &row : rows) {
+				result.push_back({
+					.type = ArchiveSearchType::Deleted,
+					.date = row.date,
+					.rowId = row.fakeId,
+					.message = static_cast<AyuMessageBase>(row),
+				});
+			}
+		}
+		std::ranges::sort(result, [](const auto &a, const auto &b) {
+			if (a.date != b.date) {
+				return a.date > b.date;
+			} else if (a.type != b.type) {
+				return a.type == ArchiveSearchType::Edited;
+			}
+			return a.rowId > b.rowId;
+		});
+		if (result.size() > pageSize) {
+			result.resize(pageSize);
+		}
+		return result;
+	} catch (const std::exception &ex) {
+		LOG(("Failed to search archived messages: %1").arg(ex.what()));
+		return {};
 	}
 }
 

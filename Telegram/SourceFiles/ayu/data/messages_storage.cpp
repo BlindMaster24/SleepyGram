@@ -20,6 +20,24 @@
 
 namespace AyuMessages {
 
+std::vector<ArchiveSearchResult> searchArchive(
+		ID userId,
+		const QString &searchQuery,
+		ArchiveSearchType type,
+		int dateFrom,
+		int dateTo,
+		std::optional<ArchiveSearchCursor> cursor,
+		int pageLimit) {
+	return AyuDatabase::searchArchive(
+		userId,
+		searchQuery.toStdString(),
+		type,
+		dateFrom,
+		dateTo,
+		cursor,
+		pageLimit);
+}
+
 template<typename DerivedMessage>
 std::vector<AyuMessageBase> convertToBase(const std::vector<DerivedMessage> &messages) {
 	std::vector<AyuMessageBase> based;
@@ -37,6 +55,13 @@ void map(not_null<HistoryItem*> item, AyuMessageBase &message) {
 	message.dialogId = getDialogIdFromPeer(item->history()->peer);
 	message.groupedId = item->groupId().raw();
 	message.peerId = item->history()->peer->id.value & PeerId::kChatTypeMask;
+	message.peerType = item->history()->peer->isUser()
+		? 1
+		: item->history()->peer->isChat()
+		? 2
+		: item->history()->peer->isChannel()
+		? 3
+		: 0;
 	message.fromId = item->from()->id.value & PeerId::kChatTypeMask;
 	if (item->topic()) {
 		message.topicId = item->topicRootId().bare;
