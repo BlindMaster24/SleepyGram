@@ -512,7 +512,6 @@ private:
 			}
 			if (item->date() > _snapshot.to
 				|| item->isEphemeral()
-				|| item->isNoForwards()
 				|| item->isAyuNoForwards()
 				|| _peer->isAyuNoForwards()
 				|| (item->media() && item->media()->ttlSeconds())
@@ -628,7 +627,6 @@ private:
 			FullMsgId(_peer->id, task.entry.messageId));
 		if (!item
 			|| item->isEphemeral()
-			|| item->isNoForwards()
 			|| item->isAyuNoForwards()
 			|| (item->media() && item->media()->ttlSeconds())
 			|| (item->from() && item->from()->isAyuNoForwards())) {

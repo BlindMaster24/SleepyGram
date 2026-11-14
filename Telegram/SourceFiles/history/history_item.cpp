@@ -2498,6 +2498,13 @@ void HistoryItem::applyEdition(HistoryMessageEdition &&edition) {
 	} else {
 		_flags &= ~MessageFlag::InvertMedia;
 	}
+	if (edition.noForwards.has_value()) {
+		if (*edition.noForwards) {
+			_flags |= MessageFlag::AyuNoForwards;
+		} else {
+			_flags &= ~MessageFlag::AyuNoForwards;
+		}
+	}
 
 	if (edition.editDate != -1) {
 		//_flags |= MTPDmessage::Flag::f_edit_date;
@@ -2881,9 +2888,9 @@ void HistoryItem::applySentMessage(const MTPDmessage &data) {
 		_flags &= ~MessageFlag::InvertMedia;
 	}
 	if (data.is_noforwards()) {
-		_flags |= MessageFlag::NoForwards;
+		_flags |= MessageFlag::AyuNoForwards;
 	} else {
-		_flags &= ~MessageFlag::NoForwards;
+		_flags &= ~MessageFlag::AyuNoForwards;
 	}
 
 	const auto wasTypes = sharedMediaTypes();

@@ -41,6 +41,7 @@ HistoryMessageEdition::HistoryMessageEdition(
 		replies = HistoryMessageRepliesData(mtpReplies);
 	}
 	invertMedia = message.is_invert_media();
+	noForwards = message.is_noforwards();
 	if (const auto rank = message.vfrom_rank()) {
 		fromRank = qs(*rank);
 	}
