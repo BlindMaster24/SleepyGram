@@ -90,6 +90,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_ayu_icons.h"
 #include "lang_auto.h"
 #include "ayu/ui/settings/settings_main.h"
+#include "ayu/ui/settings/settings_other.h"
 #include "styles/style_info.h"
 
 
@@ -676,17 +677,28 @@ void MainMenu::setupMenu() {
 			std::move(descriptor));
 	};
 	if (!_controller->session().supportMode()) {
-		if (settings.showMyProfileInDrawer())
-		_menu->add(
-			CreateButtonWithIcon(
+		if (settings.showMyProfileInDrawer()) {
+			const auto profile = _menu->add(CreateButtonWithIcon(
 				_menu,
 				tr::lng_menu_my_profile(),
 				st::mainMenuButton,
-				{ &st::menuIconProfile })
-		)->setClickedCallback([=] {
-			controller->showSection(
-				Info::Stories::MakeMyProfile(controller->session().user()));
-		});
+				{ &st::menuIconProfile }));
+			profile->setAcceptBoth(true);
+			profile->addClickHandler([=](Qt::MouseButton button) {
+				if (button == Qt::LeftButton) {
+					controller->showSection(
+						Info::Stories::MakeMyProfile(controller->session().user()));
+				} else if (button == Qt::RightButton) {
+					_contextMenu = base::make_unique_q<Ui::PopupMenu>(
+						this,
+						st::defaultPopupMenu);
+					_contextMenu->addAction(
+						tr::ayu_AccountTransferTitle(tr::now),
+						[=] { Settings::ShowAccountTransferWizard(controller); });
+					_contextMenu->popup(QCursor::pos());
+				}
+			});
+		}
 
 		if (settings.showBotsInDrawer())
 		SetupMenuBots(_menu, controller);

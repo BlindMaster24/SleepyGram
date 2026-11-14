@@ -319,7 +319,9 @@ void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
-void ExportArchiveBackup(not_null<Window::SessionController*> controller) {
+void ExportArchiveBackup(
+		not_null<Window::SessionController*> controller,
+		Fn<void()> completed = nullptr) {
 	const auto accountId = controller->session().userId().bare
 		& PeerId::kChatTypeMask;
 	const auto counts = AyuDatabase::archiveBackupCounts(accountId);
@@ -361,7 +363,11 @@ void ExportArchiveBackup(not_null<Window::SessionController*> controller) {
 						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
 						return;
 					}
-					controller->showToast(tr::lng_box_done(tr::now));
+					if (completed) {
+						completed();
+					} else {
+						controller->showToast(tr::lng_box_done(tr::now));
+					}
 				}));
 		},
 	}));
@@ -418,6 +424,28 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 		}));
 }
 
+void ExportTransferSettings(
+		not_null<Window::SessionController*> controller,
+		Fn<void()> completed) {
+	const auto accountId = controller->session().userId().bare;
+	FileDialog::GetWritePath(
+		controller->widget(),
+		tr::ayu_SettingsExport(tr::now),
+		u"JSON files (*.json)"_q,
+		u"sleepygram-settings.json"_q,
+		crl::guard(controller, [=](QString &&path) {
+			if (path.isEmpty()) return;
+			auto file = QSaveFile(path);
+			const auto data = AyuSettings::exportTransfer(accountId);
+			if (!file.open(QIODevice::WriteOnly)
+				|| file.write(data) != data.size() || !file.commit()) {
+				controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+				return;
+			}
+			completed();
+		}));
+}
+
 void BuildOtherThings(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 
@@ -428,6 +456,11 @@ void BuildOtherThings(SectionBuilder &builder) {
 	});
 
 	builder.addSkip();
+	builder.addButton({
+		.id = u"ayu/accountTransferWizard"_q,
+		.title = tr::ayu_AccountTransferTitle(),
+		.onClick = [=] { ShowAccountTransferWizard(controller); },
+	});
 	builder.addButton({
 		.id = u"ayu/archiveBackupExport"_q,
 		.title = tr::ayu_ArchiveBackupExportTitle(),
@@ -560,6 +593,23 @@ const auto kMeta = BuildHelper({
 });
 
 } // namespace
+
+void ShowAccountTransferWizard(
+		not_null<Window::SessionController*> controller) {
+	controller->show(Ui::MakeConfirmBox({
+		.text = tr::ayu_AccountTransferInstructions(tr::now),
+		.confirmText = tr::ayu_AccountTransferPrepare(),
+		.confirmed = [=](Fn<void()> &&close) {
+			close();
+			ExportTransferSettings(controller, [=] {
+				ExportArchiveBackup(controller, [=] {
+					controller->show(Ui::MakeInformBox(
+						tr::ayu_AccountTransferComplete(tr::now)));
+				});
+			});
+		},
+	}));
+}
 
 rpl::producer<QString> AyuOther::title() {
 	return tr::ayu_CategoryOther();

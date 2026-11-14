@@ -26,5 +26,6 @@ private:
 };
 
 [[nodiscard]] Type AyuOtherId();
+void ShowAccountTransferWizard(not_null<Window::SessionController*> controller);
 
 } // namespace Settings
