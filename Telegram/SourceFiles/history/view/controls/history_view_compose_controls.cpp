@@ -2525,7 +2525,7 @@ void ComposeControls::clear(bool keepReply) {
 	}
 	clearChosenStarsForMessage();
 	if (_preview) {
-		_preview->apply({ .removed = true });
+		_preview->resetForNewDraft();
 	}
 }
 
@@ -3938,8 +3938,7 @@ void ComposeControls::applyDraft(FieldHistoryAction fieldHistoryAction) {
 		clearFieldText(0, fieldHistoryAction);
 		_header->editMessage({}, {});
 		if (_preview) {
-			_preview->apply({ .removed = true });
-			_preview->setDisabled(false);
+			_preview->resetForNewDraft();
 		}
 		_canReplaceMedia = _canAddMedia = false;
 		_photoEditMedia = nullptr;
@@ -3970,8 +3969,7 @@ void ComposeControls::applyDraft(FieldHistoryAction fieldHistoryAction) {
 		_header->editMessage({}, {});
 		_header->replyToMessage({});
 		if (_preview) {
-			_preview->apply({ .removed = true });
-			_preview->setDisabled(false);
+			_preview->resetForNewDraft();
 		}
 		_canReplaceMedia = _canAddMedia = false;
 		_photoEditMedia = nullptr;
@@ -4698,7 +4696,7 @@ void ComposeControls::initVoiceRecordBar() {
 				if (_previewShown) {
 					_preview->apply({ .removed = true });
 				} else if (_preview->disabled()) {
-					_preview->setDisabled(false);
+					_preview->enableForDraft();
 				} else {
 					_preview->apply({}, true);
 				}

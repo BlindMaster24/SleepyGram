@@ -1616,6 +1616,24 @@ void SetupMessages(
 	}
 
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
+	const auto disableLinkPreviews = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_disable_link_previews_by_default(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kDisableLinkPreviewsByDefaultKey,
+				false),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	disableLinkPreviews->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kDisableLinkPreviewsByDefaultKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
+	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
 
 	const auto groupQuick = std::make_shared<Ui::RadioenumGroup<Quick>>(
 		Core::App().settings().chatQuickAction());

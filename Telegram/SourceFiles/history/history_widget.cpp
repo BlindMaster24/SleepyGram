@@ -2924,7 +2924,7 @@ void HistoryWidget::setupShortcuts() {
 				if (_previewDrawPreview) {
 					_preview->apply({ .removed = true });
 				} else if (_preview->disabled()) {
-					_preview->setDisabled(false);
+					_preview->enableForDraft();
 				} else {
 					_preview->apply({}, true);
 				}
@@ -6189,7 +6189,7 @@ void HistoryWidget::sendRichDraft(
 
 	clearFieldText();
 	if (_preview) {
-		_preview->apply({ .removed = true });
+		_preview->resetForNewDraft();
 	}
 	saveDraftWithTextNow();
 	if (session().supportMode()) {
@@ -6295,7 +6295,7 @@ void HistoryWidget::sendTextWithTags(
 
 	clearFieldText();
 	if (_preview) {
-		_preview->apply({ .removed = true });
+		_preview->resetForNewDraft();
 	}
 	saveDraftWithTextNow();
 

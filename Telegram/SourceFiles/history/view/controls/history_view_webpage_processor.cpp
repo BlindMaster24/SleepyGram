@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/view/controls/history_view_webpage_processor.h"
 
 #include "base/unixtime.h"
+#include "core/application.h"
+#include "core/core_settings.h"
 #include "data/data_chat_participant_status.h"
 #include "data/data_file_origin.h"
 #include "data/data_session.h"
@@ -203,6 +205,10 @@ WebpageProcessor::WebpageProcessor(
 	}
 	_resolver->request(_link, true);
 }) {
+	_draft.removed = Core::App().settings().readPref<bool>(
+		Core::kDisableLinkPreviewsByDefaultKey,
+		false);
+	_defaultDisabled = _draft.removed;
 	_history->session().downloaderTaskFinished(
 	) | rpl::filter([=] {
 		return _data && (_data->document || _data->photo);
@@ -253,7 +259,7 @@ Data::WebPageDraft WebpageProcessor::draft() const {
 }
 
 bool WebpageProcessor::disabled() const {
-	return _parser.disabled();
+	return _parser.disabled() || _defaultDisabled;
 }
 
 std::shared_ptr<WebpageResolver> WebpageProcessor::resolver() const {
@@ -269,11 +275,22 @@ QString WebpageProcessor::link() const {
 }
 
 void WebpageProcessor::apply(Data::WebPageDraft draft, bool reparse) {
+	if (_initialApply) {
+		_initialApply = false;
+		if (_draft.removed) {
+			if (draft.removed || draft.manual || draft.id || !draft.url.isEmpty()) {
+				_parser.setDisabled(false);
+				_defaultDisabled = false;
+			} else {
+				draft.removed = true;
+			}
+		}
+	}
 	const auto was = _link;
 	if (draft.removed) {
 		_draft = draft;
 		_parsedLinks = _parser.list().current();
-		if (_parsedLinks.empty()) {
+		if (_parsedLinks.empty() && !_defaultDisabled) {
 			_draft.removed = false;
 		}
 		_data = nullptr;
@@ -341,9 +358,32 @@ void WebpageProcessor::setDisabled(bool disabled) {
 	_parser.setDisabled(disabled);
 	if (disabled) {
 		apply({ .removed = true });
-	} else {
+	} else if (!_defaultDisabled) {
 		checkNow(false);
 	}
+}
+
+void WebpageProcessor::enableForDraft() {
+	_defaultDisabled = false;
+	_parser.setDisabled(false);
+	checkNow(false);
+}
+
+void WebpageProcessor::resetForNewDraft() {
+	_initialApply = false;
+	const auto disabled = Core::App().settings().readPref<bool>(
+		Core::kDisableLinkPreviewsByDefaultKey,
+		false);
+	_parser.setDisabled(false);
+	_defaultDisabled = disabled;
+	_draft = Data::WebPageDraft();
+	_draft.removed = disabled;
+	_data = nullptr;
+	_parsedLinks.clear();
+	_links.clear();
+	_link = QString();
+	_parsed = WebpageParsed();
+	updateFromData();
 }
 
 void WebpageProcessor::checkNow(bool force) {
@@ -361,6 +401,10 @@ void WebpageProcessor::checkNow(bool force) {
 }
 
 void WebpageProcessor::checkPreview() {
+	if (_defaultDisabled) {
+		_draft.removed = true;
+		return;
+	}
 	const auto previewRestricted = _history->peer
 		&& _history->peer->amRestricted(ChatRestriction::EmbedLinks);
 	if (_parsedLinks.empty()) {

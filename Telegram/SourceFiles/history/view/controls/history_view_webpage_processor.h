@@ -83,6 +83,8 @@ public:
 		not_null<Ui::InputField*> field);
 
 	void setDisabled(bool disabled);
+	void enableForDraft();
+	void resetForNewDraft();
 	void checkNow(bool force);
 
 	// If editing a message without a preview we don't want to show
@@ -122,6 +124,8 @@ private:
 	rpl::variable<WebpageParsed> _parsed;
 
 	base::Timer _timer;
+	bool _initialApply = true;
+	bool _defaultDisabled = false;
 
 	rpl::lifetime _lifetime;
 
