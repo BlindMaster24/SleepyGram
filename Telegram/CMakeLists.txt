@@ -79,6 +79,7 @@ include(cmake/test_iv_editor_state.cmake)
 include(cmake/test_iv_editor_table_grid.cmake)
 include(cmake/test_wallet_card_tint.cmake)
 include(cmake/test_offline_history_storage.cmake)
+include(cmake/test_profile_set_model.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -237,6 +238,8 @@ set(ayugram_files
         ayu/features/streamer_mode/streamer_mode.h
         ayu/features/chat_lock/chat_lock.cpp
         ayu/features/chat_lock/chat_lock.h
+        ayu/features/profile_sets/profile_sets.cpp
+        ayu/features/profile_sets/profile_sets.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp
