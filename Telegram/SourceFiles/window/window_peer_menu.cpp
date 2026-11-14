@@ -150,6 +150,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
 #include "ayu/features/forward/ayu_forward.h"
+#include "ayu/features/offline_history/offline_history.h"
 
 
 namespace Window {
@@ -2051,6 +2052,9 @@ void Filler::fillHistoryActions() {
 	addDirectMessages();
 	addExportChat();
 	addTranslate();
+	_addAction(tr::lng_offline_history_menu(tr::now), [=] {
+		Ayu::OfflineHistory::Open(_controller, _peer->id);
+	}, &st::menuIconSavedMessages);
 	addReport();
 	addClearHistory();
 	AyuUi::AddDeleteOwnMessagesAction(_peer, _topic, _controller, _addAction);
