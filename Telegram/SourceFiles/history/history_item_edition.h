@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_item_reply_markup.h"
 
 #include <memory>
+#include <optional>
 
 namespace Data {
 class Media;
@@ -44,6 +45,7 @@ struct HistoryMessageEdition {
 	bool useSameSuggest = false;
 	bool savePreviousMedia = false;
 	bool invertMedia = false;
+	std::optional<bool> noForwards;
 	TextWithEntities textWithEntities;
 	HistoryMessageMarkupData replyMarkup;
 	HistoryMessageRepliesData replies;

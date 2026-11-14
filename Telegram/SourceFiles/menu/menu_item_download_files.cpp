@@ -486,7 +486,6 @@ void Collect(
 		|| item->isEphemeral()
 		|| !item->allowsMediaDownloadControls()
 		|| item->isAyuNoForwards()
-		|| item->isNoForwards()
 		|| item->from()->isAyuNoForwards()
 		|| item->history()->peer->isAyuNoForwards()
 		|| !messageIds.emplace(item->fullId()).second) {
