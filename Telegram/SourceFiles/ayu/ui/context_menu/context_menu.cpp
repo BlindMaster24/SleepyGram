@@ -339,7 +339,6 @@ void AddAyuGramActions(PeerData *peerData,
 							.setPinnedNotificationsSuppressed(
 								peerData->id,
 								!suppressed);
-								!suppressed);
 						sessionController->session().saveSettingsDelayed();
 					},
 					suppressed
