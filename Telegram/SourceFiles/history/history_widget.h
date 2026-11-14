@@ -77,6 +77,7 @@ class IconButton;
 class EmojiButton;
 class RpWidget;
 class SendButton;
+class FlatLabel;
 class SilentToggle;
 class FlatButton;
 class RoundButton;
@@ -804,6 +805,7 @@ private:
 		HistoryView::SuggestMode mode);
 	void setupSendAsToggle();
 	void refreshSendAsToggle();
+	void updateAccountMarker();
 	void refreshAttachBotsMenu();
 
 	void injectSponsoredMessages() const;
@@ -958,6 +960,7 @@ private:
 	object_ptr<Ui::IconButton> _attachToggle;
 	object_ptr<Ui::IconButton> _replaceMedia = { nullptr };
 	object_ptr<Ui::SendAsButton> _sendAs = { nullptr };
+	object_ptr<Ui::FlatLabel> _accountMarker = { nullptr };
 	object_ptr<Ui::EmojiButton> _tabbedSelectorToggle;
 	object_ptr<Ui::IconButton> _botKeyboardShow;
 	object_ptr<Ui::IconButton> _botKeyboardHide;

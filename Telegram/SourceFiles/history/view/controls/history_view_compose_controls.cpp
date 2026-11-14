@@ -105,6 +105,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "iv/iv_rich_page.h"
 #include "lang/lang_keys.h"
 #include "main/main_app_config.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "main/session/send_as_peers.h"
@@ -121,6 +122,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/ui_utility.h"
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/dropdown_menu.h"
+#include "ui/widgets/labels.h"
 #include "ui/text/format_values.h"
 #include "ui/controls/compose_ai_button_factory.h"
 #include "ui/controls/emoji_button.h"
@@ -1454,6 +1456,16 @@ ComposeControls::ComposeControls(
 		}, _wrap->lifetime());
 	}
 	init();
+	_accountMarker = std::make_unique<Ui::FlatLabel>(
+		_wrap.get(),
+		st::historyAccountMarker);
+	_accountMarker->hide();
+	session().domain().accountsChanges() | rpl::on_next([=] {
+		updateAccountMarker();
+		updateControlsGeometry(_wrap->size());
+	}, _wrap->lifetime());
+	updateAccountMarker();
+	updateControlsGeometry(_wrap->size());
 
 	session().data().botCommandsChanges(
 	) | rpl::filter([=](not_null<PeerData*> peer) {
@@ -3151,6 +3163,34 @@ bool ComposeControls::showRecordButton() const {
 		&& !hasSendableContent()
 		&& (replyingToMessage().replying() || !readyToForward())
 		&& !isEditingMessage();
+}
+
+void ComposeControls::updateAccountMarker() {
+	if (!_accountMarker) {
+		return;
+	}
+	const auto show = Core::App().settings().readPref<bool>(
+		Core::kShowCurrentAccountInComposeKey,
+		true)
+		&& session().domain().accountsAuthedCount() >= 2;
+	_accountMarker->setVisible(show);
+	if (!show) {
+		return;
+	}
+	const auto &accounts = session().domain().accounts();
+	const auto i = ranges::find(accounts, &session().account(), [](const auto &a) {
+		return a.account.get();
+	});
+	const auto number = (i == end(accounts)) ? 1 : (i->index + 1);
+	_accountMarker->setText(QString::number(number));
+	const auto name = session().user()->name();
+	const auto tooltip = tr::lng_compose_current_account_marker(
+		tr::now,
+		lt_name,
+		name);
+	_accountMarker->setToolTip(tooltip);
+	_accountMarker->setAccessibleName(tooltip);
+	_accountMarker->resizeToWidth(_accountMarker->textMaxWidth());
 }
 
 bool ComposeControls::showEditStarsButton() const {
@@ -5150,6 +5190,7 @@ void ComposeControls::finishAnimating() {
 }
 
 void ComposeControls::updateControlsGeometry(QSize size) {
+	updateAccountMarker();
 	// (_commentsShown) (_attachToggle|_replaceMedia) (_sendAs) -- _inlineResults ------ _tabbedPanel -- _fieldBarCancel (_starsReaction)
 	// (_attachDocument|_attachPhoto) _field (_ttlInfo) (_scheduled) (_silent|_botCommandStart) _tabbedSelectorToggle _send
 
@@ -5170,6 +5211,9 @@ void ComposeControls::updateControlsGeometry(QSize size) {
 			? (st::historyBotMenuSkip + _botMenu->width())
 			: 0)
 		- (_sendAs ? _sendAs->width() : 0)
+		- (_accountMarker && !_accountMarker->isHidden()
+			? (_accountMarker->width() + st::historyAccountMarkerSkip)
+			: 0)
 		- _st.padding.right()
 		- _send->width()
 		- (_editStars ? _editStars->width() : 0)
@@ -5236,6 +5280,12 @@ void ComposeControls::updateControlsGeometry(QSize size) {
 	if (_sendAs) {
 		_sendAs->moveToLeft(left, buttonsTop);
 		left += _sendAs->width();
+	}
+	if (_accountMarker && !_accountMarker->isHidden()) {
+		_accountMarker->moveToLeft(
+			left,
+			buttonsTop + (_st.attach.height - _accountMarker->height()) / 2);
+		left += _accountMarker->width() + st::historyAccountMarkerSkip;
 	}
 	const auto fieldHeight = composeFieldHeight();
 	const auto fieldTop = size.height() - _st.padding.bottom() - fieldHeight;

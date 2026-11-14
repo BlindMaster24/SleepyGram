@@ -43,6 +43,8 @@ inline constexpr auto kCopyMonospaceOnClickKey
 	= "copy-monospace-on-click"_cs;
 inline constexpr auto kDisableLinkPreviewsByDefaultKey
 	= "disable-link-previews-by-default"_cs;
+inline constexpr auto kShowCurrentAccountInComposeKey
+	= "show-current-account-in-compose"_cs;
 
 struct WindowPosition {
 	int32 moncrc = 0;

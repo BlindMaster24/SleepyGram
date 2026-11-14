@@ -1634,6 +1634,24 @@ void SetupMessages(
 	}, inner->lifetime());
 
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
+	const auto showCurrentAccount = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_show_current_account_in_compose(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kShowCurrentAccountInComposeKey,
+				true),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	showCurrentAccount->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kShowCurrentAccountInComposeKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
+	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
 
 	const auto groupQuick = std::make_shared<Ui::RadioenumGroup<Quick>>(
 		Core::App().settings().chatQuickAction());

@@ -1455,6 +1455,13 @@ historyCharsLimitationLabel: FlatLabel(defaultFlatLabel) {
 	textFg: attentionButtonFg;
 }
 
+historyAccountMarker: FlatLabel(defaultFlatLabel) {
+	minWidth: 28px;
+	align: align(center);
+	textFg: windowSubTextFg;
+}
+historyAccountMarkerSkip: 4px;
+
 historyRecordVoiceFg: historyComposeIconFg;
 historyRecordVoiceFgOver: historyComposeIconFgOver;
 historyRecordVoiceFgInactive: attentionButtonFg;

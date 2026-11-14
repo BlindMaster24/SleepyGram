@@ -191,6 +191,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/popup_menu.h"
 #include "ui/item_text_options.h"
 #include "main/main_app_config.h"
+#include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "main/session/send_as_peers.h"
@@ -1352,6 +1353,12 @@ HistoryWidget::HistoryWidget(
 
 	setupScheduledToggle();
 	setupSendAsToggle();
+	_accountMarker.create(this, st::historyAccountMarker);
+	session().domain().accountsChanges() | rpl::on_next([=] {
+		updateAccountMarker();
+		updateControlsGeometry();
+	}, lifetime());
+	updateAccountMarker();
 	orderWidgets();
 	setupComposeStash();
 	setupShortcuts();
@@ -4387,6 +4394,34 @@ void HistoryWidget::refreshSendAsToggle() {
 	_sendAs.create(this, st.button);
 	_sendAs->setAccessibleName(tr::lng_send_as_title(tr::now));
 	Ui::SetupSendAsButton(_sendAs.data(), st, controller());
+}
+
+void HistoryWidget::updateAccountMarker() {
+	if (!_accountMarker) {
+		return;
+	}
+	const auto show = Core::App().settings().readPref<bool>(
+		Core::kShowCurrentAccountInComposeKey,
+		true)
+		&& session().domain().accountsAuthedCount() >= 2;
+	_accountMarker->setVisible(show);
+	if (!show) {
+		return;
+	}
+	const auto &accounts = session().domain().accounts();
+	const auto i = ranges::find(accounts, &session().account(), [](const auto &a) {
+		return a.account.get();
+	});
+	const auto number = (i == end(accounts)) ? 1 : (i->index + 1);
+	_accountMarker->setText(QString::number(number));
+	const auto name = session().user()->name();
+	const auto tooltip = tr::lng_compose_current_account_marker(
+		tr::now,
+		lt_name,
+		name);
+	_accountMarker->setToolTip(tooltip);
+	_accountMarker->setAccessibleName(tooltip);
+	_accountMarker->resizeToWidth(_accountMarker->textMaxWidth());
 }
 
 bool HistoryWidget::contentOverlapped(const QRect &globalRect) {
@@ -7867,6 +7902,7 @@ void HistoryWidget::updateSendAsFileGeometry() {
 }
 
 void HistoryWidget::moveFieldControls() {
+	updateAccountMarker();
 	const auto &settings = AyuSettings::getInstance();
 
 	auto keyboardHeight = 0;
@@ -7900,6 +7936,13 @@ void HistoryWidget::moveFieldControls() {
 	if (_sendAs) {
 		_sendAs->moveToLeft(left, buttonsBottom);
 		left += _sendAs->width();
+	}
+	if (_accountMarker && !_accountMarker->isHidden()) {
+		_accountMarker->moveToLeft(
+			left,
+			buttonsBottom
+				+ (_attachToggle->height() - _accountMarker->height()) / 2);
+		left += _accountMarker->width() + st::historyAccountMarkerSkip;
 	}
 	const auto fieldTop = bottom - fieldHeight() - st::historySendPadding;
 	_field->moveToLeft(left, fieldTop);
@@ -7976,6 +8019,7 @@ void HistoryWidget::moveFieldControls() {
 }
 
 void HistoryWidget::updateFieldSize() {
+	updateAccountMarker();
 	const auto &settings = AyuSettings::getInstance();
 
 	const auto kbShowShown = _history && !_kbShown && _keyboard->hasMarkup();
@@ -7989,6 +8033,9 @@ void HistoryWidget::updateFieldSize() {
 	}
 	if (_sendAs) {
 		fieldWidth -= _sendAs->width();
+	}
+	if (_accountMarker && !_accountMarker->isHidden()) {
+		fieldWidth -= _accountMarker->width() + st::historyAccountMarkerSkip;
 	}
 	if (kbShowShown) {
 		fieldWidth -= _botKeyboardShow->width();
