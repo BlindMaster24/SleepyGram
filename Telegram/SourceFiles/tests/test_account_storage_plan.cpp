@@ -236,7 +236,7 @@ int RunChecks() {
 		OpenProfileVault(*vault, Credential(9)),
 		bindings,
 		&error);
-	check("unverified-access-cannot-produce-plan",
+	check("wrong-password-access-cannot-produce-plan",
 		!wrongPassword
 		&& error == AccountStoragePlanError::WrongPassword);
 

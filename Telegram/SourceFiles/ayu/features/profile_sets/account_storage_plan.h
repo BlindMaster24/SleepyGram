@@ -62,6 +62,8 @@ private:
 	std::vector<AccountKey> _keys;
 };
 
+// Pass the access result directly from OpenProfileVault; this variant is not
+// an unforgeable capability on its own.
 [[nodiscard]] std::optional<AccountStoragePlan> BuildAccountStoragePlan(
 	QString globalTdataPath,
 	ProfileVaultAccess &&access,
