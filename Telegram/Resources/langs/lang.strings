@@ -9462,6 +9462,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_DisableStreamerModeTray" = "Disable Streamer Mode";
 "ayu_EditsHistoryTitle" = "Edits History";
 "ayu_EditsHistoryMenuText" = "History";
+"ayu_CompareMessageRevisions" = "Compare with Previous Revision";
+"ayu_MessageRevisionComparison" = "Message Revision Comparison";
+"ayu_OlderMessageRevision" = "Previous Revision";
+"ayu_NewerMessageRevision" = "Current Revision";
+"ayu_MessageRevisionComparisonNote" = "Only the first 32,768 characters are compared; very large diffs are grouped into one block.";
 "ayu_ViewEditedMessagesMenuText" = "Edited Messages";
 "ayu_PeekOnlineMenuText" = "Peek Online";
 "ayu_ClearDeletedMenuText" = "Clear Deleted";

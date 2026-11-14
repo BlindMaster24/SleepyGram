@@ -10,6 +10,7 @@
 #include "mainwidget.h"
 #include "mainwindow.h"
 #include "api/api_attached_stickers.h"
+#include "boxes/abstract_box.h"
 #include "ayu/data/messages_storage.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "base/call_delayed.h"
@@ -45,6 +46,7 @@
 #include "main/main_session_settings.h"
 #include "styles/style_chat.h"
 #include "styles/style_menu_icons.h"
+#include "ui/layers/generic_box.h"
 #include "ui/inactive_press.h"
 #include "ui/painter.h"
 #include "ui/ui_utility.h"
@@ -56,7 +58,9 @@
 #include "window/window_session_controller.h"
 
 #include <QtGui/QClipboard>
+#include <QtCore/QTextBoundaryFinder>
 #include <QtWidgets/QApplication>
+#include <QtWidgets/QTextBrowser>
 
 namespace MessageHistory {
 namespace {
@@ -68,6 +72,220 @@ constexpr auto kMessagesFirstPage = 20;
 constexpr auto kMessagesPerPage = 30;
 
 constexpr auto kClearUserpicsAfter = 50;
+
+constexpr auto kRevisionCompareAsyncThreshold = 4096;
+constexpr auto kRevisionCompareMaxLength = 32768;
+constexpr auto kRevisionCompareMaxTokens = 700;
+
+class RevisionDiffWidget final : public Ui::RpWidget {
+public:
+	explicit RevisionDiffWidget(QWidget *parent)
+	: RpWidget(parent)
+	, _browser(Ui::CreateChild<QTextBrowser>(this)) {
+		setMinimumHeight(280);
+		setMaximumHeight(480);
+		_browser->setOpenLinks(false);
+	}
+
+	void setHtml(const QString &html) {
+		_browser->setHtml(html);
+	}
+
+protected:
+	void resizeEvent(QResizeEvent *e) override {
+		RpWidget::resizeEvent(e);
+		_browser->setGeometry(rect());
+	}
+
+private:
+	QTextBrowser *_browser = nullptr;
+};
+
+struct DiffSpan {
+	int from = 0;
+	int to = 0;
+};
+
+struct RevisionDiff {
+	QString older;
+	QString newer;
+	std::vector<DiffSpan> olderSpans;
+	std::vector<DiffSpan> newerSpans;
+	bool truncated = false;
+	bool grouped = false;
+};
+
+std::vector<int> WordBoundaries(const QString &text) {
+	auto result = std::vector<int>{ 0 };
+	auto finder = QTextBoundaryFinder(QTextBoundaryFinder::Word, text);
+	finder.toStart();
+	for (auto boundary = finder.toNextBoundary(); boundary >= 0;
+			boundary = finder.toNextBoundary()) {
+		result.push_back(boundary);
+	}
+	if (result.back() != text.size()) {
+		result.push_back(text.size());
+	}
+	return result;
+}
+
+QString BoundedText(const QString &text, bool &truncated) {
+	if (text.size() <= kRevisionCompareMaxLength) {
+		return text;
+	}
+	truncated = true;
+	auto finder = QTextBoundaryFinder(QTextBoundaryFinder::Grapheme, text);
+	finder.setPosition(kRevisionCompareMaxLength);
+	const auto end = finder.isAtBoundary()
+		? kRevisionCompareMaxLength
+		: finder.toPreviousBoundary();
+	return text.left(end);
+}
+
+RevisionDiff ComputeRevisionDiff(QString older, QString newer) {
+	auto result = RevisionDiff();
+	if (older == newer) {
+		result.older = std::move(older);
+		result.newer = std::move(newer);
+		return result;
+	}
+	result.older = BoundedText(older, result.truncated);
+	result.newer = BoundedText(newer, result.truncated);
+	const auto olderBoundaries = WordBoundaries(result.older);
+	const auto newerBoundaries = WordBoundaries(result.newer);
+	const auto olderCount = olderBoundaries.size() - 1;
+	const auto newerCount = newerBoundaries.size() - 1;
+	if (olderCount > kRevisionCompareMaxTokens
+		|| newerCount > kRevisionCompareMaxTokens) {
+		result.grouped = true;
+		auto prefix = 0;
+		while (prefix < olderCount
+			&& prefix < newerCount
+			&& result.older.mid(
+				olderBoundaries[prefix],
+				olderBoundaries[prefix + 1] - olderBoundaries[prefix])
+				== result.newer.mid(
+					newerBoundaries[prefix],
+					newerBoundaries[prefix + 1] - newerBoundaries[prefix])) {
+			++prefix;
+		}
+		auto olderTail = olderCount;
+		auto newerTail = newerCount;
+		while (olderTail > prefix
+			&& newerTail > prefix
+			&& result.older.mid(
+				olderBoundaries[olderTail - 1],
+				olderBoundaries[olderTail] - olderBoundaries[olderTail - 1])
+				== result.newer.mid(
+					newerBoundaries[newerTail - 1],
+					newerBoundaries[newerTail] - newerBoundaries[newerTail - 1])) {
+			--olderTail;
+			--newerTail;
+		}
+		result.olderSpans.push_back({
+			olderBoundaries[prefix],
+			olderBoundaries[olderTail] });
+		result.newerSpans.push_back({
+			newerBoundaries[prefix],
+			newerBoundaries[newerTail] });
+		return result;
+	}
+	const auto width = newerCount + 1;
+	auto lcs = std::vector<int>((olderCount + 1) * width);
+	for (auto i = olderCount; i-- > 0;) {
+		for (auto j = newerCount; j-- > 0;) {
+			const auto oldToken = result.older.mid(
+				olderBoundaries[i],
+				olderBoundaries[i + 1] - olderBoundaries[i]);
+			const auto newToken = result.newer.mid(
+				newerBoundaries[j],
+				newerBoundaries[j + 1] - newerBoundaries[j]);
+			lcs[i * width + j] = (oldToken == newToken)
+				? 1 + lcs[(i + 1) * width + j + 1]
+				: std::max(lcs[(i + 1) * width + j], lcs[i * width + j + 1]);
+		}
+	}
+	auto oldIndex = 0;
+	auto newIndex = 0;
+	auto oldStart = -1;
+	auto newStart = -1;
+	const auto flush = [&] {
+		if (oldStart >= 0 || newStart >= 0) {
+			result.olderSpans.push_back({
+				(oldStart < 0) ? olderBoundaries[oldIndex] : olderBoundaries[oldStart],
+				olderBoundaries[oldIndex] });
+			result.newerSpans.push_back({
+				(newStart < 0) ? newerBoundaries[newIndex] : newerBoundaries[newStart],
+				newerBoundaries[newIndex] });
+			oldStart = newStart = -1;
+		}
+	};
+	while (oldIndex < olderCount || newIndex < newerCount) {
+		if (oldIndex < olderCount && newIndex < newerCount
+			&& result.older.mid(
+				olderBoundaries[oldIndex],
+				olderBoundaries[oldIndex + 1] - olderBoundaries[oldIndex])
+			== result.newer.mid(
+				newerBoundaries[newIndex],
+				newerBoundaries[newIndex + 1] - newerBoundaries[newIndex])) {
+			flush();
+			++oldIndex;
+			++newIndex;
+		} else if (newIndex < newerCount
+			&& (oldIndex == olderCount
+				|| lcs[oldIndex * width + newIndex + 1]
+				> lcs[(oldIndex + 1) * width + newIndex])) {
+			if (newStart < 0) {
+				newStart = newIndex;
+			}
+			++newIndex;
+		} else {
+			if (oldStart < 0) {
+				oldStart = oldIndex;
+			}
+			++oldIndex;
+		}
+	}
+	flush();
+	return result;
+}
+
+QString HtmlDiffText(
+		const QString &text,
+		const std::vector<DiffSpan> &spans,
+		const QString &color) {
+	const auto escaped = [](const QString &part) {
+		return part.toHtmlEscaped().replace('\n', u"<br/>"_q);
+	};
+	auto result = QString();
+	auto position = 0;
+	for (const auto &span : spans) {
+		result += escaped(text.mid(position, span.from - position));
+		result += u"<span style=\"background-color: %1\">"_q.arg(color);
+		result += escaped(text.mid(span.from, span.to - span.from));
+		result += u"</span>"_q;
+		position = span.to;
+	}
+	result += escaped(text.mid(position));
+	return result;
+}
+
+void ShowRevisionDiff(
+		const QString &older,
+		const QString &newer,
+		Fn<void(RevisionDiff)> show) {
+	const auto compute = [older, newer, show = std::move(show)]() mutable {
+		const auto diff = ComputeRevisionDiff(older, newer);
+		crl::on_main([diff, show = std::move(show)]() mutable {
+			show(diff);
+		});
+	};
+	if (qMax(older.size(), newer.size()) > kRevisionCompareAsyncThreshold) {
+		crl::async(std::move(compute));
+	} else {
+		compute();
+	}
+}
 
 } // namespace
 
@@ -1390,6 +1608,59 @@ void InnerWidget::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 						}
 					},
 					&st::ayuEditsHistoryIcon);
+			}
+		}
+		if (_editedMessageId && item) {
+			const auto current = std::find_if(
+				_items.begin(),
+				_items.end(),
+				[item](const auto &entry) { return entry->data() == item; });
+			if (current != _items.end() && std::next(current) != _items.end()) {
+				const auto older = (*std::next(current))->data()->originalText().text;
+				const auto newer = item->originalText().text;
+				const auto weak = base::make_weak(this);
+				_menu->addAction(
+					tr::ayu_CompareMessageRevisions(tr::now),
+					[weak, older, newer] {
+						ShowRevisionDiff(
+							older,
+							newer,
+							[weak](RevisionDiff diff) {
+								if (!weak) {
+									return;
+								}
+								weak->_controller->show(Box([diff = std::move(diff)](
+										not_null<Ui::GenericBox*> box) {
+									box->setTitle(tr::ayu_MessageRevisionComparison(tr::now));
+									box->setWidth(st::boxWideWidth);
+									box->addButton(tr::lng_box_ok(), [=] {
+										box->closeBox();
+									});
+									auto html = u"<div style=\"white-space: pre-wrap\">"_q
+										+ u"<b>%1</b><br/>"_q.arg(
+											tr::ayu_OlderMessageRevision(tr::now).toHtmlEscaped())
+										+ HtmlDiffText(
+											diff.older,
+											diff.olderSpans,
+											u"#ffd9d9"_q)
+										+ u"<br/><br/><b>%1</b><br/>"_q.arg(
+											tr::ayu_NewerMessageRevision(tr::now).toHtmlEscaped())
+										+ HtmlDiffText(
+											diff.newer,
+											diff.newerSpans,
+											u"#d7f7d7"_q)
+										+ u"</div>"_q;
+									if (diff.truncated || diff.grouped) {
+										html += u"<br/><i>%1</i>"_q.arg(
+											tr::ayu_MessageRevisionComparisonNote(tr::now).toHtmlEscaped());
+									}
+									const auto content = box->addRow(
+										object_ptr<RevisionDiffWidget>(box));
+									content->setHtml(html);
+								}));
+						});
+					},
+					&st::menuIconShowInChat);
 			}
 		}
 
