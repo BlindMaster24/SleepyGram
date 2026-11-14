@@ -5,6 +5,7 @@
 //
 // Copyright @Radolyn, 2026
 #include "ayu/ui/context_menu/context_menu.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 
 #include "apiwrap.h"
 #include "lang_auto.h"
@@ -268,6 +269,9 @@ void AddAyuGramActions(PeerData *peerData,
 	const auto hasDeletedMessages = AyuMessages::hasDeletedMessages(peerData, 0);
 	const auto topic = peerData->isForum() && thread ? thread->asTopic() : nullptr;
 	const auto topicId = topic ? topic->rootId().bare : 0;
+	const auto archiveLocked = Ayu::ChatLock::IsChatLocked(
+		&sessionController->session(),
+		peerData->id);
 
 	addCallback(Window::PeerMenuCallback::Args{
 		.text = u"AyuGram"_q,
@@ -345,9 +349,11 @@ void AddAyuGramActions(PeerData *peerData,
 						? &st::menuIconShowInChat
 						: &st::menuIconCaptionHide);
 			}
-			addAction(
+			if (!archiveLocked) addAction(
 				tr::ayu_ViewEditedMessagesMenuText(tr::now),
 				[=] {
+					if (Ayu::ChatLock::IsChatLocked(
+							&sessionController->session(), peerData->id)) return;
 					if (const auto window = sessionController->session().tryResolveWindow()) {
 						window->showSection(std::make_shared<MessageHistory::SectionMemento>(
 							peerData,
@@ -357,11 +363,13 @@ void AddAyuGramActions(PeerData *peerData,
 					}
 				},
 				&st::ayuEditsHistoryIcon);
-			if (saveDeletedMessages || hasDeletedMessages) {
+			if (!archiveLocked && (saveDeletedMessages || hasDeletedMessages)) {
 				addAction(
 					tr::ayu_ViewDeletedMenuText(tr::now),
 					[=]
 					{
+						if (Ayu::ChatLock::IsChatLocked(
+								&sessionController->session(), peerData->id)) return;
 						if (const auto window = sessionController->session().tryResolveWindow()) {
 							window->showSection(std::make_shared<MessageHistory::SectionMemento>(
 								peerData,
@@ -545,7 +553,10 @@ void AddDeleteOwnMessagesAction(PeerData *peerData,
 }
 
 void AddHistoryAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {
-	if (item->hideEditedBadge()) {
+	if (Ayu::ChatLock::IsChatLocked(
+			&item->history()->session(),
+			item->history()->peer->id)
+		|| item->hideEditedBadge()) {
 		return;
 	}
 
@@ -563,6 +574,11 @@ void AddHistoryAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {
 		tr::ayu_EditsHistoryMenuText(tr::now),
 		[=]
 		{
+			if (Ayu::ChatLock::IsChatLocked(
+					&item->history()->session(),
+					item->history()->peer->id)) {
+				return;
+			}
 			if (const auto window = item->history()->session().tryResolveWindow()) {
 				window->showSection(
 					std::make_shared<MessageHistory::SectionMemento>(item->history()->peer, item, 0));

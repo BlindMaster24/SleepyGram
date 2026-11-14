@@ -10,6 +10,7 @@
 #include "ayu/ayu_settings.h"
 #include "ayu/data/messages_storage.h"
 #include "ayu/data/archive_backup.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
@@ -68,6 +69,25 @@ void BuildCrashReporting(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 #endif
 }
 
+bool IsArchivedMessageLocked(
+		not_null<Main::Session*> session,
+		const AyuMessageBase &message) {
+	const auto id = message.peerId;
+	if (id <= 0) return false;
+	const auto locked = [&](PeerId peer) {
+		return Ayu::ChatLock::IsChatLocked(session, peer);
+	};
+	switch (message.peerType) {
+	case 1: return locked(PeerId(UserId(id)));
+	case 2: return locked(PeerId(ChatId(id)));
+	case 3: return locked(PeerId(ChannelId(id)));
+	default:
+		return locked(PeerId(UserId(id)))
+			|| locked(PeerId(ChatId(id)))
+			|| locked(PeerId(ChannelId(id)));
+	}
+}
+
 PeerData *FindArchivedPeer(
 		Main::Session &session,
 		const AyuMessageBase &message) {
@@ -96,6 +116,9 @@ void OpenArchivedMessage(
 		AyuDatabase::ArchiveSearchResult result,
 		const QString &searchQuery) {
 	const auto &session = controller->session();
+	if (IsArchivedMessageLocked(&controller->session(), result.message)) {
+		return;
+	}
 	const auto peer = FindArchivedPeer(session, result.message);
 	const auto window = session.tryResolveWindow();
 	if (peer && window) {
@@ -131,6 +154,7 @@ void LoadArchiveSearchPage(
 		int dateFrom,
 		int dateTo,
 		std::optional<AyuDatabase::ArchiveSearchCursor> cursor,
+		const std::shared_ptr<bool> &stale,
 		Ui::LinkButton *loadMore = nullptr) {
 	if (loadMore) {
 		loadMore->setDisabled(true);
@@ -148,7 +172,7 @@ void LoadArchiveSearchPage(
 			cursor,
 			25);
 		crl::on_main([=, page = std::move(page)]() mutable {
-			if (!weak) {
+			if (!weak || *stale) {
 				return;
 			}
 			if (page.empty() && !cursor) {
@@ -160,6 +184,11 @@ void LoadArchiveSearchPage(
 				return;
 			}
 			for (const auto &entry : page) {
+				if (IsArchivedMessageLocked(
+						&controller->session(),
+						entry.message)) {
+					continue;
+				}
 				auto preview = QString::fromStdString(entry.message.text)
 					.simplified();
 				constexpr auto kPreviewLength = 120;
@@ -206,6 +235,7 @@ void LoadArchiveSearchPage(
 						dateFrom,
 						dateTo,
 						nextCursor,
+						stale,
 						more);
 				});
 			}
@@ -222,6 +252,15 @@ void ArchiveSearchResultsBox(
 		int dateTo) {
 	box->setTitle(tr::ayu_ArchiveSearchTitle());
 	box->setWidth(st::boxWideWidth);
+	const auto accountId = controller->session().userId().bare
+		& PeerId::kChatTypeMask;
+	const auto stale = std::make_shared<bool>(false);
+	Ayu::ChatLock::Changes() | rpl::on_next([=](Ayu::ChatLock::Change change) {
+		if (change.accountId == uint64(accountId)) {
+			*stale = true;
+			box->closeBox();
+		}
+	}, box->lifetime());
 	const auto resultsLayout = box->verticalLayout()->add(
 		object_ptr<Ui::VerticalLayout>(box),
 		st::boxPadding);
@@ -233,7 +272,8 @@ void ArchiveSearchResultsBox(
 		type,
 		dateFrom,
 		dateTo,
-		std::nullopt);
+		std::nullopt,
+		stale);
 	box->addButton(tr::lng_box_done(), [=] { box->closeBox(); });
 }
 

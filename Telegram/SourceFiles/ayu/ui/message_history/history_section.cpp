@@ -8,6 +8,7 @@
 
 #include "apiwrap.h"
 #include "ayu/ui/message_history/history_inner.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "base/timer.h"
 #include "core/shortcuts.h"
 #include "data/data_channel.h"
@@ -310,6 +311,7 @@ Widget::Widget(
 	  _item(item),
 	  _topicId(topicId),
 	  _editedMessages(editedMessages),
+	  _archiveLocked(Ayu::ChatLock::IsChatLocked(&controller->session(), peer->id)),
 	  _editedMessageId(editedMessageId) {
 	_fixedBar->move(0, 0);
 	_fixedBar->resizeToWidth(width());
@@ -357,6 +359,18 @@ Widget::Widget(
 							 lifetime());
 
 	setupShortcuts();
+	const auto accountId = controller->session().userId().bare;
+	Ayu::ChatLock::Changes() | rpl::on_next([=](Ayu::ChatLock::Change change) {
+		if (change.accountId != accountId
+			|| (change.peerId && change.peerId != peer->id)
+			|| !Ayu::ChatLock::IsChatLocked(&controller->session(), peer->id)) {
+			return;
+		}
+		_archiveLocked = true;
+		if (isVisible()) {
+			controller->showBackFromStack();
+		}
+	}, lifetime());
 }
 
 void Widget::updateAdaptiveLayout() {
@@ -511,6 +525,9 @@ void Widget::showAnimatedHook(
 
 void Widget::showFinishedHook() {
 	_fixedBar->setAnimatingMode(false);
+	if (_archiveLocked) {
+		controller()->showBackFromStack();
+	}
 }
 
 bool Widget::floatPlayerHandleWheelEvent(QEvent *e) {

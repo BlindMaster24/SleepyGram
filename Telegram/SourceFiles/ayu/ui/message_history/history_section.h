@@ -83,6 +83,7 @@ private:
 	HistoryItem *_item;
 	ID _topicId;
 	bool _editedMessages = false;
+	bool _archiveLocked = false;
 	ID _editedMessageId = 0;
 
 };

@@ -292,12 +292,8 @@ std::optional<Preview> Read(QByteArray bytes, ID expectedAccountId, const QStrin
 		if (!Decode(value, expectedAccountId, &row)) return std::nullopt;
 		result.snapshot.deleted.push_back(std::move(row));
 	}
-	QString sample;
-	if (!result.snapshot.edited.empty()) sample = QString::fromStdString(result.snapshot.edited.front().text).simplified();
-	else if (!result.snapshot.deleted.empty()) sample = QString::fromStdString(result.snapshot.deleted.front().text).simplified();
-	if (sample.size() > 160) sample = sample.left(160) + u"…"_q;
-	result.summary = QString("%1 edited, %2 deleted\n%3")
-		.arg(edited.size()).arg(deleted.size()).arg(sample);
+	result.summary = QString("%1 edited, %2 deleted")
+		.arg(edited.size()).arg(deleted.size());
 	return result;
 }
 
