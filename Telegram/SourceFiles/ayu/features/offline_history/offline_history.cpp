@@ -652,7 +652,7 @@ private:
 			_progress->setValue(_attachmentIndex);
 			_status->setText(tr::lng_offline_history_attachment_progress(
 				tr::now,
-				lt_count,
+				lt_current,
 				_attachmentIndex,
 				lt_total,
 				int(_attachmentTasks.size())));

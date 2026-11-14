@@ -7807,7 +7807,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_offline_history_attachments_saved#one" = "Saved {count} offline attachment";
 "lng_offline_history_attachments_saved#other" = "Saved {count} offline attachments";
 "lng_offline_history_attachment_limit" = "Attachment skipped: the file or offline storage limit was reached.";
-"lng_offline_history_attachment_progress" = "Saving offline attachments: {count} of {total}";
+"lng_offline_history_attachment_progress" = "Saving offline attachments: {current} of {total}";
 "lng_offline_history_restricted" = "Offline saving is unavailable for this chat.";
 "lng_offline_history_messages#one" = "{count} message saved";
 "lng_offline_history_messages#other" = "{count} messages saved";
