@@ -8,10 +8,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/offline_history/offline_history_storage.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -102,6 +104,45 @@ int RunChecks() {
 	snapshot.messages[0].text = QString(16 * 1024 + 1, QChar('x'));
 	check("oversized-message-rejected",
 		Serialize(snapshot, 1001, PeerId(77)).isEmpty());
+
+	auto attachment = Attachment{
+		.messageId = MsgId(8),
+		.mediaId = 4,
+		.photo = false,
+		.name = QStringLiteral("sample.bin"),
+		.fileName = QStringLiteral("m-8-d-4.bin"),
+		.size = 4,
+		.sourceSize = 4,
+	};
+	QDir().mkpath(paths.attachmentDirectory);
+	auto attachmentFile = QFile(QDir(paths.attachmentDirectory)
+		.filePath(attachment.fileName));
+	check("write-attachment", attachmentFile.open(QIODevice::WriteOnly)
+		&& attachmentFile.write("data") == 4);
+	attachmentFile.close();
+	const auto manifest = SerializeAttachments(
+		{ attachment },
+		1001,
+		PeerId(77));
+	check("write-attachment-manifest", !manifest.isEmpty()
+		&& WriteAtomic(
+			paths.attachmentManifest,
+			manifest,
+			paths.root,
+			1024 * 1024));
+	auto restoredAttachments = std::vector<Attachment>();
+	check("read-attachment-manifest", ReadAttachments(
+		paths,
+		1001,
+		PeerId(77),
+		&restoredAttachments)
+		&& restoredAttachments.size() == 1
+		&& restoredAttachments.front().fileName == attachment.fileName);
+	attachment.fileName = QStringLiteral("../../escape.bin");
+	check("reject-unsafe-attachment-path", SerializeAttachments(
+		{ attachment },
+		1001,
+		PeerId(77)).isEmpty());
 
 	std::printf("%d of %d checks passed.\n", passed, total);
 	return (passed == total) ? 0 : 1;
