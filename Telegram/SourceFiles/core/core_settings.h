@@ -16,6 +16,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/flags.h"
 #include "emoji.h"
 
+#include <string_view>
+
 enum class RectPart;
 struct LanguageId;
 
@@ -37,14 +39,14 @@ enum class StickedTooltip;
 
 namespace Core {
 
-inline constexpr auto kScreenReaderModeDisabledKey
-	= "screen-reader-mode-disabled"_cs;
-inline constexpr auto kCopyMonospaceOnClickKey
-	= "copy-monospace-on-click"_cs;
-inline constexpr auto kDisableLinkPreviewsByDefaultKey
-	= "disable-link-previews-by-default"_cs;
-inline constexpr auto kShowCurrentAccountInComposeKey
-	= "show-current-account-in-compose"_cs;
+inline constexpr std::string_view kScreenReaderModeDisabledKey
+	= "screen-reader-mode-disabled";
+inline constexpr std::string_view kCopyMonospaceOnClickKey
+	= "copy-monospace-on-click";
+inline constexpr std::string_view kDisableLinkPreviewsByDefaultKey
+	= "disable-link-previews-by-default";
+inline constexpr std::string_view kShowCurrentAccountInComposeKey
+	= "show-current-account-in-compose";
 
 struct WindowPosition {
 	int32 moncrc = 0;
