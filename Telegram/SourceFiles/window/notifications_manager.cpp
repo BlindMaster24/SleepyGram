@@ -44,6 +44,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
+#include "storage/storage_account.h"
 #include "ui/text/text_utilities.h"
 #include "platform/platform_specific.h"
 

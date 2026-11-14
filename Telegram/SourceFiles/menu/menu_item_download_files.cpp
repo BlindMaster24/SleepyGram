@@ -513,7 +513,7 @@ void AddAction(
 	const auto count = int(documents.size() + photos.size());
 	const auto text = tr::ayu_BulkDownloadAction(
 		tr::now,
-		lt_count,
+		lt_file_count,
 		QString::number(count));
 	const auto icon = documents.empty()
 		? &st::menuIconSaveImage

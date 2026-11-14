@@ -26,6 +26,7 @@
 #include "main/main_session.h"
 #include "platform/platform_translate_provider.h"
 #include "rpl/combine.h"
+#include "storage/storage_account.h"
 #include "window/main_window.h"
 #include "window/window_controller.h"
 
@@ -36,6 +37,7 @@
 #include <charconv>
 #include <cmath>
 #include <fstream>
+#include <map>
 #include <ranges>
 #include <set>
 #include <QApplication>
