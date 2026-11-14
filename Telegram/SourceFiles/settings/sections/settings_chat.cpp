@@ -1633,6 +1633,7 @@ void SetupMessages(
 	const auto react = addQuick(
 		Quick::React,
 		tr::lng_settings_chat_quick_action_react(tr::now));
+	addQuick(Quick::None, tr::lng_settings_chat_quick_action_none(tr::now));
 	if (highlights) {
 		highlights->push_back({ u"chat/quick-reaction"_q, {
 			react,
