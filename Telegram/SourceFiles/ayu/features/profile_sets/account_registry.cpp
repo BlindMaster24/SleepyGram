@@ -152,6 +152,10 @@ QByteArray RegistryIdentityFingerprint(
 		QCryptographicHash::Sha256);
 }
 
+QByteArray AccountRegistryDataNameHash(const QString &dataName) {
+	return ValidDataName(dataName) ? HashDataName(dataName) : QByteArray();
+}
+
 std::optional<AccountRegistry> NewAccountRegistry(
 		QByteArray environmentId,
 		RegistryError *error) {

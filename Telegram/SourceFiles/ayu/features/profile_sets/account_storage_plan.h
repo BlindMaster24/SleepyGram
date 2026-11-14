@@ -50,6 +50,7 @@ public:
 	}
 	[[nodiscard]] const AccountStorageTarget *targetFor(AccountId id) const;
 	[[nodiscard]] const AccountKey *keyFor(AccountId id) const;
+	void Clear();
 
 private:
 	friend std::optional<AccountStoragePlan> BuildAccountStoragePlan(

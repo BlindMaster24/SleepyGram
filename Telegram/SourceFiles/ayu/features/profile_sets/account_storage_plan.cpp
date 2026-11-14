@@ -56,7 +56,13 @@ struct KeyWiper final {
 } // namespace
 
 AccountStoragePlan::~AccountStoragePlan() {
+	Clear();
+}
+
+void AccountStoragePlan::Clear() {
 	ClearKeys(_keys);
+	_keys.clear();
+	_targets.clear();
 }
 
 const AccountStorageTarget *AccountStoragePlan::targetFor(AccountId id) const {

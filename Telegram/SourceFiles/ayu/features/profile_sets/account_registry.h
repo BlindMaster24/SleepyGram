@@ -91,5 +91,6 @@ enum class RegistryError : uchar {
 	const VerifiedRegistryIdentity &identity);
 [[nodiscard]] QByteArray RegistryIdentityFingerprint(
 	const VerifiedRegistryIdentity &identity);
+[[nodiscard]] QByteArray AccountRegistryDataNameHash(const QString &dataName);
 
 } // namespace Ayu::ProfileSets
