@@ -117,6 +117,20 @@ constexpr auto kSearchPerPage = 50;
 constexpr auto kStoriesExpandDuration = crl::time(200);
 constexpr auto kSearchRequestDelay = crl::time(900);
 
+MTPMessagesFilter SearchMessagesFilter(ChatSearchMediaFilter filter) {
+	switch (filter) {
+	case ChatSearchMediaFilter::All:
+		return MTP_inputMessagesFilterEmpty();
+	case ChatSearchMediaFilter::Photos:
+		return MTP_inputMessagesFilterPhotos();
+	case ChatSearchMediaFilter::Videos:
+		return MTP_inputMessagesFilterVideo();
+	case ChatSearchMediaFilter::Files:
+		return MTP_inputMessagesFilterDocument();
+	}
+	Unexpected("Media filter in Dialogs::SearchMessagesFilter.");
+}
+
 enum class IdSearchType {
 	None,
 	UserOnly,
@@ -428,6 +442,16 @@ Widget::Widget(
 		auto copy = _searchState;
 		copy.filter = filter;
 		applySearchState(copy);
+	}, lifetime());
+	_inner->changeSearchMediaFilterRequests(
+	) | rpl::filter([=](ChatSearchMediaFilter filter) {
+		return (_searchState.mediaFilter != filter)
+			&& (_searchState.tab == ChatSearchTab::ThisPeer
+				|| _searchState.tab == ChatSearchTab::ThisTopic);
+	}) | rpl::on_next([=](ChatSearchMediaFilter filter) {
+		auto copy = _searchState;
+		copy.mediaFilter = filter;
+		applySearchState(std::move(copy));
 	}, lifetime());
 	_inner->changeSearchFromArchiveRequests(
 	) | rpl::filter([=](bool fromArchive) {
@@ -3068,7 +3092,10 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 		.start = true,
 		.peer = (inPeer != nullptr),
 	};
-	if (trimmed.isEmpty() && !fromPeer && inTags.empty()) {
+	if (trimmed.isEmpty()
+		&& !fromPeer
+		&& inTags.empty()
+		&& (_searchState.mediaFilter == ChatSearchMediaFilter::All)) {
 		cancelSearchRequest();
 
 		// Otherwise inside first searchApplyEmpty we call searchMode(),
@@ -3100,7 +3127,7 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 			return false;
 		}
 		const auto process = currentSearchProcess();
-		const auto i = process->cache.find(query);
+		const auto i = process->cache.find(searchCacheKey(query));
 		if (i != process->cache.end()) {
 			_searchQuery = query;
 			_searchQueryFrom = fromPeer;
@@ -3108,6 +3135,11 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 			_searchQueryTab = tab;
 			_searchQueryCommunity = community;
 			_searchQueryFilter = filter;
+			_searchQueryMediaFilter = _searchState.mediaFilter;
+			_searchQueryState = _searchState;
+			_searchQueryTopicId = searchInTopic()
+				? searchInTopic()->rootId()
+				: 0;
 			_searchQueryFromArchive = fromArchive;
 			process->nextRate = 0;
 			process->full = false;
@@ -3122,6 +3154,8 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 		|| _searchQueryTab != tab
 		|| _searchQueryCommunity != community
 		|| _searchQueryFilter != filter
+		|| _searchQueryMediaFilter != _searchState.mediaFilter
+		|| _searchQueryState != _searchState
 		|| _searchQueryFromArchive != fromArchive) {
 		const auto process = currentSearchProcess();
 		_searchQuery = query;
@@ -3130,6 +3164,8 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 		_searchQueryTab = tab;
 		_searchQueryCommunity = community;
 		_searchQueryFilter = filter;
+		_searchQueryMediaFilter = _searchState.mediaFilter;
+		_searchQueryState = _searchState;
 		_searchQueryFromArchive = fromArchive;
 		process->nextRate = 0;
 		process->full = false;
@@ -3137,6 +3173,11 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 		cancelSearchRequest();
 		if (inPeer) {
 			const auto topic = searchInTopic();
+			const auto topicId = topic ? topic->rootId() : 0;
+			_searchQueryTopicId = topicId;
+			const auto mediaFilter = _searchQueryMediaFilter;
+			const auto generation = _searchGeneration;
+			const auto cacheKey = searchCacheKey(_searchQuery);
 			auto &histories = session().data().histories();
 			const auto type = Data::Histories::RequestType::History;
 			const auto history = session().data().history(inPeer);
@@ -3156,7 +3197,7 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 				using Flag = MTPmessages_Search::Flag;
 				process->requestId = session().api().request(
 					MTPmessages_Search(
-						MTP_flags((topic ? Flag::f_top_msg_id : Flag())
+						MTP_flags((topicId ? Flag::f_top_msg_id : Flag())
 							| (fromPeer ? Flag::f_from_id : Flag())
 							| (savedPeer ? Flag::f_saved_peer_id : Flag())
 							| (_searchQueryTags.empty()
@@ -3170,8 +3211,8 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 							_searchQueryTags | ranges::views::transform(
 								Data::ReactionToMTP
 							)),
-						MTP_int(topic ? topic->rootId() : 0),
-						MTP_inputMessagesFilterEmpty(),
+						MTP_int(topicId),
+						SearchMessagesFilter(mediaFilter),
 						MTP_int(0), // min_date
 						MTP_int(0), // max_date
 						MTP_int(0), // offset_id
@@ -3181,15 +3222,23 @@ bool Widget::search(bool inCache, SearchRequestDelay delay) {
 						MTP_int(0), // min_id
 						MTP_long(0)) // hash
 				).done([=](const MTPmessages_Messages &result) {
+					if (generation != _searchGeneration) {
+						finish();
+						return;
+					}
 					_historiesRequest = 0;
 					searchReceived(type, result, process);
 					finish();
 				}).fail([=](const MTP::Error &error) {
+					if (generation != _searchGeneration) {
+						finish();
+						return;
+					}
 					_historiesRequest = 0;
 					searchFailed(type, error, process);
 					finish();
 				}).send();
-				process->queries.emplace(process->requestId, _searchQuery);
+				process->queries.emplace(process->requestId, cacheKey);
 				return process->requestId;
 			});
 		} else if (_searchState.tab == ChatSearchTab::PublicPosts) {
@@ -3294,6 +3343,9 @@ bool Widget::searchForTopicsRequired(const QString &query) const {
 }
 
 void Widget::searchRequested(SearchRequestDelay delay) {
+	if (_searchQuery != currentSearchQuery().trimmed()) {
+		cancelSearchRequest();
+	}
 	if (search(true, delay)) {
 		return;
 	} else if (delay == SearchRequestDelay::Instant) {
@@ -3410,12 +3462,13 @@ void Widget::searchMore() {
 	} else if (!process->full) {
 		if (const auto peer = searchInPeer()) {
 			auto &histories = session().data().histories();
-			const auto topic = searchInTopic();
+			const auto topicId = _searchQueryTopicId;
+			const auto mediaFilter = _searchQueryMediaFilter;
+			const auto generation = _searchGeneration;
+			const auto cacheKey = searchCacheKey(_searchQuery);
 			const auto type = Data::Histories::RequestType::History;
 			const auto history = session().data().history(peer);
-			const auto sublist = _openedForum
-				? nullptr
-				: _searchState.inChat.sublist();
+			const auto sublist = _searchQueryState.inChat.sublist();
 			const auto fromPeer = sublist ? nullptr : _searchQueryFrom;
 			const auto savedPeer = sublist
 				? sublist->sublistPeer().get()
@@ -3429,7 +3482,7 @@ void Widget::searchMore() {
 				using Flag = MTPmessages_Search::Flag;
 				process->requestId = session().api().request(
 					MTPmessages_Search(
-						MTP_flags((topic ? Flag::f_top_msg_id : Flag())
+						MTP_flags((topicId ? Flag::f_top_msg_id : Flag())
 							| (fromPeer ? Flag::f_from_id : Flag())
 							| (savedPeer ? Flag::f_saved_peer_id : Flag())
 							| (_searchQueryTags.empty()
@@ -3445,8 +3498,8 @@ void Widget::searchMore() {
 							_searchQueryTags | ranges::views::transform(
 								Data::ReactionToMTP
 							)),
-						MTP_int(topic ? topic->rootId() : 0),
-						MTP_inputMessagesFilterEmpty(),
+						MTP_int(topicId),
+						SearchMessagesFilter(mediaFilter),
 						MTP_int(0), // min_date
 						MTP_int(0), // max_date
 						MTP_int(process->lastId),
@@ -3456,6 +3509,10 @@ void Widget::searchMore() {
 						MTP_int(0), // min_id
 						MTP_long(0)) // hash
 				).done([=](const MTPmessages_Messages &result) {
+					if (generation != _searchGeneration) {
+						finish();
+						return;
+					}
 					const auto weak = base::make_weak(this);
 					const auto historiesRequest = _historiesRequest;
 					searchReceived(type, result, process);
@@ -3464,6 +3521,10 @@ void Widget::searchMore() {
 					}
 					finish();
 				}).fail([=](const MTP::Error &error) {
+					if (generation != _searchGeneration) {
+						finish();
+						return;
+					}
 					searchFailed(type, error, process);
 					_historiesRequest = 0;
 					finish();
@@ -3471,7 +3532,7 @@ void Widget::searchMore() {
 				if (!process->lastId) {
 					process->queries.emplace(
 						process->requestId,
-						_searchQuery);
+						cacheKey);
 				}
 				return process->requestId;
 			});
@@ -3481,6 +3542,8 @@ void Widget::searchMore() {
 			requestMessages(false);
 		}
 	} else if (_searchInMigrated && !_migratedProcess.full) {
+		const auto generation = _searchGeneration;
+		const auto mediaFilter = _searchQueryMediaFilter;
 		auto &histories = session().data().histories();
 		const auto type = Data::Histories::RequestType::History;
 		const auto history = _searchInMigrated;
@@ -3504,7 +3567,7 @@ void Widget::searchMore() {
 					MTPInputPeer(), // saved_peer_id
 					MTPVector<MTPReaction>(), // saved_reaction
 					MTPint(), // top_msg_id
-					MTP_inputMessagesFilterEmpty(),
+					SearchMessagesFilter(mediaFilter),
 					MTP_int(0), // min_date
 					MTP_int(0), // max_date
 					MTP_int(_migratedProcess.lastId),
@@ -3514,6 +3577,10 @@ void Widget::searchMore() {
 					MTP_int(0), // min_id
 					MTP_long(0)) // hash
 			).done([=](const MTPmessages_Messages &result) {
+				if (generation != _searchGeneration) {
+					finish();
+					return;
+				}
 				const auto weak = base::make_weak(this);
 				const auto historiesRequest = _historiesRequest;
 				searchReceived(type, result, &_migratedProcess);
@@ -3522,6 +3589,10 @@ void Widget::searchMore() {
 				}
 				finish();
 			}).fail([=](const MTP::Error &error) {
+				if (generation != _searchGeneration) {
+					finish();
+					return;
+				}
 				searchFailed(type, error, &_migratedProcess);
 				_historiesRequest = 0;
 				finish();
@@ -3558,7 +3629,9 @@ void Widget::requestPublicPosts(bool fromStart) {
 		searchFailed(type, error, &_postsProcess);
 	}).send();
 	if (fromStart) {
-		_postsProcess.queries.emplace(_postsProcess.requestId, _searchQuery);
+		_postsProcess.queries.emplace(
+			_postsProcess.requestId,
+			searchCacheKey(_searchQuery));
 	}
 }
 
@@ -3613,7 +3686,7 @@ void Widget::requestMessages(bool fromStart) {
 	if (!_searchProcess.lastId) {
 		_searchProcess.queries.emplace(
 			_searchProcess.requestId,
-			_searchQuery);
+			searchCacheKey(_searchQuery));
 	}
 	if (fromStart && _searchWithPostsPreview) {
 		requestPublicPosts(true);
@@ -3624,6 +3697,27 @@ auto Widget::currentSearchProcess() -> not_null<SearchProcessState*> {
 	return (_searchState.tab == ChatSearchTab::PublicPosts)
 		? &_postsProcess
 		: &_searchProcess;
+}
+
+Widget::SearchCacheKey Widget::searchCacheKey(const QString &query) const {
+	const auto peer = searchInPeer();
+	const auto author = searchFromPeer();
+	const auto topic = searchInTopic();
+	const auto sublist = _searchState.inChat.sublist();
+	return {
+		.query = query,
+		.account = session().user()->id,
+		.peer = peer ? peer->id : 0,
+		.author = author ? author->id : 0,
+		.community = _searchState.community ? _searchState.community->id : 0,
+		.savedPeer = sublist ? sublist->sublistPeer()->id : 0,
+		.topic = topic ? topic->rootId() : 0,
+		.tab = _searchState.tab,
+		.filter = _searchState.filter,
+		.mediaFilter = _searchState.mediaFilter,
+		.fromArchive = _searchState.fromArchive,
+		.tags = _searchState.tags,
+	};
 }
 
 bool Widget::computeSearchWithPostsPreview() const {
@@ -4173,6 +4267,10 @@ bool Widget::applySearchState(SearchState state) {
 	if (!state.tags.empty()) {
 		state.inChat = session().data().history(session().user());
 	}
+	if (state.tab != ChatSearchTab::ThisPeer
+		&& state.tab != ChatSearchTab::ThisTopic) {
+		state.mediaFilter = ChatSearchMediaFilter::All;
+	}
 
 	const auto clearQuery = state.fromPeer
 		&& (_lastSearchText == HistoryView::SwitchToChooseFromQuery());
@@ -4194,6 +4292,7 @@ bool Widget::applySearchState(SearchState state) {
 		state.fromArchive = true;
 	}
 	const auto filterChanged = (_searchState.filter != state.filter);
+	const auto mediaFilterChanged = (_searchState.mediaFilter != state.mediaFilter);
 	const auto fromArchiveChanged = (_searchState.fromArchive
 		!= state.fromArchive);
 
@@ -4286,10 +4385,13 @@ bool Widget::applySearchState(SearchState state) {
 		|| communityChanged
 		|| fromPeerChanged
 		|| filterChanged
+		|| mediaFilterChanged
 		|| fromArchiveChanged
 		|| tagsChanged
 		|| tabChanged) {
 		clearSearchCache(searchCleared);
+	} else if (queryChanged) {
+		cancelSearchRequest();
 	}
 	if (state.query.isEmpty()) {
 		_peerSearch.clear();
@@ -4972,6 +5074,9 @@ void Widget::cancelSearchRequest() {
 	session().api().request(base::take(_searchProcess.requestId)).cancel();
 	session().api().request(base::take(_migratedProcess.requestId)).cancel();
 	session().api().request(base::take(_postsProcess.requestId)).cancel();
+	_searchProcess.queries.clear();
+	_migratedProcess.queries.clear();
+	_postsProcess.queries.clear();
 	session().data().histories().cancelRequest(
 		base::take(_historiesRequest));
 }

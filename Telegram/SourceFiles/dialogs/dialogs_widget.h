@@ -163,9 +163,28 @@ protected:
 	void paintEvent(QPaintEvent *e) override;
 
 private:
+	struct SearchCacheKey {
+		QString query;
+		PeerId account = 0;
+		PeerId peer = 0;
+		PeerId author = 0;
+		PeerId community = 0;
+		PeerId savedPeer = 0;
+		MsgId topic = 0;
+		ChatSearchTab tab = {};
+		ChatTypeFilter filter = ChatTypeFilter::All;
+		ChatSearchMediaFilter mediaFilter = ChatSearchMediaFilter::All;
+		bool fromArchive = true;
+		std::vector<Data::ReactionId> tags;
+
+		friend inline auto operator<=>(
+			const SearchCacheKey&,
+			const SearchCacheKey&) = default;
+	};
+
 	struct SearchProcessState {
-		base::flat_map<QString, MTPmessages_Messages> cache;
-		base::flat_map<mtpRequestId, QString> queries;
+		base::flat_map<SearchCacheKey, MTPmessages_Messages> cache;
+		base::flat_map<mtpRequestId, SearchCacheKey> queries;
 
 		PeerData *lastPeer = nullptr;
 		MsgId lastId = 0;
@@ -181,6 +200,7 @@ private:
 	void requestPublicPosts(bool fromStart);
 	void requestMessages(bool fromStart);
 	[[nodiscard]] not_null<SearchProcessState*> currentSearchProcess();
+	[[nodiscard]] SearchCacheKey searchCacheKey(const QString &query) const;
 
 	[[nodiscard]] bool computeSearchWithPostsPreview() const;
 
@@ -438,6 +458,9 @@ private:
 	ChatSearchTab _searchQueryTab = {};
 	ChannelData *_searchQueryCommunity = nullptr;
 	ChatTypeFilter _searchQueryFilter = {};
+	ChatSearchMediaFilter _searchQueryMediaFilter = {};
+	SearchState _searchQueryState;
+	MsgId _searchQueryTopicId = 0;
 	bool _searchQueryFromArchive = true;
 
 	Ui::Controls::SwipeBackResult _swipeBackData;

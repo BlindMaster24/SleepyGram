@@ -4949,6 +4949,11 @@ auto InnerWidget::changeSearchFilterRequests() const
 	return _changeSearchFilterRequests.events();
 }
 
+auto InnerWidget::changeSearchMediaFilterRequests() const
+		-> rpl::producer<ChatSearchMediaFilter> {
+	return _changeSearchMediaFilterRequests.events();
+}
+
 rpl::producer<bool> InnerWidget::changeSearchFromArchiveRequests() const {
 	return _changeSearchFromArchiveRequests.events();
 }
@@ -5607,6 +5612,9 @@ void InnerWidget::updateSearchIn() {
 		_searchIn->tabChanges() | rpl::start_to_stream(
 			_changeSearchTabRequests,
 			_searchIn->lifetime());
+		_searchIn->mediaFilterChanges() | rpl::start_to_stream(
+			_changeSearchMediaFilterRequests,
+			_searchIn->lifetime());
 	}
 
 	const auto sublist = _searchState.inChat.sublist();
@@ -5680,7 +5688,10 @@ void InnerWidget::updateSearchIn() {
 		{ ChatSearchTab::Archive, archiveIcon },
 		{ ChatSearchTab::MyMessages, myIcon },
 		{ ChatSearchTab::PublicPosts, publicIcon },
-	}, _searchState.tab, peerTabType, fromImage, fromName);
+	}, _searchState.tab, peerTabType, _searchState.mediaFilter,
+		(_searchState.tab == ChatSearchTab::ThisTopic
+			|| _searchState.tab == ChatSearchTab::ThisPeer),
+		fromImage, fromName);
 }
 
 void InnerWidget::repaintSearchResult(int index) {

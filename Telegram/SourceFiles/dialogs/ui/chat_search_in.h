@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/unique_qptr.h"
+#include "dialogs/dialogs_key.h"
 #include "ui/rp_widget.h"
 
 namespace Ui {
@@ -47,6 +48,8 @@ public:
 		std::vector<PossibleTab> tabs,
 		ChatSearchTab active,
 		ChatSearchPeerTabType peerTabType,
+		ChatSearchMediaFilter mediaFilter,
+		bool allowMediaFilter,
 		std::shared_ptr<Ui::DynamicImage> fromUserpic,
 		QString fromName);
 
@@ -54,6 +57,7 @@ public:
 	[[nodiscard]] rpl::producer<> cancelFromRequests() const;
 	[[nodiscard]] rpl::producer<> changeFromRequests() const;
 	[[nodiscard]] rpl::producer<ChatSearchTab> tabChanges() const;
+	[[nodiscard]] rpl::producer<ChatSearchMediaFilter> mediaFilterChanges() const;
 
 private:
 	struct Section {
@@ -86,6 +90,9 @@ private:
 
 	std::vector<PossibleTab> _tabs;
 	ChatSearchPeerTabType _peerTabType = ChatSearchPeerTabType::Chat;
+	ChatSearchMediaFilter _mediaFilter = ChatSearchMediaFilter::All;
+	bool _allowMediaFilter = false;
+	rpl::event_stream<ChatSearchMediaFilter> _mediaFilterChanges;
 
 };
 

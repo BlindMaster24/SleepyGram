@@ -87,6 +87,20 @@ private:
 	Unexpected("Tab in Dialogs::TabLabel.");
 }
 
+[[nodiscard]] QString MediaFilterLabel(ChatSearchMediaFilter filter) {
+	switch (filter) {
+	case ChatSearchMediaFilter::All:
+		return tr::ayu_SearchTypeAll(tr::now);
+	case ChatSearchMediaFilter::Photos:
+		return tr::ayu_SearchTypePhotos(tr::now);
+	case ChatSearchMediaFilter::Videos:
+		return tr::ayu_SearchTypeVideos(tr::now);
+	case ChatSearchMediaFilter::Files:
+		return tr::ayu_SearchTypeFiles(tr::now);
+	}
+	Unexpected("Media filter in Dialogs::MediaFilterLabel.");
+}
+
 Action::Action(
 	not_null<Ui::PopupMenu*> parentMenu,
 	std::shared_ptr<Ui::DynamicImage> icon,
@@ -276,10 +290,14 @@ void ChatSearchIn::apply(
 		std::vector<PossibleTab> tabs,
 		ChatSearchTab active,
 		ChatSearchPeerTabType peerTabType,
+		ChatSearchMediaFilter mediaFilter,
+		bool allowMediaFilter,
 		std::shared_ptr<Ui::DynamicImage> fromUserpic,
 		QString fromName) {
 	_tabs = std::move(tabs);
 	_peerTabType = peerTabType;
+	_mediaFilter = mediaFilter;
+	_allowMediaFilter = allowMediaFilter;
 	_active = active;
 	const auto i = ranges::find(_tabs, active, &PossibleTab::tab);
 	Assert(i != end(_tabs));
@@ -287,7 +305,9 @@ void ChatSearchIn::apply(
 	updateSection(
 		&_in,
 		i->icon->clone(),
-		tr::semibold(TabLabel(active, peerTabType)));
+		tr::semibold(allowMediaFilter
+			? (TabLabel(active, peerTabType) + u" · "_q + MediaFilterLabel(mediaFilter))
+			: TabLabel(active, peerTabType)));
 
 	auto text = tr::lng_dlg_search_from(
 		tr::now,
@@ -315,6 +335,10 @@ rpl::producer<ChatSearchTab> ChatSearchIn::tabChanges() const {
 	return _active.changes();
 }
 
+rpl::producer<ChatSearchMediaFilter> ChatSearchIn::mediaFilterChanges() const {
+	return _mediaFilterChanges.events();
+}
+
 void ChatSearchIn::showMenu() {
 	_menu = base::make_unique_q<Ui::PopupMenu>(
 		this,
@@ -338,6 +362,21 @@ void ChatSearchIn::showMenu() {
 			_active = value;
 		});
 		_menu->addAction(std::move(action));
+	}
+	if (_allowMediaFilter) {
+		_menu->addSeparator();
+		const auto addFilter = [&](ChatSearchMediaFilter filter) {
+			const auto label = MediaFilterLabel(filter);
+			const auto action = _menu->addAction(label, [=] {
+				_mediaFilterChanges.fire_copy(filter);
+			});
+			action->setCheckable(true);
+			action->setChecked(filter == _mediaFilter);
+		};
+		addFilter(ChatSearchMediaFilter::All);
+		addFilter(ChatSearchMediaFilter::Photos);
+		addFilter(ChatSearchMediaFilter::Videos);
+		addFilter(ChatSearchMediaFilter::Files);
 	}
 	const auto count = int(_menu->actions().size());
 	const auto bottomLeft = (activeIndex * 2 >= count);
