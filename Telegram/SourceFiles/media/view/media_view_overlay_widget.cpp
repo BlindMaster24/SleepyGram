@@ -140,6 +140,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/ayu_state.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
@@ -689,6 +690,33 @@ OverlayWidget::OverlayWidget()
 	updateSpeedBoost();
 	return isSpeedBoostShown();
 }) {
+	Ayu::ChatLock::Changes() | rpl::on_next([=](
+			Ayu::ChatLock::Change change) {
+		auto session = _peer
+			? &_peer->session()
+			: _message
+			? &_message->history()->session()
+			: _storiesSession
+			? _storiesSession
+			: _session;
+		if (!session || session->userId().bare != change.accountId) {
+			return;
+		}
+		auto peer = _peer;
+		if (!peer && _message) {
+			peer = _message->history()->peer;
+		} else if (!peer && _stories && _stories->story()) {
+			peer = _stories->story()->peer();
+		}
+		if (!peer || !Ayu::ChatLock::IsPeerProtected(session, peer->id)) {
+			return;
+		}
+		if ((!change.peerId || change.peerId == peer->id)
+				&& Ayu::ChatLock::IsChatLocked(session, peer->id)) {
+			close();
+		}
+	}, lifetime());
+
 	_layerBg->setStyleOverrides(&st::groupCallBox, &st::groupCallLayerBox);
 	_layerBg->setHideByBackgroundClick(true);
 

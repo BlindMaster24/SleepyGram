@@ -115,6 +115,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <unordered_map>
 
 // AyuGram includes
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/ui/ayu_userpic.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
@@ -330,6 +331,10 @@ InnerWidget::InnerWidget(
 , _freezeTimer([=] { _shownList->unfreeze(); update(); }) {
 	setAttribute(Qt::WA_OpaquePaintEvent, true);
 	setAccessibleName(tr::lng_recent_chats(tr::now));
+
+	Ayu::ChatLock::Changes() | rpl::filter([=](const auto &change) {
+		return change.accountId == session().userId().bare;
+	}) | rpl::on_next([=] { update(); }, lifetime());
 
 	_communityViewable.setRepaint([=] { update(); });
 

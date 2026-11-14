@@ -722,6 +722,22 @@ void OpenPeerWithSidebar(
 void SessionNavigation::showPeerByLinkResolved(
 		not_null<PeerData*> peer,
 		const PeerByLinkInfo &info) {
+	if (Ayu::ChatLock::IsChatLocked(_session, peer->id)) {
+		const auto peerId = peer->id;
+		Ayu::ChatLock::ShowUnlockDialog(
+			parentController(),
+			peerId,
+			[weak = base::make_weak(this), peerId, info](bool unlocked) {
+				if (unlocked) {
+					if (const auto strong = weak.get()) {
+						if (const auto peer = strong->_session->data().peerLoaded(peerId)) {
+							strong->showPeerByLinkResolved(peer, info);
+						}
+					}
+				}
+			});
+		return;
+	}
 	auto params = SectionShow{
 		SectionShow::Way::Forward
 	};
@@ -1618,6 +1634,11 @@ void SessionNavigation::showByInitialId(
 		MsgId msgId) {
 	const auto parent = parentController();
 	const auto id = parent->window().id();
+	if (id.thread
+		&& Ayu::ChatLock::IsChatLocked(_session, id.thread->peer()->id)) {
+		showPeerHistory(id.thread->peer()->id, params, msgId);
+		return;
+	}
 	auto instant = params;
 	instant.animated = anim::type::instant;
 	switch (id.type) {
@@ -1657,13 +1678,7 @@ void SessionNavigation::showByInitialId(
 		break;
 	}
 	case SeparateType::SavedSublist:
-		using namespace HistoryView;
-		showSection(
-			std::make_shared<ChatMemento>(ChatViewId{
-				.history = id.sublist()->owningHistory(),
-				.sublist = id.sublist(),
-			}),
-			instant);
+		showSublist(id.sublist(), msgId, instant);
 		break;
 	}
 }

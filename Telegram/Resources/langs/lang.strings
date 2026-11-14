@@ -9670,3 +9670,5 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_AccountTransferInstructions" = "On the destination computer, install SleepyGram and use Add Account > Log in by QR code to sign in through Telegram. Then import the settings JSON and encrypted archive files there. This wizard exports settings and archived text only; it never exports login credentials or authorization data. Keep the archive password safe.";
 "ayu_AccountTransferPrepare" = "Export transfer files";
 "ayu_AccountTransferComplete" = "Both files are ready. Transfer them securely to the destination computer, sign in there using its QR login, then import the settings JSON and encrypted archive from Settings > Other.";
+
+"lng_ayu_chat_locked_preview" = "Protected chat";

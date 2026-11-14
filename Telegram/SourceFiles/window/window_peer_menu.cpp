@@ -3282,6 +3282,13 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 	const auto session = &show->session();
 	const auto owner = &session->data();
 	const auto itemsList = owner->idsToItems(draft.ids);
+	if (ranges::any_of(itemsList, [&](not_null<HistoryItem*> item) {
+			return Ayu::ChatLock::IsChatLocked(
+				session,
+				item->history()->peer->id);
+		})) {
+		return nullptr;
+	}
 	const auto msgIds = owner->itemsToIds(itemsList);
 	const auto sendersCount = ItemsForwardSendersCount(itemsList);
 	const auto captionsCount = ItemsForwardCaptionsCount(itemsList);
@@ -3692,6 +3699,18 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 		});
 		show->showBox(std::move(box));
 		auto state = State{ boxRaw, controllerRaw };
+	auto sourcePeers = base::flat_set<PeerId>();
+	for (const auto &id : msgIds) {
+		sourcePeers.insert(id.peer);
+	}
+	Ayu::ChatLock::Changes() | rpl::filter([=](const auto &change) {
+		return change.accountId == session->userId().bare
+			&& (!change.peerId || sourcePeers.contains(change.peerId));
+	}) | rpl::on_next([weak = base::make_weak(boxRaw)] {
+		if (const auto strong = weak.get()) {
+			strong->closeBox();
+		}
+	}, boxRaw->lifetime());
 		return boxRaw->lifetime().make_state<State>(std::move(state));
 	}();
 
@@ -3699,6 +3718,9 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 		auto chosen = [show, draft = std::move(draft)](
 				not_null<Data::Thread*> thread) mutable {
 			const auto peer = thread->peer();
+			if (Ayu::ChatLock::IsChatLocked(&peer->session(), peer->id)) {
+				return false;
+			}
 			if (peer->isSelf()
 				&& !draft.ids.empty()
 				&& draft.ids.front().peer != peer->id) {
@@ -3766,6 +3788,13 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 	const auto field = comment->entity();
 	state->submit = [=](Api::SendOptions options) {
 		const auto peers = state->box->collectSelectedRows();
+		if (ranges::any_of(peers, [&](not_null<PeerData*> peer) {
+				return Ayu::ChatLock::IsChatLocked(
+					&peer->session(),
+					peer->id);
+			})) {
+			return;
+		}
 		auto comment = field->getTextWithAppliedMarkdown();
 		const auto checkPaid = [=] {
 			const auto withPaymentApproved = crl::guard(weak, [=](

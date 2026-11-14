@@ -52,6 +52,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 
 // AyuGram includes
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/features/filters/filters_controller.h"
 #include "styles/style_ayu_icons.h"
 
@@ -1214,6 +1215,20 @@ void RowPainter::Paint(
 			texttop,
 			availableWidth,
 			st::dialogsTextFont->height);
+		const auto locked = history
+			&& Ayu::ChatLock::IsChatLocked(
+				&history->session(),
+				history->peer->id);
+		if (locked) {
+			p.setFont(st::dialogsTextFont);
+			p.setPen(color);
+			p.drawTextLeft(
+				nameleft,
+				texttop,
+				availableWidth,
+				tr::lng_ayu_chat_locked_preview(tr::now));
+			return;
+		}
 		const auto actionWasPainted = ShowSendActionInDialogs(thread)
 			? thread->sendActionPainter()->paint(
 				p,
@@ -1346,6 +1361,22 @@ void RowPainter::Paint(
 			texttop,
 			availableWidth,
 			st::dialogsTextFont->height);
+		if (Ayu::ChatLock::IsChatLocked(
+				&item->history()->session(),
+				item->history()->peer->id)) {
+			p.setFont(st::dialogsTextFont);
+			p.setPen(context.active
+				? st::dialogsTextFgServiceActive
+				: context.selected
+				? st::dialogsTextFgServiceOver
+				: st::dialogsTextFgService);
+			p.drawTextLeft(
+				nameleft,
+				texttop,
+				availableWidth,
+				tr::lng_ayu_chat_locked_preview(tr::now));
+			return;
+		}
 		auto &view = row->itemView();
 		if (!view.prepared(item, nullptr, nullptr)) {
 			view.prepare(
