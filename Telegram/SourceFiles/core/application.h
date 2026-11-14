@@ -102,6 +102,7 @@ class Manager;
 } // namespace Export
 
 namespace Calls {
+class Call;
 class Instance;
 } // namespace Calls
 
@@ -449,6 +450,7 @@ private:
 	const std::unique_ptr<Main::Domain> _domain;
 	const std::unique_ptr<Export::Manager> _exportManager;
 	const std::unique_ptr<Calls::Instance> _calls;
+	Calls::Call *_shortcutAnswerPendingCall = nullptr;
 	const std::unique_ptr<Iv::Instance> _iv;
 	base::flat_map<
 		Window::SeparateId,

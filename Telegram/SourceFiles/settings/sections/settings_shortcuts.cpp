@@ -121,6 +121,8 @@ struct Labeled {
 		separator,
 		{ C::RecordVoice, tr::lng_shortcuts_record_voice_message() },
 		{ C::RecordRound, tr::lng_shortcuts_record_round_message() },
+		{ C::AnswerIncomingCall, tr::lng_call_accept() },
+		{ C::RejectIncomingCall, tr::lng_call_decline() },
 		separator,
 		{ C::ShowAdminLog, tr::lng_shortcuts_admin_log() },
 		separator,

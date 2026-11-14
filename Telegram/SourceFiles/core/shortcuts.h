@@ -79,6 +79,8 @@ enum class Command {
 
 	RecordVoice,
 	RecordRound,
+	AnswerIncomingCall,
+	RejectIncomingCall,
 
 	ReadChat,
 	ArchiveChat,

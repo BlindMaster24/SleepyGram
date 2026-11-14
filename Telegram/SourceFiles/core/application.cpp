@@ -25,11 +25,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/core_settings.h"
 #include "core/update_checker.h"
 #include "core/shortcuts.h"
+#include "core/ui_integration.h"
 #include "core/sandbox.h"
 #include "core/local_url_handlers.h"
 #include "core/launcher.h"
 #include "core/proxy_rotation_manager.h"
-#include "core/ui_integration.h"
 #include "core/version.h"
 #include "chat_helpers/emoji_keywords.h"
 #include "chat_helpers/stickers_emoji_image_loader.h"
@@ -44,6 +44,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "apiwrap.h"
 #include "api/api_updates.h"
 #include "calls/calls_instance.h"
+#include "calls/calls_call.h"
 #include "countries/countries_manager.h"
 #include "iv/iv_delegate_impl.h"
 #include "iv/iv_instance.h"
@@ -2155,6 +2156,19 @@ void Application::refreshApplicationIcon(Main::Session *session) {
 
 void Application::startShortcuts() {
 	Shortcuts::Start();
+	_calls->currentCallValue() | rpl::on_next([=](Calls::Call *call) {
+		_shortcutAnswerPendingCall = nullptr;
+		if (call) {
+			call->stateValue(
+			) | rpl::filter([=](Calls::Call::State) {
+				return !call->isIncomingWaiting();
+			}) | rpl::take(1) | rpl::on_next([=](Calls::Call::State) {
+				if (_shortcutAnswerPendingCall == call) {
+					_shortcutAnswerPendingCall = nullptr;
+				}
+			}, call->lifetime());
+		}
+	}, _lifetime);
 
 	_domain->activeSessionChanges(
 	) | rpl::on_next([=](Main::Session *session) {
@@ -2164,6 +2178,31 @@ void Application::startShortcuts() {
 	Shortcuts::Requests(
 	) | rpl::on_next([=](not_null<Shortcuts::Request*> request) {
 		using Command = Shortcuts::Command;
+		const auto answerCall = request->check(Command::AnswerIncomingCall);
+		const auto rejectCall = !answerCall
+			&& request->check(Command::RejectIncomingCall);
+		if ((answerCall || rejectCall)
+			&& Ui::AppInFocus()
+			&& activeWindow()
+			&& activeWindow()->maybeSession()) {
+			const auto call = _calls->currentCall();
+			if (call
+				&& &call->user()->session() == activeWindow()->maybeSession()
+				&& call->isIncomingWaiting()) {
+				request->handle([=] {
+					if (answerCall) {
+						if (_shortcutAnswerPendingCall == call) {
+							return true;
+						}
+						_shortcutAnswerPendingCall = call;
+						call->answer();
+					} else {
+						call->hangup();
+					}
+					return true;
+				});
+			}
+		}
 		request->check(Command::Quit) && request->handle([] {
 			Quit();
 			return true;
