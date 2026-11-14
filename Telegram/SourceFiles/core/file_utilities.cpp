@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/application.h"
 #include "core/click_handler_types.h"
 #include "core/version.h"
+#include "data/data_peer_id.h"
 #include "lang/lang_keys.h"
 #include "main/main_account.h"
 #include "main/main_app_config.h"

@@ -8,7 +8,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/qt/qt_compare.h"
+#include "data/data_msg_id.h"
 #include "data/data_message_reaction_id.h"
+#include "data/data_types.h"
+#include "dialogs/dialogs_search_types.h"
 
 class History;
 class PeerData;
@@ -25,8 +28,6 @@ struct ReactionId;
 namespace Dialogs {
 
 class Entry;
-enum class ChatSearchTab : uchar;
-
 class Key {
 public:
 	Key() = default;
@@ -138,13 +139,6 @@ enum class ChatTypeFilter : uchar {
 	Private,
 	Groups,
 	Channels,
-};
-
-enum class ChatSearchMediaFilter : uchar {
-	All,
-	Photos,
-	Videos,
-	Files,
 };
 
 struct SearchState {

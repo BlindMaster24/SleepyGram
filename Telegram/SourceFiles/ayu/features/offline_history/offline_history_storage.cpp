@@ -10,6 +10,9 @@
 #include <QtCore/QJsonObject>
 #include <QtCore/QSaveFile>
 
+#include <algorithm>
+#include <utility>
+
 namespace Ayu::OfflineHistory::Storage {
 namespace {
 
@@ -19,6 +22,54 @@ constexpr auto kMaxSnapshotBytes = 64LL * 1024 * 1024;
 constexpr auto kMaxTextBytes = 48LL * 1024 * 1024;
 constexpr auto kMaxMessageTextLength = 16 * 1024;
 constexpr auto kMaxRangeSeconds = 7LL * 24 * 60 * 60;
+constexpr auto kMaxAttachments = 10000;
+constexpr auto kMaxAttachmentBytes = 25LL * 1024 * 1024;
+constexpr auto kMaxManifestBytes = 8LL * 1024 * 1024;
+
+bool SafeFileName(const Attachment &attachment) {
+	if (!attachment.messageId
+		|| attachment.messageId.bare > 0x3FFFFFFF
+		|| attachment.mediaId <= 0
+		|| attachment.fileName.isEmpty()
+		|| QFileInfo(attachment.fileName).fileName() != attachment.fileName) {
+		return false;
+	}
+	const auto prefix = QStringLiteral("m-%1-%2-%3.")
+		.arg(attachment.messageId.bare)
+		.arg(attachment.photo ? QStringLiteral("p") : QStringLiteral("d"))
+		.arg(attachment.mediaId);
+	if (!attachment.fileName.startsWith(prefix)) {
+		return false;
+	}
+	const auto suffix = attachment.fileName.mid(prefix.size());
+	if (suffix.isEmpty() || suffix.size() > 10) {
+		return false;
+	}
+	return std::ranges::all_of(suffix, [](QChar ch) {
+		return (ch >= QLatin1Char('a') && ch <= QLatin1Char('z'))
+			|| (ch >= QLatin1Char('0') && ch <= QLatin1Char('9'));
+	});
+}
+
+bool ValidAttachments(const std::vector<Attachment> &attachments) {
+	if (attachments.size() > kMaxAttachments) {
+		return false;
+	}
+	auto names = QStringList();
+	for (const auto &attachment : attachments) {
+		if (!SafeFileName(attachment)
+			|| attachment.name.size() > 1024
+			|| attachment.size <= 0
+			|| attachment.size > kMaxAttachmentBytes
+			|| attachment.sourceSize <= 0
+			|| attachment.sourceSize > kMaxAttachmentBytes
+			|| names.contains(attachment.fileName)) {
+			return false;
+		}
+		names.push_back(attachment.fileName);
+	}
+	return true;
+}
 
 bool Valid(const Snapshot &snapshot) {
 	if (snapshot.from <= 0
@@ -69,7 +120,31 @@ QJsonObject Encode(const Snapshot &snapshot, uint64 accountId, PeerId peerId) {
 		}
 		return result;
 	}();
-	object.insert(u"messages"_q, messages);
+	object.insert(QStringLiteral("messages"), messages);
+	return object;
+}
+
+QJsonObject EncodeAttachments(
+		const std::vector<Attachment> &attachments,
+		uint64 accountId,
+		PeerId peerId) {
+	auto object = QJsonObject();
+	object.insert(QStringLiteral("version"), kFormatVersion);
+	object.insert(QStringLiteral("account"), QString::number(accountId));
+	object.insert(QStringLiteral("peer"), QString::number(peerId.value));
+	auto array = QJsonArray();
+	for (const auto &attachment : attachments) {
+		auto item = QJsonObject();
+		item.insert(QStringLiteral("message"), QString::number(attachment.messageId.bare));
+		item.insert(QStringLiteral("media"), QString::number(attachment.mediaId));
+		item.insert(QStringLiteral("photo"), attachment.photo);
+		item.insert(QStringLiteral("name"), attachment.name);
+		item.insert(QStringLiteral("file"), attachment.fileName);
+		item.insert(QStringLiteral("size"), attachment.size);
+		item.insert(QStringLiteral("sourceSize"), attachment.sourceSize);
+		array.push_back(item);
+	}
+	object.insert(QStringLiteral("attachments"), array);
 	return object;
 }
 
@@ -85,6 +160,8 @@ Paths PathsFor(const QString &root, uint64 accountId, PeerId peerId) {
 		.root = root,
 		.complete = directory + QStringLiteral("/history.json"),
 		.partial = directory + QStringLiteral("/history.partial.json"),
+		.attachmentDirectory = directory + QStringLiteral("/attachments"),
+		.attachmentManifest = directory + QStringLiteral("/attachments.json"),
 	};
 }
 
@@ -212,6 +289,96 @@ bool WriteAtomic(
 	return file.open(QIODevice::WriteOnly)
 		&& (file.write(bytes) == bytes.size())
 		&& file.commit();
+}
+
+QByteArray SerializeAttachments(
+		const std::vector<Attachment> &attachments,
+		uint64 accountId,
+		PeerId peerId) {
+	if (!ValidAttachments(attachments)) {
+		return {};
+	}
+	return QJsonDocument(EncodeAttachments(attachments, accountId, peerId))
+		.toJson(QJsonDocument::Compact);
+}
+
+bool ReadAttachments(
+		const Paths &paths,
+		uint64 accountId,
+		PeerId peerId,
+		std::vector<Attachment> *attachments) {
+	if (!attachments) {
+		return false;
+	}
+	attachments->clear();
+	const auto directoryInfo = QFileInfo(paths.attachmentDirectory);
+	if (directoryInfo.exists()
+		&& (!directoryInfo.isDir() || directoryInfo.isSymLink())) {
+		attachments->clear();
+		return false;
+	}
+	auto file = QFile(paths.attachmentManifest);
+	if (!file.exists()) {
+		attachments->clear();
+		return true;
+	}
+	const auto info = QFileInfo(file);
+	if (!info.isFile() || info.isSymLink()
+		|| info.size() > kMaxManifestBytes
+		|| !file.open(QIODevice::ReadOnly)) {
+		return false;
+	}
+	const auto bytes = file.read(kMaxManifestBytes + 1);
+	if (bytes.size() > kMaxManifestBytes || !file.atEnd()) {
+		return false;
+	}
+	const auto document = QJsonDocument::fromJson(bytes);
+	if (!document.isObject()) {
+		return false;
+	}
+	const auto object = document.object();
+	if (object.value(QStringLiteral("version")).toInt() != kFormatVersion
+		|| object.value(QStringLiteral("account")).toString()
+			!= QString::number(accountId)
+		|| object.value(QStringLiteral("peer")).toString()
+			!= QString::number(peerId.value)) {
+		return false;
+	}
+	const auto array = object.value(QStringLiteral("attachments")).toArray();
+	if (array.size() > kMaxAttachments) {
+		return false;
+	}
+	auto result = std::vector<Attachment>();
+	result.reserve(array.size());
+	for (const auto &value : array) {
+		const auto item = value.toObject();
+		auto attachment = Attachment{
+			.messageId = MsgId(item.value(QStringLiteral("message"))
+				.toString().toLongLong()),
+			.mediaId = item.value(QStringLiteral("media"))
+				.toString().toLongLong(),
+			.photo = item.value(QStringLiteral("photo")).toBool(),
+			.name = item.value(QStringLiteral("name")).toString(),
+			.fileName = item.value(QStringLiteral("file")).toString(),
+			.size = item.value(QStringLiteral("size")).toInteger(),
+			.sourceSize = item.value(QStringLiteral("sourceSize")).toInteger(),
+		};
+		if (!ValidAttachments({ attachment })) {
+			return false;
+		}
+		const auto path = QDir(paths.attachmentDirectory)
+			.filePath(attachment.fileName);
+		const auto fileInfo = QFileInfo(path);
+		if (fileInfo.isFile() && !fileInfo.isSymLink()
+			&& fileInfo.size() == attachment.size) {
+			result.push_back(std::move(attachment));
+		}
+	}
+	if (!ValidAttachments(result)) {
+		return false;
+	}
+	*attachments = std::move(result);
+	return true;
 }
 
 } // namespace Ayu::OfflineHistory::Storage

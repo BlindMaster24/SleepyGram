@@ -18,6 +18,16 @@ struct Message {
 	QString text;
 };
 
+struct Attachment {
+	MsgId messageId = 0;
+	uint64 mediaId = 0;
+	bool photo = false;
+	QString name;
+	QString fileName;
+	qint64 size = 0;
+	qint64 sourceSize = 0;
+};
+
 struct Snapshot {
 	int64 from = 0;
 	int64 to = 0;
@@ -30,6 +40,8 @@ struct Paths {
 	QString root;
 	QString complete;
 	QString partial;
+	QString attachmentDirectory;
+	QString attachmentManifest;
 };
 
 [[nodiscard]] Paths PathsFor(
@@ -54,5 +66,14 @@ struct Paths {
 	const QString &root,
 	int64 limit,
 	const QStringList &excluded = {});
+[[nodiscard]] bool ReadAttachments(
+	const Paths &paths,
+	uint64 accountId,
+	PeerId peerId,
+	std::vector<Attachment> *attachments);
+[[nodiscard]] QByteArray SerializeAttachments(
+	const std::vector<Attachment> &attachments,
+	uint64 accountId,
+	PeerId peerId);
 
 } // namespace Ayu::OfflineHistory::Storage

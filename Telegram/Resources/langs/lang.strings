@@ -7802,6 +7802,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_offline_history_partial" = "Partial snapshot saved. Save again to resume.";
 "lng_offline_history_error" = "Could not load the next history page. Save again to resume.";
 "lng_offline_history_limit" = "The 1 GiB offline storage limit was reached.";
+"lng_offline_history_media" = "Include photos and files (up to 25 MiB each)";
+"lng_offline_history_open_attachment" = "Open selected attachment";
+"lng_offline_history_attachments_saved#one" = "Saved {count} offline attachment";
+"lng_offline_history_attachments_saved#other" = "Saved {count} offline attachments";
+"lng_offline_history_attachment_limit" = "Attachment skipped: the file or offline storage limit was reached.";
+"lng_offline_history_attachment_progress" = "Saving offline attachments: {current} of {total}";
 "lng_offline_history_restricted" = "Offline saving is unavailable for this chat.";
 "lng_offline_history_messages#one" = "{count} message saved";
 "lng_offline_history_messages#other" = "{count} messages saved";
