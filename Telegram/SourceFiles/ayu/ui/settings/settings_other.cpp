@@ -9,6 +9,7 @@
 #include "lang_auto.h"
 #include "ayu/ayu_settings.h"
 #include "ayu/data/messages_storage.h"
+#include "ayu/data/archive_backup.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
@@ -36,6 +37,8 @@
 #include "styles/style_widgets.h"
 
 #include <QFile>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QSaveFile>
 #include <QtCore/QDate>
 #include <QtCore/QDateTime>
@@ -316,6 +319,105 @@ void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
 	}));
 }
 
+void ExportArchiveBackup(not_null<Window::SessionController*> controller) {
+	const auto accountId = controller->session().userId().bare
+		& PeerId::kChatTypeMask;
+	const auto counts = AyuDatabase::archiveBackupCounts(accountId);
+	controller->show(Ui::MakeConfirmBox({
+		.text = tr::ayu_ArchiveBackupExportCounts(
+			tr::now,
+			lt_edited_count,
+			counts.edited,
+			lt_deleted_count,
+			counts.deleted),
+		.confirmed = [=](Fn<void()> &&close) {
+			close();
+			const auto password = QInputDialog::getText(
+				controller->widget(),
+				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
+				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
+				QLineEdit::Password);
+			if (password.isEmpty()) return;
+			const auto confirm = QInputDialog::getText(
+				controller->widget(),
+				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
+				tr::ayu_ArchiveBackupPasswordConfirm(tr::now),
+				QLineEdit::Password);
+			if (password != confirm || password.toUtf8().size() < 8) {
+				controller->showToast(tr::ayu_ArchiveBackupInvalidPassword(tr::now));
+				return;
+			}
+			FileDialog::GetWritePath(
+				controller->widget(),
+				tr::ayu_ArchiveBackupExportTitle(tr::now),
+				u"SleepyGram archive (*.sgarchive)"_q,
+				u"sleepygram-archive.sgarchive"_q,
+				crl::guard(controller, [=](QString &&path) {
+					if (path.isEmpty()) return;
+					const auto bytes = AyuArchiveBackup::Create(accountId, password);
+					auto file = QSaveFile(path);
+					if (bytes.isEmpty() || !file.open(QIODevice::WriteOnly)
+						|| file.write(bytes) != bytes.size() || !file.commit()) {
+						controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+						return;
+					}
+					controller->showToast(tr::lng_box_done(tr::now));
+				}));
+		},
+	}));
+}
+
+void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
+	const auto accountId = controller->session().userId().bare
+		& PeerId::kChatTypeMask;
+	FileDialog::GetOpenPath(
+		controller->widget(),
+		tr::ayu_ArchiveBackupImportTitle(tr::now),
+		u"SleepyGram archive (*.sgarchive);;All files (*)"_q,
+		crl::guard(controller, [=](FileDialog::OpenResult &&result) {
+			if (result.paths.isEmpty()) return;
+			QFile file(result.paths.front());
+			if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024) {
+				controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+				return;
+			}
+			const auto bytes = file.read(64 * 1024 * 1024 + 1);
+			if (file.error() != QFileDevice::NoError || bytes.size() > 64 * 1024 * 1024) {
+				controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
+				return;
+			}
+			const auto password = QInputDialog::getText(
+				controller->widget(),
+				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
+				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
+				QLineEdit::Password);
+			if (password.isEmpty()) return;
+			const auto preview = AyuArchiveBackup::Read(bytes, accountId, password);
+			if (!preview) {
+				controller->showToast(tr::ayu_ArchiveBackupInvalidFile(tr::now));
+				return;
+			}
+			controller->show(Ui::MakeConfirmBox({
+				.text = tr::ayu_ArchiveBackupImportPreview(
+					tr::now,
+					lt_preview,
+					preview->summary),
+				.confirmed = [=](Fn<void()> &&close) {
+					const auto imported = AyuArchiveBackup::Import(accountId, *preview);
+					close();
+					controller->showToast(imported.committed
+						? tr::ayu_ArchiveBackupImportResult(
+							tr::now,
+							lt_added_count,
+							imported.editedAdded + imported.deletedAdded,
+							lt_skipped_count,
+							imported.editedSkipped + imported.deletedSkipped)
+						: tr::ayu_SettingsTransferFailure(tr::now));
+				},
+			}));
+		}));
+}
+
 void BuildOtherThings(SectionBuilder &builder) {
 	const auto controller = builder.controller();
 
@@ -325,6 +427,17 @@ void BuildOtherThings(SectionBuilder &builder) {
 		.onClick = [=] { ShowArchiveSearchBox(controller); },
 	});
 
+	builder.addSkip();
+	builder.addButton({
+		.id = u"ayu/archiveBackupExport"_q,
+		.title = tr::ayu_ArchiveBackupExportTitle(),
+		.onClick = [=] { ExportArchiveBackup(controller); },
+	});
+	builder.addButton({
+		.id = u"ayu/archiveBackupImport"_q,
+		.title = tr::ayu_ArchiveBackupImportTitle(),
+		.onClick = [=] { ImportArchiveBackup(controller); },
+	});
 	builder.addSkip();
 	builder.addButton({
 		.id = u"ayu/exportSettings"_q,

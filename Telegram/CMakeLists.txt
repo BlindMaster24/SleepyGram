@@ -268,6 +268,8 @@ set(ayugram_files
         ayu/data/messages_storage.h
         ayu/data/entities.h
         ayu/data/ayu_database.cpp
+        ayu/data/archive_backup.cpp
+        ayu/data/archive_backup.h
         ayu/data/ayu_database.h
 
         info/profile/info_profile_music_button.cpp

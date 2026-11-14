@@ -40,6 +40,24 @@ struct ArchiveSearchResult {
 	AyuMessageBase message;
 };
 
+struct ArchiveBackupCounts {
+	int edited = 0;
+	int deleted = 0;
+};
+
+struct ArchiveBackupSnapshot {
+	std::vector<EditedMessage> edited;
+	std::vector<DeletedMessage> deleted;
+};
+
+struct ArchiveImportCounts {
+	bool committed = false;
+	int editedAdded = 0;
+	int editedSkipped = 0;
+	int deletedAdded = 0;
+	int deletedSkipped = 0;
+};
+
 void initialize();
 
 void addEditedMessage(const EditedMessage &message);
@@ -62,6 +80,14 @@ std::vector<ArchiveSearchResult> searchArchive(
 	int dateTo,
 	std::optional<ArchiveSearchCursor> cursor,
 	int pageLimit);
+
+ArchiveBackupCounts archiveBackupCounts(ID userId);
+std::optional<ArchiveBackupSnapshot> archiveBackupSnapshot(
+	ID userId,
+	int maxRows);
+ArchiveImportCounts importArchiveSnapshot(
+	ID userId,
+	const ArchiveBackupSnapshot &snapshot);
 
 std::vector<RegexFilter> getAllRegexFilters();
 RegexFilter getById(std::vector<char> id);

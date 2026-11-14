@@ -642,6 +642,130 @@ std::vector<ArchiveSearchResult> searchArchive(
 	}
 }
 
+ArchiveBackupCounts archiveBackupCounts(ID userId) {
+	std::lock_guard lock(databaseMutex);
+	try {
+		return {
+			.edited = int(storage.count<EditedMessage>(
+				where(column<EditedMessage>(&EditedMessage::userId) == userId))),
+			.deleted = int(storage.count<DeletedMessage>(
+				where(column<DeletedMessage>(&DeletedMessage::userId) == userId))),
+		};
+	} catch (const std::exception &ex) {
+		LOG(("Failed to count archived messages: %1").arg(ex.what()));
+		return {};
+	}
+}
+
+std::optional<ArchiveBackupSnapshot> archiveBackupSnapshot(
+		ID userId,
+		int maxRows) {
+	if (maxRows <= 0) {
+		return std::nullopt;
+	}
+	std::lock_guard lock(databaseMutex);
+	try {
+		auto result = ArchiveBackupSnapshot();
+		result.edited = storage.get_all<EditedMessage>(
+			where(column<EditedMessage>(&EditedMessage::userId) == userId),
+			order_by(column<EditedMessage>(&EditedMessage::fakeId)),
+			limit(maxRows));
+		const auto remaining = maxRows - int(result.edited.size());
+		if (remaining <= 0) {
+			const auto editedCount = storage.count<EditedMessage>(
+				where(column<EditedMessage>(&EditedMessage::userId) == userId));
+			const auto deletedCount = storage.count<DeletedMessage>(
+				where(column<DeletedMessage>(&DeletedMessage::userId) == userId));
+			if (editedCount + deletedCount > maxRows) {
+				return std::nullopt;
+			}
+			return result;
+		}
+		result.deleted = storage.get_all<DeletedMessage>(
+			where(column<DeletedMessage>(&DeletedMessage::userId) == userId),
+			order_by(column<DeletedMessage>(&DeletedMessage::fakeId)),
+			limit(remaining));
+		const auto editedCount = storage.count<EditedMessage>(
+			where(column<EditedMessage>(&EditedMessage::userId) == userId));
+		const auto deletedCount = storage.count<DeletedMessage>(
+			where(column<DeletedMessage>(&DeletedMessage::userId) == userId));
+		if (editedCount + deletedCount > maxRows) {
+			return std::nullopt;
+		}
+		return result;
+	} catch (const std::exception &ex) {
+		LOG(("Failed to snapshot archived messages: %1").arg(ex.what()));
+		return std::nullopt;
+	}
+}
+
+ArchiveImportCounts importArchiveSnapshot(
+		ID userId,
+		const ArchiveBackupSnapshot &snapshot) {
+	auto result = ArchiveImportCounts();
+	if (snapshot.edited.size() + snapshot.deleted.size() > 100000) {
+		return result;
+	}
+	std::lock_guard lock(databaseMutex);
+	try {
+		storage.begin_transaction();
+		auto editedRows = storage.get_all<EditedMessage>(
+			where(column<EditedMessage>(&EditedMessage::userId) == userId));
+		auto deletedRows = storage.get_all<DeletedMessage>(
+			where(column<DeletedMessage>(&DeletedMessage::userId) == userId));
+		for (auto row : snapshot.edited) {
+			if (row.userId != userId || row.text.size() > 1024 * 1024
+				|| row.peerType < 0 || row.peerType > 3) {
+				storage.rollback();
+				return {};
+			}
+			const auto duplicate = std::ranges::any_of(editedRows, [&](const auto &old) {
+				return old.dialogId == row.dialogId
+					&& old.topicId == row.topicId
+					&& old.messageId == row.messageId
+					&& old.editDate == row.editDate
+					&& old.text == row.text;
+			});
+			if (duplicate) {
+				++result.editedSkipped;
+				continue;
+			}
+			row.fakeId = 0;
+			storage.insert(row);
+			editedRows.push_back(row);
+			++result.editedAdded;
+		}
+		for (auto row : snapshot.deleted) {
+			if (row.userId != userId || row.text.size() > 1024 * 1024
+				|| row.peerType < 0 || row.peerType > 3) {
+				storage.rollback();
+				return {};
+			}
+			const auto duplicate = std::ranges::any_of(deletedRows, [&](const auto &old) {
+				return old.dialogId == row.dialogId
+					&& old.topicId == row.topicId
+					&& old.messageId == row.messageId
+					&& old.date == row.date
+					&& old.text == row.text;
+			});
+			if (duplicate) {
+				++result.deletedSkipped;
+				continue;
+			}
+			row.fakeId = 0;
+			storage.insert(row);
+			deletedRows.push_back(row);
+			++result.deletedAdded;
+		}
+		storage.commit();
+		result.committed = true;
+	} catch (const std::exception &ex) {
+		storage.rollback();
+		LOG(("Failed to import archived messages: %1").arg(ex.what()));
+	}
+	return result;
+}
+
 template<typename T>
 std::vector<T> getAllT() {
 	std::lock_guard lock(databaseMutex);

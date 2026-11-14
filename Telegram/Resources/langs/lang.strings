@@ -9647,3 +9647,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_AboutText1" = "ToS breaking Telegram client based on {api_link}.";
 "ayu_UpdateAyuGram" = "Update SleepyGram";
 "ayu_UtilityRestartRequired" = "The app will close in 5 seconds.";
+
+"ayu_ArchiveBackupExportTitle" = "Export encrypted archive";
+"ayu_ArchiveBackupImportTitle" = "Import encrypted archive";
+"ayu_ArchiveBackupExportCounts" = "Create a text-only backup for this account?\n\nEdited messages: {edited_count}\nDeleted messages: {deleted_count}";
+"ayu_ArchiveBackupPasswordTitle" = "Archive backup password";
+"ayu_ArchiveBackupPasswordPrompt" = "Enter the backup password (at least 8 characters).";
+"ayu_ArchiveBackupPasswordConfirm" = "Confirm the backup password.";
+"ayu_ArchiveBackupInvalidPassword" = "Passwords do not match or are too short.";
+"ayu_ArchiveBackupInvalidFile" = "The archive file is invalid, uses another account, or has the wrong password.";
+"ayu_ArchiveBackupImportPreview" = "Import this encrypted text archive?\n\n{preview}";
+"ayu_ArchiveBackupImportResult" = "Added {added_count} records; skipped {skipped_count} duplicates.";
