@@ -7,13 +7,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #pragma once
 
-#include "data/data_peer_id.h"
+#include "base/basic_types.h"
 
 #include <QtCore/QUrl>
 
 namespace Main {
 class Session;
 } // namespace Main
+
+struct PeerId;
 
 // legacy
 bool filedialogGetSaveFile(
