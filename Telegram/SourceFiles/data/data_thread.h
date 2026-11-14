@@ -50,6 +50,7 @@ struct ItemNotification {
 	not_null<HistoryItem*> item;
 	UserData *reactionOrVoteSender = nullptr;
 	ItemNotificationType type = ItemNotificationType::Message;
+	bool keywordOverride = false;
 
 	friend inline auto operator<=>(
 		ItemNotification a,

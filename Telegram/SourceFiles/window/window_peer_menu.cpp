@@ -67,6 +67,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
 #include "menu/menu_mute.h"
+#include "window/notifications_manager.h"
 #include "menu/menu_ttl_validator.h"
 #include "apiwrap.h"
 #include "mainwidget.h"
@@ -138,6 +139,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_menu_icons.h"
 #include "styles/style_premium.h"
 #include "styles/style_wallet.h"
+#include "styles/style_widgets.h"
 
 #include <QAction>
 #include <QtWidgets/QApplication>
@@ -207,6 +209,45 @@ const char kOptionViewProfileInChatsListContextMenu[]
 namespace {
 
 constexpr auto kArchivedToastDuration = crl::time(5000);
+
+void EditKeywordAlertPhrasesBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<SessionController*> controller,
+		PeerId peerId) {
+	const auto phrases = Notifications::ReadKeywordAlertPhrases(
+		&controller->session(),
+		peerId);
+	box->setTitle(tr::lng_keyword_alert_title());
+	box->setWidth(st::boxWideWidth);
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		tr::lng_keyword_alert_description(tr::now),
+		st::boxLabel), st::boxPadding);
+	const auto field = box->addRow(object_ptr<Ui::InputField>(
+		box,
+		st::defaultInputField,
+		Ui::InputField::Mode::MultiLine,
+		tr::lng_keyword_alert_placeholder(),
+		phrases.join('\n')),
+		st::boxPadding);
+	field->setSubmitSettings(Ui::InputField::SubmitSettings::None);
+	field->setMaxLength(20 * 128 + 19);
+	box->addButton(tr::lng_box_ok(), [=] {
+		const auto values = field->getLastText().split(
+			'\n',
+			Qt::KeepEmptyParts);
+		if (!Notifications::ValidKeywordAlertPhrases(values)) {
+			controller->show(Ui::MakeInformBox(
+				tr::lng_keyword_alert_invalid(tr::now)));
+			return;
+		}
+		Notifications::WriteKeywordAlertPhrases(
+			&controller->session(),
+			peerId,
+			values);
+		box->closeBox();
+	});
+}
 
 [[nodiscard]] bool InsideCollapsedCommunity(History *history) {
 	// A member chat hidden inside a collapsed community lives in that
@@ -313,6 +354,7 @@ private:
 	void addHidePromotion();
 	void addTogglePin();
 	void addToggleMuteSubmenu(bool addSeparator);
+	void addKeywordAlerts();
 	void addSupportInfo();
 	void addInfo();
 	void addStoryArchive();
@@ -603,6 +645,17 @@ void Filler::addToggleMuteSubmenu(bool addSeparator) {
 	if (addSeparator) {
 		_addAction(PeerMenuCallback::Args{ .isSeparator = true });
 	}
+}
+
+void Filler::addKeywordAlerts() {
+	if (!_thread || !_peer || _peer->isSelf() || _thread->asSublist()) {
+		return;
+	}
+	const auto controller = _controller;
+	const auto peerId = _peer->id;
+	_addAction(tr::lng_keyword_alert_title(tr::now), [=] {
+		controller->show(Box(EditKeywordAlertPhrasesBox, controller, peerId));
+	}, &st::menuIconSearch);
 }
 
 void Filler::addSupportInfo() {
@@ -1927,6 +1980,7 @@ void Filler::fillContextMenuActions() {
 		addInfo();
 	}
 	addToggleMuteSubmenu(false);
+	addKeywordAlerts();
 	addToggleUnreadMark();
 	addToggleTopicClosed();
 	addToggleFolder();
@@ -1945,6 +1999,7 @@ void Filler::fillContextMenuActions() {
 
 void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
+	addKeywordAlerts();
 	AyuUi::AddAyuGramActions(_peer, _thread, _controller, _addAction);
 	addCreateTopic();
 	addInfo();

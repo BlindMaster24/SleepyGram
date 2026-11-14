@@ -7783,6 +7783,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_filters_quiet_hours_start" = "Start time";
 "lng_filters_quiet_hours_end" = "End time";
 "lng_filters_quiet_hours_invalid" = "Choose at least one day and different start and end times.";
+"lng_keyword_alert_title" = "Keyword alerts";
+"lng_keyword_alert_description" = "Enter up to 20 phrases, one per line. Matching is case-insensitive and applies to new messages and captions. Alerts can bypass this chat's mute. Leave empty to disable.";
+"lng_keyword_alert_placeholder" = "Phrases";
+"lng_keyword_alert_invalid" = "Use no more than 20 phrases, each up to 128 characters.";
 "lng_filters_remove_sure" = "This will remove the folder, your chats will not be deleted.";
 "lng_filters_remove_yes" = "Remove";
 "lng_filters_menu_add" = "Add to folder";

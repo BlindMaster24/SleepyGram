@@ -1699,6 +1699,11 @@ void History::newItemAdded(not_null<HistoryItem*> item, NewAddType type) {
 	auto notification = Data::ItemNotification{
 		.item = item,
 		.type = Data::ItemNotificationType::Message,
+		.keywordOverride = (type == NewAddType::RegularIncoming
+			&& !item->out()
+			&& !session().updates().requestingDifference()
+			&& !session().updates().handlingChannelDifference()
+			&& Window::Notifications::MatchesKeywordAlertPhrase(item)),
 	};
 	if (item->showNotification()) {
 		item->notificationThread()->pushNotification(notification);

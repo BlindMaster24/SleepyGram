@@ -168,15 +168,16 @@ base::options::toggle HideReplyButtonOption({
 
 [[nodiscard]] std::optional<DocumentId> MaybeSoundFor(
 		not_null<Data::Thread*> thread,
-		PeerData *from) {
+		PeerData *from,
+		bool ignoreMute = false) {
 	const auto notifySettings = &thread->owner().notifySettings();
 	const auto threadUnknown = notifySettings->muteUnknown(thread);
 	const auto threadAlert = !threadUnknown
-		&& !notifySettings->isMuted(thread);
+		&& (ignoreMute || !notifySettings->isMuted(thread));
 	const auto fromUnknown = (!from
 		|| notifySettings->muteUnknown(from));
 	const auto fromAlert = !fromUnknown
-		&& !notifySettings->isMuted(from);
+		&& (ignoreMute || !notifySettings->isMuted(from));
 	const auto &sound = notifySettings->sound(thread);
 	return ((threadAlert || fromAlert) && !sound.none)
 		? sound.id
@@ -190,6 +191,33 @@ base::options::toggle HideReplyButtonOption({
 
 [[nodiscard]] QString FolderQuietHoursKey(FilterId folderId) {
 	return u"sleepygram.folderQuietHours."_q + QString::number(folderId);
+}
+
+constexpr auto kMaxKeywordAlertPhrases = 20;
+constexpr auto kMaxKeywordAlertPhraseLength = 128;
+
+[[nodiscard]] QString KeywordAlertPhrasesKey(PeerId peerId) {
+	return u"sleepygram.keywordAlertPhrases."_q
+		+ QString::number(qulonglong(peerId.value));
+}
+
+[[nodiscard]] QStringList NormalizeKeywordAlertPhrases(
+		const QStringList &phrases) {
+	auto result = QStringList();
+	for (const auto &phrase : phrases) {
+		const auto normalized = phrase.trimmed();
+		const auto duplicate = ranges::any_of(result, [&](const QString &entry) {
+			return (entry.compare(normalized, Qt::CaseInsensitive) == 0);
+		});
+		if (normalized.isEmpty()
+			|| normalized.size() > kMaxKeywordAlertPhraseLength
+			|| result.size() >= kMaxKeywordAlertPhrases
+			|| duplicate) {
+			continue;
+		}
+		result.push_back(normalized);
+	}
+	return result;
 }
 
 [[nodiscard]] bool InQuietHours(
@@ -293,6 +321,61 @@ void WriteFolderQuietHours(
 			.arg(int(quietHours->endMinute)));
 }
 
+QStringList ReadKeywordAlertPhrases(
+		not_null<Main::Session*> session,
+		PeerId peerId) {
+	if (!peerId) {
+		return {};
+	}
+	const auto key = KeywordAlertPhrasesKey(peerId);
+	return NormalizeKeywordAlertPhrases(
+		session->local().readPref<QString>(key.toStdString())
+			.split('\n', Qt::SkipEmptyParts));
+}
+
+void WriteKeywordAlertPhrases(
+		not_null<Main::Session*> session,
+		PeerId peerId,
+		const QStringList &phrases) {
+	if (!peerId) {
+		return;
+	}
+	const auto key = KeywordAlertPhrasesKey(peerId);
+	const auto normalized = NormalizeKeywordAlertPhrases(phrases);
+	session->local().writePref<QString>(
+		key.toStdString(),
+		normalized.join('\n'));
+}
+
+bool ValidKeywordAlertPhrases(const QStringList &phrases) {
+	auto nonEmpty = 0;
+	for (const auto &phrase : phrases) {
+		const auto normalized = phrase.trimmed();
+		if (normalized.isEmpty()) {
+			continue;
+		}
+		if (normalized.size() > kMaxKeywordAlertPhraseLength
+			|| ++nonEmpty > kMaxKeywordAlertPhrases) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool MatchesKeywordAlertPhrase(not_null<HistoryItem*> item) {
+	const auto session = &item->history()->session();
+	const auto phrases = ReadKeywordAlertPhrases(
+		session,
+		item->history()->peer->id);
+	if (phrases.isEmpty()) {
+		return false;
+	}
+	const auto text = item->originalText().text;
+	return ranges::any_of(phrases, [&](const QString &phrase) {
+		return text.contains(phrase, Qt::CaseInsensitive);
+	});
+}
+
 const char kOptionCustomNotification[] = "custom-notification";
 const char kOptionGNotification[] = "gnotification";
 const char kOptionMacModernNotifications[] = "mac-modern-notifications";
@@ -308,6 +391,7 @@ struct System::Waiter {
 struct System::Alert {
 	NotificationInHistoryKey key;
 	PeerData *notifyBy = nullptr;
+	bool keywordOverride = false;
 };
 
 System::NotificationInHistoryKey::NotificationInHistoryKey(
@@ -483,6 +567,9 @@ System::SkipState System::computeSkipState(
 		&& &thread->session().account() != &Core::App().domain().active()) {
 		return { SkipState::Skip };
 	}
+	if (messageType && notification.keywordOverride) {
+		return withSilent(SkipState::DontSkip);
+	}
 
 	if (messageType) {
 		notifySettings->request(thread);
@@ -596,6 +683,7 @@ void System::schedule(Data::ItemNotification notification) {
 		_whenAlerts[thread].emplace(timing.when, Alert{
 			.key = NotificationInHistoryKey(notification),
 			.notifyBy = notifyBy,
+			.keywordOverride = notification.keywordOverride,
 		});
 	}
 	if (const auto user = item->history()->peer->asUser()) {
@@ -972,7 +1060,8 @@ void System::showNext() {
 			if (!item || !QuietForItem(item)) {
 				if (const auto soundId = MaybeSoundFor(
 					thread,
-					alert.notifyBy)) {
+					alert.notifyBy,
+					alert.keywordOverride)) {
 					alertThread = thread;
 					alertSoundId = soundId;
 				}
@@ -1195,7 +1284,8 @@ void System::showNext() {
 			_lastHistoryItemId = groupedItem->fullId();
 			_lastSoundId = notifySilent ? std::nullopt : MaybeSoundFor(
 				notifyThread,
-				groupedItem->specialNotificationPeer());
+				groupedItem->specialNotificationPeer(),
+				notify->keywordOverride);
 		}
 
 		// If the current notification is grouped.
@@ -1216,7 +1306,8 @@ void System::showNext() {
 			_lastHistoryItemId = groupedItem->fullId();
 			_lastSoundId = notifySilent ? std::nullopt : MaybeSoundFor(
 				notifyThread,
-				groupedItem->specialNotificationPeer());
+				groupedItem->specialNotificationPeer(),
+				notify->keywordOverride);
 			_waitForAllGroupedTimer.callOnce(kWaitingForAllGroupedDelay);
 		} else {
 			// If the current notification is not grouped
@@ -1251,7 +1342,10 @@ void System::showNext() {
 					.pollVoteOption = pollVoteOption,
 					.soundId = (notifySilent
 						? std::nullopt
-						: MaybeSoundFor(notifyThread, soundFrom)),
+						: MaybeSoundFor(
+							notifyThread,
+							soundFrom,
+							notify->keywordOverride)),
 				});
 			}
 		}

@@ -14,8 +14,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "media/audio/media_audio_local_cache.h"
 
 #include <optional>
+#include <QtCore/QStringList>
 
 class History;
+class HistoryItem;
 
 namespace Data {
 class Session;
@@ -64,6 +66,17 @@ void WriteFolderQuietHours(
 	not_null<Main::Session*> session,
 	FilterId folderId,
 	std::optional<FolderQuietHours> quietHours);
+
+[[nodiscard]] QStringList ReadKeywordAlertPhrases(
+	not_null<Main::Session*> session,
+	PeerId peerId);
+void WriteKeywordAlertPhrases(
+	not_null<Main::Session*> session,
+	PeerId peerId,
+	const QStringList &phrases);
+[[nodiscard]] bool ValidKeywordAlertPhrases(const QStringList &phrases);
+[[nodiscard]] bool MatchesKeywordAlertPhrase(
+	not_null<HistoryItem*> item);
 
 enum class ManagerType {
 	Dummy,
