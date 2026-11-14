@@ -119,26 +119,8 @@ auto EmptyMessageDraftSources()
 	return result;
 }
 
-[[nodiscard]] FileKey ComputeDataNameKey(const QString &dataName) {
-	// We dropped old test authorizations when migrated to multi auth.
-	//const auto testAddition = (cTestMode() ? u":/test/"_q : QString());
-	const auto testAddition = QString();
-	const auto dataNameUtf8 = (dataName + testAddition).toUtf8();
-	FileKey dataNameHash[2] = { 0 };
-	hashMd5(dataNameUtf8.constData(), dataNameUtf8.size(), dataNameHash);
-	return dataNameHash[0];
-}
-
 [[nodiscard]] QString BaseGlobalPath() {
 	return cWorkingDir() + u"tdata/"_q;
-}
-
-[[nodiscard]] QString ComputeDatabasePath(const QString &dataName) {
-	return BaseGlobalPath()
-		+ "user_" + dataName
-		// We dropped old test authorizations when migrated to multi auth.
-		//+ (cTestMode() ? "[test]" : "")
-		+ '/';
 }
 
 [[nodiscard]] QString LegacyTempDirectory() {
@@ -175,12 +157,21 @@ auto EmptyMessageDraftSources()
 } // namespace
 
 Account::Account(not_null<Main::Account*> owner, const QString &dataName)
+: Account(owner, dataName, AccountPathsForDataName(
+	BaseGlobalPath(),
+	dataName)) {
+}
+
+Account::Account(
+		not_null<Main::Account*> owner,
+		const QString &dataName,
+		AccountPaths paths)
 : _owner(owner)
 , _dataName(dataName)
-, _dataNameKey(ComputeDataNameKey(dataName))
-, _basePath(BaseGlobalPath() + ToFilePart(_dataNameKey) + QChar('/'))
-, _tempPath(BaseGlobalPath() + "temp_" + _dataName + QChar('/'))
-, _databasePath(ComputeDatabasePath(dataName))
+, _dataNameKey(paths.dataNameKey)
+, _basePath(std::move(paths.basePath))
+, _tempPath(std::move(paths.tempPath))
+, _databasePath(std::move(paths.databasePath))
 , _cacheTotalSizeLimit(Database::Settings().totalSizeLimit)
 , _cacheBigFileTotalSizeLimit(Database::Settings().totalSizeLimit)
 , _cacheTotalTimeLimit(Database::Settings().totalTimeLimit)

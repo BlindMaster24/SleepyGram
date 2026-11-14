@@ -85,6 +85,7 @@ include(cmake/test_profile_vault.cmake)
 include(cmake/test_archive_snapshot_vault.cmake)
 include(cmake/test_profile_migration.cmake)
 include(cmake/test_account_registry.cmake)
+include(cmake/test_account_storage_plan.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -256,6 +257,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_migration.h
         ayu/features/profile_sets/account_registry.cpp
         ayu/features/profile_sets/account_registry.h
+        ayu/features/profile_sets/account_storage_plan.cpp
+        ayu/features/profile_sets/account_storage_plan.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp
@@ -2229,6 +2232,8 @@ PRIVATE
     storage/serialize_peer.h
     storage/storage_account.cpp
     storage/storage_account.h
+    storage/storage_account_paths.cpp
+    storage/storage_account_paths.h
     storage/storage_cloud_blob.cpp
     storage/storage_cloud_blob.h
     storage/storage_domain.cpp

@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/flags.h"
 #include "storage/cache/storage_cache_database.h"
+#include "storage/storage_account_paths.h"
 #include "data/stickers/data_stickers_set.h"
 #include "data/data_drafts.h"
 #include "webview/webview_common.h"
@@ -46,8 +47,6 @@ struct FileReadDescriptor;
 } // namespace details
 
 class EncryptionKey;
-
-using FileKey = quint64;
 
 enum class StartResult : uchar;
 
@@ -249,6 +248,11 @@ public:
 	void reset();
 
 private:
+	Account(
+		not_null<Main::Account*> owner,
+		const QString &dataName,
+		AccountPaths paths);
+
 	enum class ReadMapResult {
 		Success,
 		IncorrectPasscode,
