@@ -8,7 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "base/unique_qptr.h"
-#include "dialogs/dialogs_key.h"
+#include "dialogs/dialogs_search_types.h"
 #include "ui/rp_widget.h"
 
 namespace Ui {
@@ -19,15 +19,6 @@ class PopupMenu;
 } // namespace Ui
 
 namespace Dialogs {
-
-enum class ChatSearchTab : uchar {
-	MyMessages,
-	ThisTopic,
-	ThisPeer,
-	PublicPosts,
-	Archive,
-	ThisCommunity,
-};
 
 enum class ChatSearchPeerTabType : uchar {
 	Chat,
