@@ -265,20 +265,19 @@ def cache_key(args: argparse.Namespace) -> None:
     digest.update(os.environ.get("ImageOS", "").encode())
     digest.update(os.environ.get("RUNNER_OS", "").encode())
     digest.update(os.environ.get("RUNNER_ARCH", "").encode())
-    inputs = [repo_root / ".github/workflows/build.yml", repo_root / ".gitmodules"]
+    inputs = [".gitmodules"]
     if args.platform == "linux-x64":
-        inputs += [repo_root / "Telegram/build/docker/centos_env", repo_root / "Telegram/build/prepare/patches"]
+        inputs += ["Telegram/build/docker/centos_env", "Telegram/build/prepare/patches"]
     else:
-        inputs += [repo_root / "Telegram/build/prepare", repo_root / "Telegram/build/qt_version.py"]
-        inputs += [repo_root / "Telegram/build/sync_ayu_submodules.py"]
-    files = []
-    for path in inputs:
-        if path.is_dir():
-            files.extend(item for item in path.rglob("*") if item.is_file() and ".git" not in item.parts)
-        elif path.is_file():
-            files.append(path)
-    for path in sorted(set(files)):
-        digest.update(path.relative_to(repo_root).as_posix().encode())
+        inputs += ["Telegram/build/prepare", "Telegram/build/qt_version.py"]
+        inputs += ["Telegram/build/sync_ayu_submodules.py"]
+    # Use tracked paths, but hash the rendered Dockerfile from the working tree.
+    files = subprocess.check_output(["git", "ls-files", "-z", "--", *inputs], cwd=repo_root)
+    for name in sorted(set(files.split(b"\0")) - {b""}):
+        path = repo_root / os.fsdecode(name)
+        if not path.is_file():
+            continue
+        digest.update(name)
         digest.update(path.read_bytes())
     if args.platform != "linux-x64":
         digest.update(submodule_tree_fingerprint(repo_root).encode())
