@@ -28,6 +28,12 @@ namespace Menu {
 void AddDownloadFilesAction(
 	not_null<Ui::PopupMenu*> menu,
 	not_null<Window::SessionController*> window,
+	const std::vector<FullMsgId> &ids,
+	Fn<void()> done);
+
+void AddDownloadFilesAction(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<Window::SessionController*> window,
 	const std::vector<HistoryView::SelectedItem> &selectedItems,
 	not_null<HistoryView::ListWidget*> list);
 

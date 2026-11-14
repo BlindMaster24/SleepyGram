@@ -722,6 +722,32 @@ void AddAction(
 void AddDownloadFilesAction(
 		not_null<Ui::PopupMenu*> menu,
 		not_null<Window::SessionController*> window,
+		const std::vector<FullMsgId> &ids,
+		Fn<void()> done) {
+	if (ids.empty()) {
+		return;
+	}
+	auto messageIds = MessageIds();
+	auto docs = Documents();
+	auto photos = Photos();
+	for (const auto &id : ids) {
+		Collect(window->session().data().message(id), messageIds, docs, photos);
+	}
+	std::sort(docs.begin(), docs.end(), [](const auto &a, const auto &b) {
+		return a.second < b.second;
+	});
+	std::sort(photos.begin(), photos.end(), [](const auto &a, const auto &b) {
+		return a.second < b.second;
+	});
+	if (docs.empty() && photos.empty()) {
+		return;
+	}
+	AddAction(menu, window, std::move(docs), std::move(photos), std::move(done));
+}
+
+void AddDownloadFilesAction(
+		not_null<Ui::PopupMenu*> menu,
+		not_null<Window::SessionController*> window,
 		const std::vector<HistoryView::SelectedItem> &selectedItems,
 		not_null<HistoryView::ListWidget*> list) {
 	if (selectedItems.empty()) {
