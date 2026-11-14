@@ -20,6 +20,7 @@
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/filters/edit_filter.h"
 #include "ayu/ui/settings/filters/settings_filters_list.h"
+#include "ayu/ui/settings/settings_filters.h"
 #include "ayu/utils/qt_key_modifiers_extended.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "base/call_delayed.h"
@@ -576,6 +577,71 @@ void AddHideMessageAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {
 			history->requestChatListMessage();
 		},
 		&st::menuIconClear);
+}
+
+void AddWhyHiddenAction(
+		not_null<Ui::PopupMenu*> menu,
+		not_null<Window::SessionController*> controller,
+		HistoryItem *item) {
+	if (!item || !FiltersController::whyHidden(item)) {
+		return;
+	}
+	menu->addAction(
+		tr::ayu_WhyHiddenMenuText(tr::now),
+		[=] {
+			const auto reason = FiltersController::whyHidden(item);
+			if (!reason) {
+				controller->show(Ui::MakeInformBox(
+					tr::ayu_WhyHiddenNoLongerApplies(tr::now)));
+				return;
+			}
+			auto text = QString();
+			auto shadowBan = false;
+			switch (reason->kind) {
+			case FiltersController::HiddenReason::Kind::LocalBlock:
+				text = tr::ayu_WhyHiddenBlocked(tr::now);
+				break;
+			case FiltersController::HiddenReason::Kind::ShadowBan:
+				text = tr::ayu_WhyHiddenShadowBan(tr::now);
+				shadowBan = true;
+				break;
+			case FiltersController::HiddenReason::Kind::DialogFilter:
+				text = tr::ayu_WhyHiddenDialogFilter(
+					tr::now,
+					lt_rule,
+					reason->rule);
+				break;
+			case FiltersController::HiddenReason::Kind::SharedFilter:
+				text = tr::ayu_WhyHiddenSharedFilter(
+					tr::now,
+					lt_rule,
+					reason->rule);
+				break;
+			}
+			controller->show(Ui::MakeConfirmBox({
+				.text = text,
+				.confirmed = [=] {
+					if (reason->kind
+						== FiltersController::HiddenReason::Kind::LocalBlock) {
+						controller->showSettings(Settings::AyuFilters::Id());
+						return;
+					}
+					const auto dialogFilter = reason->kind
+						== FiltersController::HiddenReason::Kind::DialogFilter;
+					controller->dialogId = dialogFilter
+						? std::optional<ID>(getDialogIdFromPeer(
+							item->history()->peer))
+						: std::nullopt;
+					controller->showExclude = dialogFilter;
+					controller->shadowBan = shadowBan;
+					controller->showSettings(Settings::AyuFiltersList::Id());
+				},
+				.confirmText = tr::ayu_OpenFilterSettings(tr::now),
+				.cancelText = tr::lng_cancel(),
+				.title = tr::ayu_WhyHiddenMenuText(tr::now),
+			}));
+		},
+		&st::menuIconInfo);
 }
 
 void AddUserMessagesAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {

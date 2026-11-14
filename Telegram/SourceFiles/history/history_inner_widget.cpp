@@ -3503,6 +3503,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		}
 
 		AyuUi::AddHistoryAction(_menu, item);
+		AyuUi::AddWhyHiddenAction(_menu, _controller, item);
 		AyuUi::AddHideMessageAction(_menu, item);
 		AyuUi::AddUserMessagesAction(_menu, item);
 		AyuUi::AddRepeatMessageAction(_menu, item, HistoryView::Context::History);

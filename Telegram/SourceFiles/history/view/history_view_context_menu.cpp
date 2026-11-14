@@ -1500,6 +1500,7 @@ void AddMessageActions(
 	if (request.item) {
 		const auto context = request.view ? request.view->context() : Context::History;
 		AyuUi::AddHistoryAction(menu, request.item);
+		AyuUi::AddWhyHiddenAction(menu, list->controller(), request.item);
 		AyuUi::AddHideMessageAction(menu, request.item);
 		AyuUi::AddUserMessagesAction(menu, request.item);
 		AyuUi::AddRepeatMessageAction(menu, request.item, context);

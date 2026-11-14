@@ -43,6 +43,10 @@ void AddDeleteOwnMessagesAction(PeerData *peerData,
 
 void AddHistoryAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item);
 void AddHideMessageAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item);
+void AddWhyHiddenAction(
+	not_null<Ui::PopupMenu*> menu,
+	not_null<Window::SessionController*> controller,
+	HistoryItem *item);
 void AddUserMessagesAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item);
 void AddMessageDetailsAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item);
 void AddRepeatMessageAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item, HistoryView::Context context);

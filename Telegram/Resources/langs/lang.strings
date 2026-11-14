@@ -9468,6 +9468,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_ViewFiltersMenuText" = "View Filters";
 "ayu_ShowFilteredMessagesMenuText" = "Show Filtered";
 "ayu_HideFilteredMessagesMenuText" = "Hide Filtered";
+"ayu_WhyHiddenMenuText" = "Why hidden";
+"ayu_WhyHiddenDialogFilter" = "Hidden by this chat's filter: %1";
+"ayu_WhyHiddenSharedFilter" = "Hidden by a shared filter: %1";
+"ayu_WhyHiddenBlocked" = "Hidden because the sender is blocked and AyuGram is set to hide blocked senders.";
+"ayu_WhyHiddenShadowBan" = "Hidden by a local shadow ban.";
+"ayu_WhyHiddenNoLongerApplies" = "This message is no longer hidden by an active filter.";
+"ayu_OpenFilterSettings" = "Open filter settings";
 "ayu_ReadExclusionMenuText" = "Read Exclusion";
 "ayu_TypingExclusionMenuText" = "Typing Exclusion";
 "ayu_ExclusionTitle" = "Select exclusion type";

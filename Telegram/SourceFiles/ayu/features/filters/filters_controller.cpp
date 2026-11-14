@@ -27,69 +27,106 @@ namespace FiltersController {
 
 std::unordered_set<long long> showingFilteredMessages;
 
-bool filterBlocked(const not_null<HistoryItem*> item) {
-	if (item->from() != item->history()->peer) {
-		if (isBlocked(item)) {
-			return true;
-		}
-	}
-	if (const auto bot = item->viaBot()) {
-		if (isBlocked(bot)) {
-			return true;
-		}
-	}
-	return false;
-}
+std::optional<HiddenReason> matchingFilter(
+	const QString &str,
+	long long dialogId,
+	const std::shared_ptr<const FiltersCacheController::Cache> &cache);
 
 std::optional<bool> isFiltered(
+		const QString &str,
+		long long dialogId,
+		const std::shared_ptr<const FiltersCacheController::Cache> &cache) {
+	return matchingFilter(str, dialogId, cache).has_value();
+}
+
+std::optional<HiddenReason> matchingFilter(
 		const QString &str,
 		long long dialogId,
 		const std::shared_ptr<const FiltersCacheController::Cache> &cache) {
 	if (str.isEmpty()) {
 		return std::nullopt;
 	}
-
-	const auto icuStr = icu::UnicodeString(reinterpret_cast<const UChar*>(str.constData()), str.length());
-
-	const auto matches = [&](const ReversiblePattern &pattern)
-	{
-		UErrorCode status = U_ZERO_ERROR;
-
-		const auto matcher = std::unique_ptr<icu::RegexMatcher>(pattern.pattern->matcher(icuStr, status));
+	const auto icuStr = icu::UnicodeString(
+		reinterpret_cast<const UChar*>(str.constData()),
+		str.length());
+	const auto matches = [&](const ReversiblePattern &pattern) {
+		auto status = U_ZERO_ERROR;
+		const auto matcher = std::unique_ptr<icu::RegexMatcher>(
+			pattern.pattern->matcher(icuStr, status));
 		if (U_FAILURE(status) || !matcher) {
 			LOG(("FILTER FAILED: %1").arg(u_errorName(status)));
 			return false;
 		}
-
-		const auto match = matcher->find();
-		const auto reversed = pattern.reversed;
-
-		if ((!reversed && match) || (reversed && !match)) {
-			return true;
-		}
-		return false;
+		const auto found = matcher->find();
+		return pattern.reversed ? !found : found;
 	};
-
-	if (const auto i = cache->patternsByDialogId.find(dialogId); i != cache->patternsByDialogId.end()) {
+	if (const auto i = cache->patternsByDialogId.find(dialogId);
+		i != cache->patternsByDialogId.end()) {
 		for (const auto &pattern : i->second) {
 			if (matches(pattern)) {
-				return true;
+				return HiddenReason{
+					.kind = HiddenReason::Kind::DialogFilter,
+					.rule = pattern.text,
+				};
 			}
 		}
 	}
-
 	const auto exclusions = cache->exclusionsByDialogId.find(dialogId);
-	if (!cache->sharedPatterns.empty()) {
-		for (const auto &pattern : cache->sharedPatterns) {
-			if (exclusions != cache->exclusionsByDialogId.end() && exclusions->second.contains(pattern)) {
-				continue;
+	for (const auto &pattern : cache->sharedPatterns) {
+		if (exclusions != cache->exclusionsByDialogId.end()
+			&& exclusions->second.contains(pattern)) {
+			continue;
+		}
+		if (matches(pattern.pattern)) {
+			return HiddenReason{
+				.kind = HiddenReason::Kind::SharedFilter,
+				.rule = pattern.pattern.text,
+			};
+		}
+	}
+	return std::nullopt;
+}
+
+std::optional<HiddenReason> localBanReason(not_null<HistoryItem*> item) {
+	const auto &settings = AyuSettings::getInstance();
+	const auto shadowBanned = [&](PeerData *peer) {
+		return peer
+			&& (peer->isUser() || peer->isBroadcast())
+			&& settings.isShadowBanned(getDialogIdFromPeer(peer));
+	};
+	const auto blockedUser = [&](PeerData *peer) {
+		return peer && peer->isUser() && peer->asUser()->isBlocked();
+	};
+	if (item->from() != item->history()->peer) {
+		if (shadowBanned(item->from())
+			&& item->from()->id != item->history()->peer->id) {
+			return HiddenReason{ .kind = HiddenReason::Kind::ShadowBan };
+		}
+		if (blockedUser(item->from())
+			&& item->from()->id != item->history()->peer->id
+			&& settings.hideFromBlocked()) {
+			return HiddenReason{ .kind = HiddenReason::Kind::LocalBlock };
+		}
+	}
+	if (const auto forwarded = item->Get<HistoryMessageForwarded>()) {
+		if (const auto peer = forwarded->originalSender) {
+			if (shadowBanned(peer)) {
+				return HiddenReason{ .kind = HiddenReason::Kind::ShadowBan };
 			}
-			if (matches(pattern.pattern)) {
-				return true;
+			if (blockedUser(peer) && settings.hideFromBlocked()) {
+				return HiddenReason{ .kind = HiddenReason::Kind::LocalBlock };
 			}
 		}
 	}
-	return false;
+	if (const auto bot = item->viaBot()) {
+		if (shadowBanned(bot)) {
+			return HiddenReason{ .kind = HiddenReason::Kind::ShadowBan };
+		}
+		if (blockedUser(bot) && settings.hideFromBlocked()) {
+			return HiddenReason{ .kind = HiddenReason::Kind::LocalBlock };
+		}
+	}
+	return std::nullopt;
 }
 
 bool isEnabled(not_null<PeerData*> peer) {
@@ -98,46 +135,8 @@ bool isEnabled(not_null<PeerData*> peer) {
 }
 
 bool isBlocked(const not_null<HistoryItem*> item) {
-	const auto &settings = AyuSettings::getInstance();
-
-	auto shadowBanMatched = false;
-	const auto blocked = [&]() -> bool
-	{
-		const auto isShadowBanned = [&](PeerData *peer) {
-			return peer
-				&& (peer->isUser() || peer->isBroadcast())
-				&& settings.isShadowBanned(getDialogIdFromPeer(peer));
-		};
-
-		if (isShadowBanned(item->from())
-			&& item->from()->id != item->history()->peer->id) {
-			shadowBanMatched = true;
-			return true;
-		}
-
-		if (item->from()->isUser()
-			&& item->from()->asUser()->isBlocked()) {
-			// don't hide messages if it's a dialog with blocked user
-			return item->from()->asUser()->id != item->history()->peer->id;
-		}
-
-		if (const auto forwarded = item->Get<HistoryMessageForwarded>()) {
-			if (const auto originalSender = forwarded->originalSender) {
-				const auto originalShadowBanned = isShadowBanned(originalSender);
-				if (originalShadowBanned
-					|| (originalSender->isUser()
-						&& originalSender->asUser()->isBlocked())) {
-					shadowBanMatched = originalShadowBanned;
-					return true;
-				}
-			}
-		}
-		return false;
-	}();
-
-	return settings.filtersEnabled()
-		&& (shadowBanMatched || settings.hideFromBlocked())
-		&& blocked;
+	return AyuSettings::getInstance().filtersEnabled()
+		&& localBanReason(item).has_value();
 }
 
 bool isBlocked(const not_null<PeerData*> peer) {
@@ -163,7 +162,7 @@ bool filtered(const not_null<HistoryItem*> item) {
 		return false;
 	}
 
-	if (filterBlocked(item)) {
+	if (localBanReason(item)) {
 		FiltersCacheController::putHiddenBlockedMessage(item);
 		return true;
 	}
@@ -189,6 +188,27 @@ bool filtered(const not_null<HistoryItem*> item) {
 		return res.value();
 	}
 	return false;
+}
+
+std::optional<HiddenReason> whyHidden(not_null<HistoryItem*> item) {
+	if (item->out()) {
+		return std::nullopt;
+	}
+	const auto &settings = AyuSettings::getInstance();
+	if (!settings.filtersEnabled()) {
+		return std::nullopt;
+	}
+	if (const auto reason = localBanReason(item)) {
+		return reason;
+	}
+	if (!isEnabled(item->history()->peer)) {
+		return std::nullopt;
+	}
+	const auto group = item->history()->owner().groups().find(item);
+	return matchingFilter(
+		FilterUtils::extractAllText(item, group),
+		getDialogIdFromPeer(item->history()->peer),
+		FiltersCacheController::snapshot());
 }
 
 std::optional<bool> filteredMessagesShown(not_null<PeerData*> peer) {

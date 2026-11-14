@@ -94,6 +94,7 @@ std::shared_ptr<const Cache> buildCache() {
 			byDialogId[filter.dialogId.value()].push_back({
 				std::shared_ptr<icu::RegexPattern>(pattern),
 				filter.reversed,
+				QString::fromStdString(filter.text),
 			});
 		} else {
 			shared.push_back({
@@ -101,6 +102,7 @@ std::shared_ptr<const Cache> buildCache() {
 				{
 					std::shared_ptr<icu::RegexPattern>(pattern),
 					filter.reversed,
+					QString::fromStdString(filter.text),
 				},
 			});
 		}

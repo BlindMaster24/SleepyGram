@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <QString>
 
 namespace FiltersController {
 
@@ -19,6 +20,18 @@ bool isEnabled(not_null<PeerData*> peer);
 bool isBlocked(not_null<HistoryItem*> item);
 bool isBlocked(not_null<PeerData*> peer);
 bool filtered(not_null<HistoryItem*> historyItem);
+struct HiddenReason {
+	enum class Kind {
+		LocalBlock,
+		ShadowBan,
+		DialogFilter,
+		SharedFilter,
+	};
+	Kind kind = Kind::DialogFilter;
+	QString rule;
+};
+[[nodiscard]] std::optional<HiddenReason> whyHidden(
+	not_null<HistoryItem*> item);
 std::optional<bool> filteredMessagesShown(not_null<PeerData*> peer);
 void toggleFilteredMessagesShown(not_null<PeerData*> peer);
 
@@ -28,6 +41,7 @@ struct ReversiblePattern
 {
 	std::shared_ptr<icu::RegexPattern> pattern;
 	bool reversed;
+	QString text;
 };
 
 struct HashablePattern
