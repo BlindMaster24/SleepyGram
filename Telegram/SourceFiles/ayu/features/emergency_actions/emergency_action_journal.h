@@ -59,6 +59,12 @@ enum class TransitionResult : uint8_t {
 	Rejected,
 };
 
+enum class JournalCreateResult : uint8_t {
+	Created,
+	AlreadyExists,
+	Failed,
+};
+
 struct JournalEffectState final {
 	EffectState state = EffectState::NotRequested;
 	NetworkOutcome networkOutcome = NetworkOutcome::NotAttempted;
@@ -127,6 +133,10 @@ inline constexpr auto kMaxJournalBytes = size_t(1024 * 1024);
 class JournalStore {
 public:
 	virtual ~JournalStore() = default;
+	// Creates the operation slot atomically without replacing an existing one.
+	[[nodiscard]] virtual JournalCreateResult createAtomically(
+		const OperationId &operationId,
+		std::span<const std::byte> bytes) = 0;
 	[[nodiscard]] virtual std::vector<std::byte> read(
 		const OperationId &operationId,
 		size_t maximumBytes) = 0;

@@ -48,6 +48,20 @@ struct FixtureStore final : JournalStore {
 	int writes = 0;
 	int failWrite = 0;
 
+	JournalCreateResult createAtomically(
+			const OperationId &id,
+			std::span<const std::byte> bytes) override {
+		if (values.contains(id.value)) {
+			return JournalCreateResult::AlreadyExists;
+		}
+		++writes;
+		if (writes == failWrite) {
+			return JournalCreateResult::Failed;
+		}
+		values.emplace(id.value, std::vector<std::byte>(bytes.begin(), bytes.end()));
+		return JournalCreateResult::Created;
+	}
+
 	std::vector<std::byte> read(
 			const OperationId &id,
 			size_t maximumBytes) override {

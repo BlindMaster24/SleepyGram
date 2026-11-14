@@ -244,6 +244,16 @@ set(ayugram_files
         ayu/features/streamer_mode/streamer_mode.h
         ayu/features/chat_lock/chat_lock.cpp
         ayu/features/chat_lock/chat_lock.h
+        ayu/features/emergency_actions/emergency_action_plan.cpp
+        ayu/features/emergency_actions/emergency_action_plan.h
+        ayu/features/emergency_actions/emergency_action_journal.cpp
+        ayu/features/emergency_actions/emergency_action_journal.h
+        ayu/features/emergency_actions/emergency_rule_dispatch.cpp
+        ayu/features/emergency_actions/emergency_rule_dispatch.h
+        ayu/features/emergency_actions/emergency_action_coordinator.cpp
+        ayu/features/emergency_actions/emergency_action_coordinator.h
+        ayu/features/emergency_actions/emergency_action_runtime_service.cpp
+        ayu/features/emergency_actions/emergency_action_runtime_service.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
         ayu/features/profile_sets/profile_sets.cpp
