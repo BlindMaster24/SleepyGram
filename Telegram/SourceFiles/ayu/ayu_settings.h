@@ -53,6 +53,12 @@ enum class SendWithoutSoundOption {
 	Always = 2,
 };
 
+enum class ChatReadReceiptPolicy {
+	Inherit = 0,
+	ReadLocally = 1,
+	SendReceipts = 2,
+};
+
 NLOHMANN_JSON_SERIALIZE_ENUM(PeerIdDisplay, {
 	{PeerIdDisplay::Hidden, 0},
 	{PeerIdDisplay::TelegramApi, 1},
@@ -264,6 +270,19 @@ public:
 	[[nodiscard]] static GhostModeAccountSettings &ghost(not_null<Main::Session*> session);
 	[[nodiscard]] static GhostModeAccountSettings &ghost(uint64 userId);
 	[[nodiscard]] static GhostModeAccountSettings &ghost();
+	[[nodiscard]] static ChatReadReceiptPolicy chatReadReceiptPolicy(
+		not_null<Main::Session*> session,
+		uint64 peerId);
+	static void setChatReadReceiptPolicy(
+		not_null<Main::Session*> session,
+		uint64 peerId,
+		ChatReadReceiptPolicy policy);
+	[[nodiscard]] static bool shouldSendReadMessages(
+		not_null<Main::Session*> session,
+		uint64 peerId);
+	[[nodiscard]] static uint64 chatReadReceiptPolicyGeneration(
+		not_null<Main::Session*> session,
+		uint64 peerId);
 	[[nodiscard]] static const Ayu::GhostReadState &ghostReadState(uint64 accountId);
 	static void advanceGhostRead(
 		uint64 accountId,

@@ -219,6 +219,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_readtime_premium_button" = "Subscribe to Telegram Premium";
 "lng_readtime_shown_toast" = "Your read times are now visible.";
 
+"lng_ayu_read_receipts" = "Read Receipts";
+"lng_ayu_read_receipts_inherit" = "Use Account Setting";
+"lng_ayu_read_receipts_local" = "Read Locally";
+"lng_ayu_read_receipts_send" = "Send Read Receipts";
+
 "lng_channels_limit_title" = "Too Many Communities";
 "lng_channels_limit1#one" = "You are a member of **{count}** group or channel.";
 "lng_channels_limit1#other" = "You are a member of **{count}** groups and channels.";

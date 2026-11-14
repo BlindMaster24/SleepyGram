@@ -269,7 +269,12 @@ void readHistory(not_null<HistoryItem*> message) {
 
 void markReadAfterAction(not_null<History*> history) {
 	const auto &ghost = AyuSettings::ghost(&history->session());
-	if (ghost.sendReadMessages() || !ghost.markReadAfterAction()) {
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&history->session(),
+		history->peer->id.value);
+	if (policy == ChatReadReceiptPolicy::ReadLocally
+		|| ghost.sendReadMessages()
+		|| !ghost.markReadAfterAction()) {
 		return;
 	}
 	if (const auto last = history->lastServerMessage()) {

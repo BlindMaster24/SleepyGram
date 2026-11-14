@@ -128,6 +128,8 @@ private:
 
 	base::Timer _readRequestTimer;
 	mtpRequestId _readRequestId = 0;
+	int _readRequestPolicy = -1;
+	uint64 _readRequestPolicyGeneration = 0;
 
 	mtpRequestId _reloadUnreadCountRequestId = 0;
 

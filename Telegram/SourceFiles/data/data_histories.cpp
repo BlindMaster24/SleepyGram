@@ -218,8 +218,22 @@ void Histories::readInbox(not_null<History*> history) {
 		}
 		DEBUG_LOG(("Reading: loaded at bottom, but requesting entry."));
 	}
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&session(),
+		history->peer->id.value);
+	const auto policyGeneration = AyuSettings::chatReadReceiptPolicyGeneration(
+		&session(),
+		history->peer->id.value);
 	requestDialogEntry(history, [=] {
 		Expects(history->lastServerMessageKnown());
+		if (policy != AyuSettings::chatReadReceiptPolicy(
+				&session(),
+				history->peer->id.value)
+			|| policyGeneration != AyuSettings::chatReadReceiptPolicyGeneration(
+				&session(),
+				history->peer->id.value)) {
+			return;
+		}
 
 		const auto last = history->lastServerMessage();
 		DEBUG_LOG(("Reading: got entry, reading till %1."
@@ -277,10 +291,15 @@ void Histories::readInboxTill(
 		bool force) {
 	Expects(IsServerMsgId(tillId) || (!tillId && !force));
 	const auto &ghost = AyuSettings::ghost(&session());
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&session(),
+		history->peer->id.value);
 	if (IsServerMsgId(tillId)
-		&& ghost.isGhostModeActive()
 		&& ghost.rememberGhostRead()
-		&& !ghost.sendReadMessages()) {
+		&& (policy == ChatReadReceiptPolicy::ReadLocally
+			|| (policy == ChatReadReceiptPolicy::Inherit
+				&& ghost.isGhostModeActive()
+				&& !ghost.sendReadMessages()))) {
 		const auto item = history->owner().message(history->peer->id, tillId);
 		if (!item || (!item->out() && item->isRegular())) {
 			AyuSettings::advanceGhostRead(
@@ -290,7 +309,9 @@ void Histories::readInboxTill(
 				tillId.bare);
 		}
 	}
-	const auto suppressed = !ghost.sendReadMessages();
+	const auto suppressed = !AyuSettings::shouldSendReadMessages(
+		&session(),
+		history->peer->id.value);
 	if (suppressed) {
 		sendReadRequests();
 	}
@@ -591,10 +612,15 @@ void Histories::changeDialogUnreadMark(
 		not_null<History*> history,
 		bool unread) {
 	const auto &ghost = AyuSettings::ghost(&_owner->session());
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&_owner->session(),
+		history->peer->id.value);
 	if (unread
-		&& ghost.isGhostModeActive()
-		&& ghost.rememberGhostRead()
-		&& !ghost.sendReadMessages()) {
+		&& (policy == ChatReadReceiptPolicy::ReadLocally
+			|| (policy == ChatReadReceiptPolicy::Inherit
+				&& ghost.isGhostModeActive()
+				&& !ghost.sendReadMessages()))
+		&& ghost.rememberGhostRead()) {
 		AyuSettings::markGhostReadManuallyUnread(
 			_owner->session().userId().bare,
 			history->peer->id.value,
@@ -772,31 +798,21 @@ void Histories::reportPendingDeliveries() {
 void Histories::sendReadRequests() {
 	DEBUG_LOG(("Reading: send requests with count %1.").arg(_states.size()));
 
-	// AyuGram sendReadMessages
-	const auto &ghost = AyuSettings::ghost(&_owner->session());
-	if (!ghost.sendReadMessages()) {
-		DEBUG_LOG(("[AyuGram] Don't read messages"));
-		_readRequestsTimer.cancel();
-		auto histories = std::vector<not_null<History*>>();
-		histories.reserve(_states.size());
-		for (auto &[history, state] : _states) {
-			state.willReadTill = 0;
-			state.willReadWhen = 0;
-			histories.push_back(history);
-		}
-		for (const auto history : histories) {
-			checkEmptyState(history);
-		}
-		return;
-	}
-
 	if (_states.empty()) {
 		return;
 	}
 	const auto now = crl::now();
 	auto next = std::optional<crl::time>();
+	auto cleared = std::vector<not_null<History*>>();
 	for (auto &[history, state] : _states) {
-		if (!state.willReadTill) {
+		if (!AyuSettings::shouldSendReadMessages(
+				&_owner->session(),
+				history->peer->id.value)) {
+			state.willReadTill = 0;
+			state.willReadWhen = 0;
+			cleared.push_back(history);
+			continue;
+		} else if (!state.willReadTill) {
 			DEBUG_LOG(("Reading: skipping zero till."));
 			continue;
 		} else if (state.willReadWhen <= now) {
@@ -808,11 +824,32 @@ void Histories::sendReadRequests() {
 			next = state.willReadWhen;
 		}
 	}
+	for (const auto history : cleared) {
+		checkEmptyState(history);
+	}
 	if (next.has_value()) {
 		_readRequestsTimer.callOnce(*next - now);
 	} else {
 		_readRequestsTimer.cancel();
 	}
+}
+
+void Histories::dropPendingReadRequests(uint64 peerId) {
+	auto changed = std::vector<not_null<History*>>();
+	for (auto &[history, state] : _states) {
+		if (history->peer->id.value != peerId) {
+			continue;
+		}
+		state.willReadTill = 0;
+		state.willReadWhen = 0;
+		state.sentReadTill = 0;
+		state.sentReadDone = false;
+		changed.push_back(history);
+	}
+	for (const auto history : changed) {
+		checkEmptyState(history);
+	}
+	sendReadRequests();
 }
 
 void Histories::sendReadRequest(not_null<History*> history, State &state) {

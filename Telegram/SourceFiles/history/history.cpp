@@ -2900,10 +2900,15 @@ Dialogs::UnreadState History::computeUnreadState() const {
 	auto result = Dialogs::UnreadState();
 	auto count = _unreadCount.value_or(0);
 	const auto &ghost = AyuSettings::ghost(&session());
+	const auto readPolicy = AyuSettings::chatReadReceiptPolicy(
+		&session(),
+		peer->id.value);
 	auto ghostReadTill = MsgId(0);
 	if (_unreadCount
-		&& ghost.isGhostModeActive()
-		&& !ghost.sendReadMessages()
+		&& (readPolicy == ChatReadReceiptPolicy::ReadLocally
+			|| (readPolicy == ChatReadReceiptPolicy::Inherit
+				&& ghost.isGhostModeActive()
+				&& !ghost.sendReadMessages()))
 		&& ghost.rememberGhostRead()) {
 		const auto accountId = session().userId().bare;
 		if (const auto watermark = AyuSettings::ghostReadState(accountId).find(

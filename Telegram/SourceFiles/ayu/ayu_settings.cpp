@@ -48,6 +48,10 @@ using json = nlohmann::json;
 
 namespace {
 
+auto ChatReadReceiptPolicyGenerations = std::map<
+	std::pair<uint64, uint64>,
+	uint64>();
+
 std::string getSettingsPath() {
 	return (cWorkingDir() + u"tdata/ayu_settings.json"_q).toStdString();
 }
@@ -1089,6 +1093,55 @@ GhostModeAccountSettings &AyuSettings::ghost() {
 		}
 	}
 	return ghost(0);
+}
+
+ChatReadReceiptPolicy AyuSettings::chatReadReceiptPolicy(
+		not_null<Main::Session*> session,
+		uint64 peerId) {
+	const auto key = "ayu.readReceipts." + std::to_string(peerId);
+	const auto value = session->local().readPref<QString>(key, u"0"_q).toInt();
+	return (value >= 0 && value <= 2)
+		? ChatReadReceiptPolicy(value)
+		: ChatReadReceiptPolicy::Inherit;
+}
+
+void AyuSettings::setChatReadReceiptPolicy(
+		not_null<Main::Session*> session,
+		uint64 peerId,
+		ChatReadReceiptPolicy policy) {
+	if (chatReadReceiptPolicy(session, peerId) == policy) {
+		return;
+	}
+	++ChatReadReceiptPolicyGenerations[{ session->userId().bare, peerId }];
+	const auto key = "ayu.readReceipts." + std::to_string(peerId);
+	if (policy == ChatReadReceiptPolicy::Inherit) {
+		session->local().clearPref(key);
+	} else {
+		session->local().writePref<QString>(
+			key,
+		QString::number(int(policy)));
+	}
+	session->data().histories().dropPendingReadRequests(peerId);
+	refreshGhostReadPresentation(session->userId().bare);
+}
+
+bool AyuSettings::shouldSendReadMessages(
+		not_null<Main::Session*> session,
+		uint64 peerId) {
+	switch (chatReadReceiptPolicy(session, peerId)) {
+	case ChatReadReceiptPolicy::ReadLocally: return false;
+	case ChatReadReceiptPolicy::SendReceipts: return true;
+	case ChatReadReceiptPolicy::Inherit: return ghost(session).sendReadMessages();
+	}
+	Unexpected("ChatReadReceiptPolicy value.");
+}
+
+uint64 AyuSettings::chatReadReceiptPolicyGeneration(
+		not_null<Main::Session*> session,
+		uint64 peerId) {
+	const auto key = std::pair(session->userId().bare, peerId);
+	const auto i = ChatReadReceiptPolicyGenerations.find(key);
+	return (i == end(ChatReadReceiptPolicyGenerations)) ? 0 : i->second;
 }
 
 const Ayu::GhostReadState &AyuSettings::ghostReadState(uint64 accountId) {

@@ -4837,8 +4837,13 @@ bool HistoryItem::unread(not_null<Data::Thread*> thread) const {
 
 bool HistoryItem::isGhostReadHidden() const {
 	const auto &ghost = AyuSettings::ghost(&_history->session());
-	if (!ghost.isGhostModeActive()
-		|| ghost.sendReadMessages()
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&_history->session(),
+		_history->peer->id.value);
+	if ((policy != ChatReadReceiptPolicy::ReadLocally
+			&& (policy != ChatReadReceiptPolicy::Inherit
+				|| !ghost.isGhostModeActive()
+				|| ghost.sendReadMessages()))
 		|| !ghost.rememberGhostRead()) {
 		return false;
 	}

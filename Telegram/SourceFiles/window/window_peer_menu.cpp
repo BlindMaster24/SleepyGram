@@ -145,6 +145,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtWidgets/QApplication>
 
 // AyuGram includes
+#include "ayu/ayu_settings.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
@@ -355,6 +356,7 @@ private:
 	void addTogglePin();
 	void addToggleMuteSubmenu(bool addSeparator);
 	void addKeywordAlerts();
+	void addReadReceiptPolicy();
 	void addSupportInfo();
 	void addInfo();
 	void addStoryArchive();
@@ -656,6 +658,35 @@ void Filler::addKeywordAlerts() {
 	_addAction(tr::lng_keyword_alert_title(tr::now), [=] {
 		controller->show(Box(EditKeywordAlertPhrasesBox, controller, peerId));
 	}, &st::menuIconSearch);
+}
+
+void Filler::addReadReceiptPolicy() {
+	const auto history = _request.key.history();
+	if (!history || _topic || _sublist) {
+		return;
+	}
+	const auto session = &history->session();
+	const auto peerId = history->peer->id.value;
+	const auto current = AyuSettings::chatReadReceiptPolicy(session, peerId);
+	_addAction(PeerMenuCallback::Args{
+		.text = tr::lng_ayu_read_receipts(tr::now),
+		.handler = nullptr,
+		.fillSubmenu = [=](not_null<Ui::PopupMenu*> menu) {
+			const auto add = [=](QString text, ChatReadReceiptPolicy policy) {
+				auto action = menu->addAction(std::move(text), [=] {
+					AyuSettings::setChatReadReceiptPolicy(
+						session,
+						peerId,
+						policy);
+				});
+				action->setCheckable(true);
+				action->setChecked(policy == current);
+			};
+			add(tr::lng_ayu_read_receipts_inherit(tr::now), ChatReadReceiptPolicy::Inherit);
+			add(tr::lng_ayu_read_receipts_local(tr::now), ChatReadReceiptPolicy::ReadLocally);
+			add(tr::lng_ayu_read_receipts_send(tr::now), ChatReadReceiptPolicy::SendReceipts);
+		},
+	});
 }
 
 void Filler::addSupportInfo() {
@@ -1981,6 +2012,7 @@ void Filler::fillContextMenuActions() {
 	}
 	addToggleMuteSubmenu(false);
 	addKeywordAlerts();
+	addReadReceiptPolicy();
 	addToggleUnreadMark();
 	addToggleTopicClosed();
 	addToggleFolder();
@@ -2000,6 +2032,7 @@ void Filler::fillContextMenuActions() {
 void Filler::fillHistoryActions() {
 	addToggleMuteSubmenu(true);
 	addKeywordAlerts();
+	addReadReceiptPolicy();
 	AyuUi::AddAyuGramActions(_peer, _thread, _controller, _addAction);
 	addCreateTopic();
 	addInfo();

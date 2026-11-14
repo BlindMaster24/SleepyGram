@@ -208,6 +208,7 @@ private:
 		MsgId tillId,
 		bool force);
 	void sendReadRequests();
+	void dropPendingReadRequests(uint64 peerId);
 	void sendReadRequest(not_null<History*> history, State &state);
 	[[nodiscard]] State *lookup(not_null<History*> history);
 	void checkEmptyState(not_null<History*> history);

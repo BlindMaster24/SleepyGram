@@ -871,8 +871,13 @@ int RepliesList::displayedUnreadCount() const {
 	auto result = (_inboxReadTillId > 1) ? unreadCountCurrent() : 0;
 	auto readTill = computeInboxReadTillFull();
 	const auto &ghost = AyuSettings::ghost(&_history->session());
-	if (ghost.isGhostModeActive()
-		&& !ghost.sendReadMessages()
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&_history->session(),
+		_history->peer->id.value);
+	if ((policy == ChatReadReceiptPolicy::ReadLocally
+			|| (policy == ChatReadReceiptPolicy::Inherit
+				&& ghost.isGhostModeActive()
+				&& !ghost.sendReadMessages()))
 		&& ghost.rememberGhostRead()) {
 		const auto accountId = _history->session().userId().bare;
 		if (const auto watermark = AyuSettings::ghostReadState(accountId).find(
@@ -987,9 +992,14 @@ void RepliesList::readTill(
 		return;
 	}
 	const auto &ghost = AyuSettings::ghost(&_history->session());
-	if (ghost.isGhostModeActive()
-		&& ghost.rememberGhostRead()
-		&& !ghost.sendReadMessages()) {
+	const auto policy = AyuSettings::chatReadReceiptPolicy(
+		&_history->session(),
+		_history->peer->id.value);
+	if (ghost.rememberGhostRead()
+		&& (policy == ChatReadReceiptPolicy::ReadLocally
+			|| (policy == ChatReadReceiptPolicy::Inherit
+				&& ghost.isGhostModeActive()
+				&& !ghost.sendReadMessages()))) {
 		AyuSettings::advanceGhostRead(
 			_history->session().userId().bare,
 			_history->peer->id.value,
@@ -1006,9 +1016,13 @@ void RepliesList::readTill(
 		_unreadCount.current(),
 		_inboxReadTillId);
 	const auto fast = (tillIdItem && tillIdItem->out()) || !unreadCount.has_value();
-	const auto suppressed = !ghost.sendReadMessages();
+	const auto suppressed = !AyuSettings::shouldSendReadMessages(
+		&_history->session(),
+		_history->peer->id.value);
 	if (suppressed && _readRequestTimer.isActive()) {
 		_readRequestTimer.cancel();
+		_readRequestPolicy = -1;
+		_readRequestPolicyGeneration = 0;
 	}
 	if (was < now || (fast && now == was)) {
 		setInboxReadTill(now, unreadCount);
@@ -1019,6 +1033,12 @@ void RepliesList::readTill(
 			}
 		}
 		if (!suppressed) {
+			_readRequestPolicy = int(AyuSettings::chatReadReceiptPolicy(
+				&_history->session(),
+				_history->peer->id.value));
+			_readRequestPolicyGeneration = AyuSettings::chatReadReceiptPolicyGeneration(
+				&_history->session(),
+				_history->peer->id.value);
 			if (!_readRequestTimer.isActive()) {
 				_readRequestTimer.callOnce(fast ? 0 : kReadRequestTimeout);
 			} else if (fast && _readRequestTimer.remainingTime() > 0) {
@@ -1038,8 +1058,21 @@ void RepliesList::sendReadTillRequest() {
 	const auto api = &_history->session().api();
 	api->request(base::take(_readRequestId)).cancel();
 
-	const auto &ghost = AyuSettings::ghost(&_history->session());
-	if (!ghost.sendReadMessages()) {
+	const auto requestPolicy = _readRequestPolicy;
+	_readRequestPolicy = -1;
+	const auto requestPolicyGeneration = _readRequestPolicyGeneration;
+	_readRequestPolicyGeneration = 0;
+	if (requestPolicy != int(AyuSettings::chatReadReceiptPolicy(
+			&_history->session(),
+			_history->peer->id.value))
+		|| requestPolicyGeneration != AyuSettings::chatReadReceiptPolicyGeneration(
+			&_history->session(),
+			_history->peer->id.value)) {
+		return;
+	}
+	if (!AyuSettings::shouldSendReadMessages(
+			&_history->session(),
+			_history->peer->id.value)) {
 		return;
 	}
 
@@ -1049,15 +1082,27 @@ void RepliesList::sendReadTillRequest() {
 		MTP_int(computeInboxReadTillFull())
 	)).done(crl::guard(this, [=] {
 		_readRequestId = 0;
-		reloadUnreadCountIfNeeded();
+		if (requestPolicyGeneration == AyuSettings::chatReadReceiptPolicyGeneration(
+				&_history->session(),
+				_history->peer->id.value)) {
+			reloadUnreadCountIfNeeded();
+		}
 	})).send();
 }
 
 void RepliesList::reloadUnreadCountIfNeeded() {
-	if (!AyuSettings::ghost(&_history->session()).sendReadMessages()
+	if (!AyuSettings::shouldSendReadMessages(
+			&_history->session(),
+			_history->peer->id.value)
 		|| unreadCountKnown()) {
 		return;
 	} else if (inboxReadTillId() < computeInboxReadTillFull()) {
+		_readRequestPolicy = int(AyuSettings::chatReadReceiptPolicy(
+			&_history->session(),
+			_history->peer->id.value));
+		_readRequestPolicyGeneration = AyuSettings::chatReadReceiptPolicyGeneration(
+			&_history->session(),
+			_history->peer->id.value);
 		_readRequestTimer.callOnce(0);
 	} else {
 		requestUnreadCount();
