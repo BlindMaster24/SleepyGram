@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_main_menu.h"
 #include "window/window_peer_menu.h"
 #include "window/window_filters_favorite.h"
+#include "window/notifications_manager.h"
 #include "main/main_session.h"
 #include "base/event_filter.h"
 #include "base/options.h"
@@ -33,6 +34,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/wrap/slide_wrap.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "ui/widgets/popup_menu.h"
+#include "ui/widgets/checkbox.h"
+#include "ui/widgets/labels.h"
+#include "ui/widgets/time_input.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/power_saving.h"
 #include "ui/screen_reader_mode.h"
@@ -48,9 +52,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_widgets.h"
 #include "styles/style_window.h"
 #include "styles/style_menu_icons.h"
+#include "styles/style_passcode_box.h"
 
 #include <QtGui/QtEvents>
 #include <algorithm>
+#include <array>
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
@@ -98,6 +104,122 @@ public:
 		return result;
 	}
 };
+
+QString QuietTimeString(int minute) {
+	return QString::number(minute / 60).rightJustified(2, u'0')
+		+ ':'
+		+ QString::number(minute % 60).rightJustified(2, u'0');
+}
+
+void EditFolderQuietHoursBox(
+		not_null<Ui::GenericBox*> box,
+		not_null<Window::SessionController*> controller,
+		FilterId folderId) {
+	using Window::Notifications::FolderQuietHours;
+	using Window::Notifications::ReadFolderQuietHours;
+	using Window::Notifications::WriteFolderQuietHours;
+	const auto current = ReadFolderQuietHours(
+		&controller->session(),
+		folderId);
+	const auto weekdaysMask = current ? current->weekdays : uint8_t(0x7F);
+	const auto startMinute = current ? current->startMinute : uint16_t(22 * 60);
+	const auto endMinute = current ? current->endMinute : uint16_t(7 * 60);
+	box->setTitle(tr::lng_filters_quiet_hours_title());
+	box->setWidth(st::boxWideWidth);
+	const auto days = std::make_shared<std::vector<not_null<Ui::Checkbox*>>>();
+	const auto labels = std::array{
+		tr::lng_weekday1(tr::now),
+		tr::lng_weekday2(tr::now),
+		tr::lng_weekday3(tr::now),
+		tr::lng_weekday4(tr::now),
+		tr::lng_weekday5(tr::now),
+		tr::lng_weekday6(tr::now),
+		tr::lng_weekday7(tr::now),
+	};
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		tr::lng_filters_quiet_hours_days(tr::now),
+		st::boxLabel), st::boxPadding);
+	for (auto i = 0; i != int(labels.size()); ++i) {
+		auto checkbox = box->addRow(
+			object_ptr<Ui::Checkbox>(
+				box,
+				labels[i],
+				(weekdaysMask & (1U << i)) != 0,
+				st::defaultCheckbox),
+			style::margins(
+				st::boxPadding.left(),
+				0,
+				st::boxPadding.right(),
+				st::boxOptionListSkip));
+		days->push_back(checkbox);
+	}
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		tr::lng_filters_quiet_hours_start(tr::now),
+		st::boxLabel), st::boxPadding);
+	const auto start = box->addRow(object_ptr<Ui::TimeInput>(
+		box,
+		QuietTimeString(startMinute),
+		st::autolockTimeField,
+		st::autolockDateField,
+		st::scheduleTimeSeparator,
+		st::scheduleTimeSeparatorPadding), st::boxPadding);
+	start->resizeToWidth(st::autolockTimeWidth);
+	box->addRow(object_ptr<Ui::FlatLabel>(
+		box,
+		tr::lng_filters_quiet_hours_end(tr::now),
+		st::boxLabel), st::boxPadding);
+	const auto end = box->addRow(object_ptr<Ui::TimeInput>(
+		box,
+		QuietTimeString(endMinute),
+		st::autolockTimeField,
+		st::autolockDateField,
+		st::scheduleTimeSeparator,
+		st::scheduleTimeSeparatorPadding), st::boxPadding);
+	end->resizeToWidth(st::autolockTimeWidth);
+	box->addButton(tr::lng_box_ok(), [=] {
+		auto weekdays = uint8_t(0);
+		for (auto i = 0; i != int(days->size()); ++i) {
+			if ((*days)[i]->checked()) {
+				weekdays |= uint8_t(1U << i);
+			}
+		}
+		const auto toMinutes = [](not_null<Ui::TimeInput*> field)
+		-> std::optional<int> {
+			const auto parts = field->valueCurrent().split(':');
+			if (parts.size() != 2) {
+				return std::nullopt;
+			}
+			auto hourOk = false;
+			auto minuteOk = false;
+			const auto hour = parts[0].toInt(&hourOk);
+			const auto minute = parts[1].toInt(&minuteOk);
+			if (!hourOk || !minuteOk
+				|| hour < 0 || hour > 23
+				|| minute < 0 || minute > 59) {
+				return std::nullopt;
+			}
+			return hour * 60 + minute;
+		};
+		const auto from = toMinutes(start);
+		const auto till = toMinutes(end);
+		if (!weekdays || !from || !till || (*from == *till)) {
+			controller->show(Ui::MakeInformBox(
+				tr::lng_filters_quiet_hours_invalid(tr::now)));
+			return;
+		}
+		WriteFolderQuietHours(
+			&controller->session(),
+			folderId,
+			FolderQuietHours{
+				.weekdays = weekdays,
+				.startMinute = uint16_t(*from),
+				.endMinute = uint16_t(*till),
+			});
+		box->closeBox();
+	});
+}
 
 } // namespace
 
@@ -815,6 +937,26 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 			MarkAsReadMenu::ChatListKind::Folder,
 			std::move(filteredChats),
 			addAction);
+		const auto quiet = Notifications::ReadFolderQuietHours(
+			&_session->session(),
+			id);
+		addAction(
+			tr::lng_filters_quiet_hours_edit(tr::now),
+			crl::guard(&_outer, [=] {
+				_session->show(Box(EditFolderQuietHoursBox, _session, id));
+			}),
+			&st::menuIconMute);
+		if (quiet) {
+			addAction(
+				tr::lng_filters_quiet_hours_disable(tr::now),
+				crl::guard(&_outer, [=] {
+					Notifications::WriteFolderQuietHours(
+						&_session->session(),
+						id,
+						std::nullopt);
+				}),
+				&st::menuIconShowInChat);
+		}
 
 		addAction({
 			.text = tr::lng_filters_context_remove(tr::now),

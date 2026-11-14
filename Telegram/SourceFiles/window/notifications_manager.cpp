@@ -29,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_forum_topic.h"
 #include "data/data_user.h"
 #include "data/data_document.h"
+#include "data/data_chat_filters.h"
 #include "data/data_poll.h"
 #include "base/unixtime.h"
 #include "window/window_controller.h"
@@ -187,7 +188,110 @@ base::options::toggle HideReplyButtonOption({
 		&& peer->isNotificationsUser();
 }
 
+[[nodiscard]] QString FolderQuietHoursKey(FilterId folderId) {
+	return u"sleepygram.folderQuietHours."_q + QString::number(folderId);
+}
+
+[[nodiscard]] bool InQuietHours(
+		const FolderQuietHours &quietHours,
+		const QDateTime &localNow) {
+	const auto day = localNow.date().dayOfWeek();
+	const auto minute = localNow.time().hour() * 60
+		+ localNow.time().minute();
+	const auto startsOn = [&](int weekday) {
+		return quietHours.weekdays & (1U << (weekday - 1));
+	};
+	if (quietHours.startMinute < quietHours.endMinute) {
+		return startsOn(day)
+			&& (minute >= quietHours.startMinute)
+			&& (minute < quietHours.endMinute);
+	} else if (minute >= quietHours.startMinute) {
+		return startsOn(day);
+	} else if (minute < quietHours.endMinute) {
+		return startsOn(day == 1 ? 7 : day - 1);
+	}
+	return false;
+}
+
+[[nodiscard]] bool QuietForItem(not_null<HistoryItem*> item) {
+	const auto history = item->history();
+	const auto session = &history->session();
+	const auto localNow = QDateTime::currentDateTime();
+	for (const auto &folder : session->data().chatsFilters().list()) {
+		if (folder.id() <= 0 || !folder.contains(history)) {
+			continue;
+		}
+		if (const auto quiet = ReadFolderQuietHours(session, folder.id());
+			quiet && InQuietHours(*quiet, localNow)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 } // namespace
+
+std::optional<FolderQuietHours> ReadFolderQuietHours(
+		not_null<Main::Session*> session,
+		FilterId folderId) {
+	if (folderId <= 0) {
+		return std::nullopt;
+	}
+	const auto key = FolderQuietHoursKey(folderId);
+	const auto parts = session->local().readPref<QString>(
+		key.toStdString()).split(',');
+	if (parts.size() != 3) {
+		return std::nullopt;
+	}
+	auto weekdaysOk = false;
+	auto startOk = false;
+	auto endOk = false;
+	const auto weekdays = parts[0].toInt(&weekdaysOk);
+	const auto startMinute = parts[1].toInt(&startOk);
+	const auto endMinute = parts[2].toInt(&endOk);
+	if (!weekdaysOk
+		|| !startOk
+		|| !endOk
+		|| weekdays <= 0
+		|| (weekdays & ~0x7F)
+		|| startMinute < 0
+		|| startMinute >= 24 * 60
+		|| endMinute < 0
+		|| endMinute >= 24 * 60
+		|| startMinute == endMinute) {
+		return std::nullopt;
+	}
+	return FolderQuietHours{
+		.weekdays = uint8_t(weekdays),
+		.startMinute = uint16_t(startMinute),
+		.endMinute = uint16_t(endMinute),
+	};
+}
+
+void WriteFolderQuietHours(
+		not_null<Main::Session*> session,
+		FilterId folderId,
+		std::optional<FolderQuietHours> quietHours) {
+	if (folderId <= 0) {
+		return;
+	}
+	const auto key = FolderQuietHoursKey(folderId);
+	if (!quietHours
+		|| !quietHours->weekdays
+		|| (quietHours->weekdays & ~0x7F)
+		|| quietHours->startMinute >= 24 * 60
+		|| quietHours->endMinute >= 24 * 60
+		|| quietHours->startMinute == quietHours->endMinute) {
+		session->local().writePref<QString>(key.toStdString(), QString());
+		return;
+	}
+	session->local().writePref<QString>(
+		key.toStdString(),
+		QStringLiteral("%1,%2,%3")
+			.arg(int(quietHours->weekdays))
+			.arg(int(quietHours->startMinute))
+			.arg(int(quietHours->endMinute)));
+}
 
 const char kOptionCustomNotification[] = "custom-notification";
 const char kOptionGNotification[] = "gnotification";
@@ -344,6 +448,9 @@ System::SkipState System::computeSkipState(
 	const auto type = notification.type;
 	const auto item = notification.item;
 	const auto messageType = (type == Data::ItemNotificationType::Message);
+	if (QuietForItem(item)) {
+		return { SkipState::Skip };
+	}
 	if (messageType
 		&& item->Has<HistoryServicePinned>()
 		&& item->history()->session().settings()
@@ -806,16 +913,18 @@ void System::showGrouped() {
 	if (const auto session = findSession(_lastHistorySessionId)) {
 		if (const auto lastItem = session->data().message(_lastHistoryItemId)) {
 			_waitForAllGroupedTimer.cancel();
-			const auto thread = lastItem->maybeNotificationThread();
-			// A summary of several forwards may span threads, so skip it.
-			if (thread && _lastForwardedCount < 2) {
-				rememberShownIncoming(thread, lastItem);
+			if (!QuietForItem(lastItem)) {
+				const auto thread = lastItem->maybeNotificationThread();
+				// A summary of several forwards may span threads, so skip it.
+				if (thread && _lastForwardedCount < 2) {
+					rememberShownIncoming(thread, lastItem);
+				}
+				_manager->showNotification({
+					.item = lastItem,
+					.forwardedCount = _lastForwardedCount,
+					.soundId = _lastSoundId,
+				});
 			}
-			_manager->showNotification({
-				.item = lastItem,
-				.forwardedCount = _lastForwardedCount,
-				.soundId = _lastSoundId,
-			});
 			_lastForwardedCount = 0;
 			_lastHistoryItemId = FullMsgId();
 			_lastHistorySessionId = 0;
@@ -852,10 +961,21 @@ void System::showNext() {
 	for (auto i = _whenAlerts.begin(); i != _whenAlerts.end();) {
 		while (!i->second.empty() && i->second.begin()->first <= ms) {
 			const auto thread = i->first;
-			const auto from = i->second.begin()->second.notifyBy;
-			if (const auto soundId = MaybeSoundFor(thread, from)) {
-				alertThread = thread;
-				alertSoundId = soundId;
+			const auto &alert = i->second.begin()->second;
+			const auto item = (alert.key.type
+				== Data::ItemNotificationType::Message)
+				? thread->owner().message(FullMsgId{
+					thread->peer()->id,
+					alert.key.messageId,
+				})
+				: nullptr;
+			if (!item || !QuietForItem(item)) {
+				if (const auto soundId = MaybeSoundFor(
+					thread,
+					alert.notifyBy)) {
+					alertThread = thread;
+					alertSoundId = soundId;
+				}
 			}
 			while (!i->second.empty()
 				&& i->second.begin()->first <= ms + kMinimalAlertDelay) {
@@ -963,6 +1083,35 @@ void System::showNext() {
 			}
 			_waitTimer.callOnce(next - ms);
 			break;
+		}
+		const auto selectedThread = not_null(notifyThread);
+		if (QuietForItem(notify->item)) {
+			const auto key = NotificationInHistoryKey(*notify);
+			const auto map = _whenMaps.find(selectedThread);
+			selectedThread->skipNotification();
+			_waiters.remove(selectedThread);
+			if (map != _whenMaps.end()) {
+				map->second.remove(key);
+				if (const auto current = selectedThread->currentNotification()) {
+					const auto next = map->second.find(*current);
+					if (next != map->second.end()) {
+						_waiters.emplace(selectedThread, Waiter{
+							.key = next->first,
+							.reactionOrVoteSender = current->reactionOrVoteSender,
+							.type = current->type,
+							.when = next->second,
+						});
+					} else {
+						selectedThread->clearNotifications();
+						_whenMaps.remove(selectedThread);
+					}
+				} else {
+					_whenMaps.remove(selectedThread);
+				}
+			} else {
+				selectedThread->clearNotifications();
+			}
+			continue;
 		}
 		const auto notifyItem = notify->item;
 		const auto notifySilent = computeSkipState(*notify).silent;

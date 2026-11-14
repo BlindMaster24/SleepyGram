@@ -8,9 +8,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "data/data_message_reaction_id.h"
+#include "data/data_types.h"
 #include "base/timer.h"
 #include "base/type_traits.h"
 #include "media/audio/media_audio_local_cache.h"
+
+#include <optional>
 
 class History;
 
@@ -47,6 +50,20 @@ class SessionController;
 } // namespace Window
 
 namespace Window::Notifications {
+
+struct FolderQuietHours {
+	uint8_t weekdays = 0;
+	uint16_t startMinute = 0;
+	uint16_t endMinute = 0;
+};
+
+[[nodiscard]] std::optional<FolderQuietHours> ReadFolderQuietHours(
+	not_null<Main::Session*> session,
+	FilterId folderId);
+void WriteFolderQuietHours(
+	not_null<Main::Session*> session,
+	FilterId folderId,
+	std::optional<FolderQuietHours> quietHours);
 
 enum class ManagerType {
 	Dummy,

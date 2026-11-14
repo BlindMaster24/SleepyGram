@@ -7774,6 +7774,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_filters_icon_header" = "Choose an icon";
 "lng_filters_context_edit" = "Edit folder";
 "lng_filters_context_remove" = "Remove";
+"lng_filters_quiet_hours_edit" = "Set quiet hours";
+"lng_filters_quiet_hours_disable" = "Disable quiet hours";
+"lng_filters_quiet_hours_title" = "Folder quiet hours";
+"lng_filters_quiet_hours_days" = "Days";
+"lng_filters_quiet_hours_start" = "Start time";
+"lng_filters_quiet_hours_end" = "End time";
+"lng_filters_quiet_hours_invalid" = "Choose at least one day and different start and end times.";
 "lng_filters_remove_sure" = "This will remove the folder, your chats will not be deleted.";
 "lng_filters_remove_yes" = "Remove";
 "lng_filters_menu_add" = "Add to folder";
