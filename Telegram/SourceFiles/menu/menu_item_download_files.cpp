@@ -533,7 +533,7 @@ void AddAction(
 	}();
 	if (peers.size() == 1) {
 		const auto peer = *peers.begin();
-		menu->addAction(tr::lng_download_path_choose(tr::now), [=] {
+		menu->addAction(tr::lng_chat_download_path_choose(tr::now), [=] {
 			const auto controller = weak.get();
 			if (!controller) {
 				return;
@@ -541,7 +541,7 @@ void AddAction(
 			const auto session = &controller->session();
 			FileDialog::GetFolder(
 				controller->window().widget().get(),
-				tr::lng_download_path_choose(tr::now),
+				tr::lng_chat_download_path_choose(tr::now),
 				File::DownloadPathForPeer(session, peer),
 				crl::guard(controller, [=](QString &&result) {
 					if (const auto strong = weak.get();
@@ -553,6 +553,14 @@ void AddAction(
 					}
 				}));
 		}, &st::menuIconDownload);
+		menu->addAction(tr::lng_chat_download_path_clear(tr::now), [=] {
+			if (const auto controller = weak.get()) {
+				File::SetDownloadPathForPeer(
+					&controller->session(),
+					peer,
+					QString());
+			}
+		});
 	}
 	const auto saveImages = [=](const QString &folderPath) {
 		const auto controller = weak.get();
@@ -750,6 +758,7 @@ void AddAction(
 			auto complete = true;
 			auto same = true;
 			auto initialPath = QString();
+			auto inaccessiblePeers = std::vector<PeerId>();
 			for (const auto peer : peers) {
 				const auto assigned = File::HasDownloadPathForPeer(
 					session,
@@ -758,6 +767,7 @@ void AddAction(
 				configured |= assigned;
 				complete &= assigned && !path.isEmpty();
 				if (assigned && path.isEmpty()) {
+					inaccessiblePeers.push_back(peer);
 					same = false;
 				} else if (!path.isEmpty()) {
 					if (initialPath.isEmpty()) {
@@ -767,9 +777,9 @@ void AddAction(
 					}
 				}
 			}
-			if (configured && complete && same) {
+			if (peers.size() == 1 && configured && complete && same) {
 				save(initialPath);
-			} else if (configured) {
+			} else if (configured || peers.size() > 1) {
 				const auto handleFolder = [=](const QString &result) {
 					if (result.isEmpty()) {
 						return;
@@ -777,11 +787,15 @@ void AddAction(
 					const auto folderPath = result.endsWith('/')
 						? result
 						: (result + '/');
-					for (const auto peer : peers) {
-						File::SetDownloadPathForPeer(
-							session,
-							peer,
-							folderPath);
+					if (peers.size() == 1) {
+						if (const auto strong = weak.get()) {
+							for (const auto peer : inaccessiblePeers) {
+								File::SetDownloadPathForPeer(
+									&strong->session(),
+									peer,
+									folderPath);
+							}
+						}
 					}
 					save(folderPath);
 				};
