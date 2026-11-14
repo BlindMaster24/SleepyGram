@@ -29,12 +29,16 @@ struct InstallationIdTag;
 struct ProfileIdTag;
 struct AccountIdTag;
 struct SessionIdTag;
+struct EmergencyActionIdTag;
+struct NormalPasscodeIdTag;
 using OperationId = StableId<OperationIdTag>;
 using RuleId = StableId<RuleIdTag>;
 using InstallationId = StableId<InstallationIdTag>;
 using ProfileId = StableId<ProfileIdTag>;
 using AccountId = StableId<AccountIdTag>;
 using SessionId = StableId<SessionIdTag>;
+using EmergencyActionId = StableId<EmergencyActionIdTag>;
+using NormalPasscodeId = StableId<NormalPasscodeIdTag>;
 
 enum class EmergencyAction {
 	ResetAccountData,
@@ -89,6 +93,8 @@ struct RemoteSessionPolicy final {
 	AccountId accountId;
 	RemoteSessionTargetKind kind = RemoteSessionTargetKind::None;
 	std::vector<SessionId> selectedSessionIds;
+
+	friend bool operator==(const RemoteSessionPolicy &, const RemoteSessionPolicy &) = default;
 };
 
 struct EmergencyRule final {
@@ -99,6 +105,8 @@ struct EmergencyRule final {
 	std::vector<AccountId> selectedAccountIds;
 	std::vector<RemoteSessionPolicy> remoteSessionPolicies;
 	ProfileId safeProfileId;
+
+	friend bool operator==(const EmergencyRule &, const EmergencyRule &) = default;
 };
 
 struct LiveAccount final {
@@ -125,6 +133,8 @@ struct AccountDryRun final {
 	bool remoteTargetWasConfigured = false;
 	std::vector<SessionId> sessionIdsForRevokeRequest;
 	std::vector<SessionId> selectedSessionIdsNotLive;
+
+	friend bool operator==(const AccountDryRun &, const AccountDryRun &) = default;
 };
 
 struct DryRunPlan final {
@@ -144,6 +154,8 @@ struct DryRunPlan final {
 	ProfileId safeProfileId;
 	std::vector<AccountId> safeProfileAccountIds;
 	bool wouldRemoveInstallation = false;
+
+	friend bool operator==(const DryRunPlan &, const DryRunPlan &) = default;
 };
 
 // Resolves every target against this invocation's live snapshot. Callers must
