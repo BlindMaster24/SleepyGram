@@ -2,6 +2,7 @@
 #include "ayu/features/offline_history/offline_history.h"
 
 #include "api/api_common.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "core/application.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -12,6 +13,7 @@
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "mtproto/sender.h"
+#include "rpl/lifetime.h"
 #include "window/window_session_controller.h"
 
 #include <QtCore/QDateTime>
@@ -68,11 +70,6 @@ using Dialogs = std::map<DialogKey, QPointer<class OfflineHistoryDialog>>;
 
 Dialogs &OpenDialogs() {
 	static auto result = Dialogs();
-	return result;
-}
-
-Fn<bool(not_null<Main::Session*>, PeerId)> &ChatLockCheck() {
-	static auto result = Fn<bool(not_null<Main::Session*>, PeerId)>();
 	return result;
 }
 
@@ -312,7 +309,21 @@ public:
 		connect(_save, &QPushButton::clicked, this, [=] { startOrResume(); });
 		connect(_delete, &QPushButton::clicked, this, [=] { deleteSnapshot(); });
 		connect(_close, &QPushButton::clicked, this, [=] { close(); });
+		Ayu::ChatLock::Changes() | rpl::filter([=](const Ayu::ChatLock::Change &change) {
+			return (change.accountId == _accountId)
+				&& (!change.peerId || change.peerId == _peer->id);
+		}) | rpl::on_next([=](const Ayu::ChatLock::Change &) {
+			if (Ayu::ChatLock::IsChatLocked(_session, _peer->id)) {
+				Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
+			}
+		}, _lockLifetime);
 		loadSnapshot();
+	}
+
+	void closeForLock() {
+		++_generation;
+		_running = false;
+		close();
 	}
 
 private:
@@ -350,6 +361,10 @@ private:
 		if (_running) {
 			return;
 		}
+		if (Ayu::ChatLock::IsChatLocked(_session, _peer->id)) {
+			Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
+			return;
+		}
 		if (!PeerAllowsOffline(_peer)) {
 			deleteSnapshot();
 			_status->setText(tr::lng_offline_history_restricted(tr::now));
@@ -380,6 +395,10 @@ private:
 	}
 
 	void requestNextPage() {
+		if (Ayu::ChatLock::IsChatLocked(_session, _peer->id)) {
+			Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
+			return;
+		}
 		if (_snapshot.pages >= kMaxPages
 			|| _snapshot.messages.size() >= kMaxMessages) {
 			stopPartial(tr::lng_offline_history_partial(tr::now));
@@ -408,6 +427,10 @@ private:
 	}
 
 	void processPage(const MTPmessages_Messages &result, int32 offset) {
+		if (Ayu::ChatLock::IsChatLocked(_session, _peer->id)) {
+			Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
+			return;
+		}
 		if (!PeerAllowsOffline(_peer)) {
 			deleteSnapshot();
 			_status->setText(tr::lng_offline_history_restricted(tr::now));
@@ -559,6 +582,7 @@ private:
 	Snapshot _snapshot;
 	Snapshot _partial;
 	std::set<MsgId> _records;
+	rpl::lifetime _lockLifetime;
 	int _generation = 0;
 	bool _running = false;
 };
@@ -570,7 +594,7 @@ void Open(
 		PeerId peerId) {
 	const auto session = &controller->session();
 	const auto peer = session->data().peerLoaded(peerId);
-	if (!peer || (ChatLockCheck() && ChatLockCheck()(session, peerId))) {
+	if (!peer || Ayu::ChatLock::IsChatLocked(session, peerId)) {
 		return;
 	}
 	if (!PeerAllowsOffline(peer)) {
@@ -595,11 +619,6 @@ void Open(
 	dialog->show();
 }
 
-void SetChatLockCheck(
-		Fn<bool(not_null<Main::Session*>, PeerId)> check) {
-	ChatLockCheck() = std::move(check);
-}
-
 void CloseForChat(uint64 accountId, PeerId peerId) {
 	auto closing = std::vector<QPointer<OfflineHistoryDialog>>();
 	for (auto i = OpenDialogs().begin(); i != OpenDialogs().end();) {
@@ -613,7 +632,7 @@ void CloseForChat(uint64 accountId, PeerId peerId) {
 	}
 	for (const auto dialog : closing) {
 		if (dialog) {
-			dialog->close();
+			dialog->closeForLock();
 		}
 	}
 }

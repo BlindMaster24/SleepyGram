@@ -17,8 +17,6 @@ namespace Ayu::OfflineHistory {
 void Open(
 	not_null<Window::SessionController*> controller,
 	PeerId peerId);
-void SetChatLockCheck(
-	Fn<bool(not_null<Main::Session*>, PeerId)> check);
 void CloseForChat(uint64 accountId, PeerId peerId);
 
 } // namespace Ayu::OfflineHistory
