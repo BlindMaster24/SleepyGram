@@ -38,6 +38,8 @@ int RunChecks() {
 	};
 
 	auto metadata = Metadata{
+		.verifierSalt = QByteArray(kVerifierSaltSize, 's'),
+		.verifierKdf = { .kind = 2, .memory = 2, .time = 1, .parallel = 1 },
 		.masterVerifier = Verifier(0xFFFFFFFF),
 		.sets = {
 			{
@@ -81,7 +83,11 @@ int RunChecks() {
 			metadata,
 			Verifier(4))));
 
-	auto many = Metadata{ .masterVerifier = Verifier(0xFFFFFFFF) };
+	auto many = Metadata{
+		.verifierSalt = QByteArray(kVerifierSaltSize, 's'),
+		.verifierKdf = { .kind = 2, .memory = 2, .time = 1, .parallel = 1 },
+		.masterVerifier = Verifier(0xFFFFFFFF),
+	};
 	for (auto i = quint32(0); i != 1000; ++i) {
 		many.sets.push_back({
 			.id = { 2, quint64(i) + 1 },
@@ -110,6 +116,10 @@ int RunChecks() {
 	invalid.sets[0].verifier = invalid.sets[1].verifier;
 	check("duplicate-password-rejected",
 		Validate(invalid) == ValidationError::DuplicateVerifier);
+	invalid = metadata;
+	invalid.verifierKdf.memory = 262'144;
+	check("kdf-cost-is-bounded",
+		Validate(invalid) == ValidationError::InvalidKdf);
 	check("oversized-payload-rejected",
 		!ParseMetadataPayload(QByteArray(64 * 1024 * 1024 + 1, 'x')));
 

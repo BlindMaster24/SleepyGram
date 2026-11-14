@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <set>
 
 namespace Ayu::ProfileSets {
@@ -18,6 +19,14 @@ namespace {
 
 constexpr auto kMaximumPayloadSize = 64 * 1024 * 1024;
 constexpr auto kMaximumNameSize = 256;
+constexpr auto kPasscodeKdfArgon2id = quint32(1);
+constexpr auto kPasscodeKdfScrypt = quint32(2);
+constexpr auto kMaximumArgonMemoryKiB = quint32(65'536);
+constexpr auto kMaximumArgonTime = quint32(8);
+constexpr auto kMaximumArgonLanes = quint32(1);
+constexpr auto kMaximumScryptN = quint32(131'072);
+constexpr auto kMaximumScryptR = quint32(8);
+constexpr auto kMaximumScryptP = quint32(1);
 
 QString IdText(quint64 high, quint64 low) {
 	return QString::number(high, 16).rightJustified(16, u'0')
@@ -62,6 +71,20 @@ void SetError(ValidationError *error, ValidationError value) {
 	}
 }
 
+bool ReadUint32(const QJsonValue &value, quint32 *result) {
+	if (!value.isDouble()) {
+		return false;
+	}
+	const auto number = value.toDouble();
+	if (number < 0
+		|| number > std::numeric_limits<quint32>::max()
+		|| number != double(quint32(number))) {
+		return false;
+	}
+	*result = quint32(number);
+	return true;
+}
+
 } // namespace
 
 AccountId NewAccountId() {
@@ -86,11 +109,37 @@ SetId NewSetId() {
 	return result ? result : SetId{ 0, 1 };
 }
 
+QByteArray NewVerifierSalt() {
+	auto result = QByteArray(kVerifierSaltSize, Qt::Uninitialized);
+	base::RandomFill(result.data(), result.size());
+	return result;
+}
+
 ValidationError Validate(const Metadata &metadata) {
 	if (metadata.version != kMetadataVersion) {
 		return ValidationError::UnsupportedVersion;
 	} else if (metadata.masterVerifier.size() != kVerifierSize) {
 		return ValidationError::InvalidMasterVerifier;
+	} else if (metadata.verifierSalt.size() < 8
+		|| metadata.verifierSalt.size() > 64) {
+		return ValidationError::InvalidVerifierSalt;
+	} else if (!metadata.verifierKdf.time || !metadata.verifierKdf.parallel
+		|| (metadata.verifierKdf.kind == kPasscodeKdfArgon2id
+			&& (metadata.verifierKdf.memory
+				< 8 * uint64(metadata.verifierKdf.parallel)
+				|| metadata.verifierKdf.memory > kMaximumArgonMemoryKiB
+				|| metadata.verifierKdf.time > kMaximumArgonTime
+				|| metadata.verifierKdf.parallel > kMaximumArgonLanes))
+		|| (metadata.verifierKdf.kind == kPasscodeKdfScrypt
+			&& (metadata.verifierKdf.memory < 2
+				|| (metadata.verifierKdf.memory
+					& (metadata.verifierKdf.memory - 1))
+				|| metadata.verifierKdf.memory > kMaximumScryptN
+				|| metadata.verifierKdf.time > kMaximumScryptR
+				|| metadata.verifierKdf.parallel > kMaximumScryptP))
+		|| (metadata.verifierKdf.kind != kPasscodeKdfArgon2id
+			&& metadata.verifierKdf.kind != kPasscodeKdfScrypt)) {
+		return ValidationError::InvalidKdf;
 	}
 	auto setIds = std::set<SetId>();
 	auto verifiers = std::set<QByteArray>{ metadata.masterVerifier };
@@ -151,6 +200,11 @@ QByteArray SerializeMetadataPayload(const Metadata &metadata) {
 	}
 	const auto object = QJsonObject{
 		{ u"version"_q, int(metadata.version) },
+		{ u"verifier_salt"_q, QString::fromLatin1(metadata.verifierSalt.toHex()) },
+		{ u"kdf_kind"_q, int(metadata.verifierKdf.kind) },
+		{ u"kdf_memory"_q, int(metadata.verifierKdf.memory) },
+		{ u"kdf_time"_q, int(metadata.verifierKdf.time) },
+		{ u"kdf_parallel"_q, int(metadata.verifierKdf.parallel) },
 		{ u"master_verifier"_q, VerifierText(metadata.masterVerifier) },
 		{ u"sets"_q, sets },
 	};
@@ -173,10 +227,25 @@ std::optional<Metadata> ParseMetadataPayload(
 	}
 	const auto object = document.object();
 	const auto version = object.value(u"version"_q);
+	const auto saltText = object.value(u"verifier_salt"_q).toString();
+	const auto salt = QByteArray::fromHex(saltText.toLatin1());
 	const auto masterVerifier = ParseVerifier(
 		object.value(u"master_verifier"_q).toString());
 	const auto setsValue = object.value(u"sets"_q);
-	if (!version.isDouble() || !masterVerifier.size() || !setsValue.isArray()) {
+	const auto kdfKind = object.value(u"kdf_kind"_q);
+	const auto kdfMemory = object.value(u"kdf_memory"_q);
+	const auto kdfTime = object.value(u"kdf_time"_q);
+	const auto kdfParallel = object.value(u"kdf_parallel"_q);
+	if (!version.isDouble()
+		|| !masterVerifier.size()
+		|| salt.size() < 8
+		|| salt.size() > 64
+		|| salt.toHex() != saltText.toLatin1().toLower()
+		|| !kdfKind.isDouble()
+		|| !kdfMemory.isDouble()
+		|| !kdfTime.isDouble()
+		|| !kdfParallel.isDouble()
+		|| !setsValue.isArray()) {
 		return std::nullopt;
 	}
 	auto result = Metadata();
@@ -185,6 +254,13 @@ std::optional<Metadata> ParseMetadataPayload(
 		return std::nullopt;
 	}
 	result.version = quint32(versionInt);
+	result.verifierSalt = salt;
+	if (!ReadUint32(kdfKind, &result.verifierKdf.kind)
+		|| !ReadUint32(kdfMemory, &result.verifierKdf.memory)
+		|| !ReadUint32(kdfTime, &result.verifierKdf.time)
+		|| !ReadUint32(kdfParallel, &result.verifierKdf.parallel)) {
+		return std::nullopt;
+	}
 	result.masterVerifier = masterVerifier;
 	for (const auto &value : setsValue.toArray()) {
 		if (!value.isObject()) {

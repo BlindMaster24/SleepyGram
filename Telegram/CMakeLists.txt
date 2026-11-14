@@ -240,6 +240,7 @@ set(ayugram_files
         ayu/features/chat_lock/chat_lock.h
         ayu/features/profile_sets/profile_sets.cpp
         ayu/features/profile_sets/profile_sets.h
+        ayu/features/profile_sets/profile_sets_password.cpp
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp
