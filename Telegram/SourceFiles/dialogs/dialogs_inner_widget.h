@@ -225,6 +225,10 @@ public:
 	[[nodiscard]] rpl::producer<> changeSearchFromRequests() const;
 	[[nodiscard]] rpl::producer<ChosenRow> chosenRow() const;
 	[[nodiscard]] rpl::producer<> updated() const;
+	[[nodiscard]] rpl::producer<std::vector<FullMsgId>>
+		selectedSearchMessageChanges() const;
+	[[nodiscard]] std::vector<FullMsgId> selectedSearchMessageIds() const;
+	void clearSearchMessageSelection();
 
 	[[nodiscard]] rpl::producer<int> scrollByDeltaRequests() const;
 	[[nodiscard]] rpl::producer<Ui::ScrollToRequest> mustScrollTo() const;
@@ -481,6 +485,7 @@ private:
 	void fillSearchResultMenu(
 		not_null<Ui::PopupMenu*> menu,
 		FullMsgId itemId);
+	void toggleSearchMessageSelection(FullMsgId itemId);
 
 	void refreshShownList();
 	void rebuildCommunitySections();
@@ -763,6 +768,8 @@ private:
 	int _chatTypeFilterWidth = 0;
 
 	std::vector<std::unique_ptr<FakeRow>> _searchResults;
+	base::flat_set<FullMsgId> _selectedSearchMessages;
+	rpl::event_stream<std::vector<FullMsgId>> _selectedSearchMessageChanges;
 	int _searchedCount = 0;
 	int _searchedMigratedCount = 0;
 	int _searchedSelected = -1;

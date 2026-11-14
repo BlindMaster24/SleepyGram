@@ -79,6 +79,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "menu/menu_mark_as_read.h"
 #include "menu/menu_sponsored.h"
+#include "menu/menu_item_download_files.h"
 #include "window/notifications_manager.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
@@ -1878,7 +1879,10 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 				for (; from < to; ++from) {
 					const auto &result = _searchResults[from];
 					const auto active = isSearchResultActive(result.get(), activeEntry);
-					const auto selected = _menuRow.key
+					const auto selectedMessage = result->item()
+						&& _selectedSearchMessages.contains(
+							result->item()->fullId());
+					const auto selected = selectedMessage || (_menuRow.key
 						? isSearchResultActive(result.get(), _menuRow)
 						: _chatPreviewRow.key
 						? isSearchResultActive(result.get(), _chatPreviewRow)
@@ -3248,6 +3252,19 @@ void InnerWidget::mousePressReleased(
 	_pressedMorePosts = false;
 	const auto pressedChatTypeFilter = _pressedChatTypeFilter;
 	_pressedChatTypeFilter = false;
+	auto searchMessageSelectionToggled = false;
+	if (!wasDragging
+		&& button == Qt::LeftButton
+		&& base::in_range(searchedPressed, 0, _searchResults.size())
+		&& ((modifiers.testFlag(Qt::ControlModifier)
+				|| modifiers.testFlag(Qt::MetaModifier))
+			|| !_selectedSearchMessages.empty())) {
+		const auto item = _searchResults[searchedPressed]->item();
+		if (item) {
+			toggleSearchMessageSelection(item->fullId());
+			searchMessageSelectionToggled = true;
+		}
+	}
 	if (wasDragging) {
 		selectByMouse(globalPosition);
 	}
@@ -3278,7 +3295,9 @@ void InnerWidget::mousePressReleased(
 		}
 	}
 	updateSelectedRow();
-	if (!wasDragging && button == Qt::LeftButton) {
+	if (!searchMessageSelectionToggled
+		&& !wasDragging
+		&& button == Qt::LeftButton) {
 		if ((collapsedPressed >= 0 && collapsedPressed == _collapsedSelected)
 			|| (pressed
 				&& pressed == _selected
@@ -3323,11 +3342,13 @@ void InnerWidget::mousePressReleased(
 		}
 	}
 	if (auto activated = ClickHandler::unpressed()) {
-		ActivateClickHandler(window(), activated, ClickContext{
-			button,
-			QVariant::fromValue(ClickHandlerContext{
-				.sessionWindow = _controller,
-			}) });
+		if (!searchMessageSelectionToggled) {
+			ActivateClickHandler(window(), activated, ClickContext{
+				button,
+				QVariant::fromValue(ClickHandlerContext{
+					.sessionWindow = _controller,
+				}) });
+		}
 	}
 }
 
@@ -4174,6 +4195,55 @@ void InnerWidget::fillSearchResultMenu(
 		not_null<Ui::PopupMenu*> menu,
 		FullMsgId itemId) {
 	const auto owner = &session().data();
+	if (!_selectedSearchMessages.empty()) {
+		auto ids = selectedSearchMessageIds();
+		ids.erase(ranges::remove_if(ids, [&](FullMsgId id) {
+			return !owner->message(id);
+		}), end(ids));
+		if (!ids.empty()) {
+			const auto weak = base::make_weak(this);
+			const auto selectedIds = ids;
+			Menu::AddDownloadFilesAction(
+				menu,
+				_controller,
+				ids,
+				[weak, selectedIds] {
+					if (weak
+						&& weak->selectedSearchMessageIds() == selectedIds) {
+						weak->clearSearchMessageSelection();
+					}
+				});
+			const auto forwardable = ranges::all_of(ids, [&](FullMsgId id) {
+				const auto item = owner->message(id);
+				return item && item->allowsForward();
+			});
+			if (forwardable) {
+				menu->addAction(
+					tr::ayu_ForwardSelectedSearchMessages(tr::now),
+					[weak, controller = _controller, ids = std::move(ids)]() mutable {
+						if (!weak
+							|| weak->selectedSearchMessageIds() != ids) {
+							return;
+						}
+						const auto owner = &weak->session().data();
+						if (!ranges::all_of(ids, [&](FullMsgId id) {
+							const auto item = owner->message(id);
+							return item && item->allowsForward();
+						})) {
+							return;
+						}
+						Window::ShowForwardMessagesBox(
+							controller,
+							std::move(ids));
+					},
+					&st::menuIconForward);
+			}
+		}
+		menu->addAction(
+			tr::ayu_ClearSearchMessageSelection(tr::now),
+			[this] { clearSearchMessageSelection(); });
+		return;
+	}
 	const auto item = owner->message(itemId);
 	if (!item) {
 		return;
@@ -4334,13 +4404,14 @@ void InnerWidget::contextMenuEvent(QContextMenuEvent *e) {
 		this,
 		(!row.fullId
 			? st::popupMenuExpandedSeparator
-			: (_searchResultsOnlyTitle && !session().supportMode())
+			: ((_searchResultsOnlyTitle || !_selectedSearchMessages.empty())
+				&& !session().supportMode())
 			? st::popupMenuWithIcons
 			: st::defaultPopupMenu));
 	if (row.fullId) {
 		if (session().supportMode()) {
 			fillSupportSearchMenu(_menu.get());
-		} else if (_searchResultsOnlyTitle) {
+		} else if (_searchResultsOnlyTitle || !_selectedSearchMessages.empty()) {
 			fillSearchResultMenu(_menu.get(), row.fullId);
 		}
 	} else {
@@ -4558,6 +4629,14 @@ void InnerWidget::searchRequested(bool loading) {
 void InnerWidget::applySearchState(SearchState state) {
 	if (_searchState == state) {
 		return;
+	}
+	const auto selectionIdentityChanged = (state.query != _searchState.query)
+		|| (state.fromPeer != _searchState.fromPeer)
+		|| (state.mediaFilter != _searchState.mediaFilter)
+		|| (state.inChat != _searchState.inChat)
+		|| (state.tab != _searchState.tab);
+	if (selectionIdentityChanged) {
+		clearSearchMessageSelection();
 	}
 	auto withSameQuery = state;
 	withSameQuery.query = _searchState.query;
@@ -4932,6 +5011,39 @@ rpl::producer<> InnerWidget::updated() const {
 	return _updated.events();
 }
 
+rpl::producer<std::vector<FullMsgId>>
+InnerWidget::selectedSearchMessageChanges() const {
+	return _selectedSearchMessageChanges.events();
+}
+
+std::vector<FullMsgId> InnerWidget::selectedSearchMessageIds() const {
+	return std::vector<FullMsgId>(
+		_selectedSearchMessages.begin(),
+		_selectedSearchMessages.end());
+}
+
+void InnerWidget::clearSearchMessageSelection() {
+	if (_selectedSearchMessages.empty()) {
+		return;
+	}
+	_selectedSearchMessages.clear();
+	_selectedSearchMessageChanges.fire_copy(std::vector<FullMsgId>());
+	refresh();
+}
+
+void InnerWidget::toggleSearchMessageSelection(FullMsgId itemId) {
+	if (!session().data().message(itemId)) {
+		return;
+	}
+	if (_selectedSearchMessages.contains(itemId)) {
+		_selectedSearchMessages.erase(itemId);
+	} else {
+		_selectedSearchMessages.emplace(itemId);
+	}
+	_selectedSearchMessageChanges.fire_copy(selectedSearchMessageIds());
+	refresh();
+}
+
 rpl::producer<int> InnerWidget::scrollByDeltaRequests() const {
 	return _draggingScroll.scrolls();
 }
@@ -5019,6 +5131,10 @@ void InnerWidget::visibleTopBottomUpdated(
 }
 
 void InnerWidget::itemRemoved(not_null<const HistoryItem*> item) {
+	const auto selectionRemoved = _selectedSearchMessages.erase(item->fullId()) > 0;
+	if (selectionRemoved) {
+		_selectedSearchMessageChanges.fire_copy(selectedSearchMessageIds());
+	}
 	const auto previewRow = [&](int index) {
 		return base::in_range(index, 0, _previewResults.size())
 			? _previewResults[index].get()
@@ -5066,7 +5182,8 @@ void InnerWidget::itemRemoved(not_null<const HistoryItem*> item) {
 			++i;
 		}
 	}
-	if (wasCount != _searchResults.size()
+	if (selectionRemoved
+		|| wasCount != _searchResults.size()
 		|| wasPreviewCount != _previewResults.size()) {
 		refresh();
 	}

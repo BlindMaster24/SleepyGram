@@ -9584,6 +9584,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_SearchTypePhotos" = "Photos";
 "ayu_SearchTypeVideos" = "Videos";
 "ayu_SearchTypeFiles" = "Files";
+"ayu_ForwardSelectedSearchMessages" = "Forward Selected Messages";
+"ayu_ClearSearchMessageSelection" = "Clear Selection";
 "ayu_ContextCopyCallbackData" = "Copy Callback Data";
 "ayu_RepeatMessage" = "Repeat Message";
 "ayu_RegisterURLScheme" = "Register URL Scheme";

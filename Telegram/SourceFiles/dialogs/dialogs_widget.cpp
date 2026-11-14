@@ -3345,6 +3345,7 @@ bool Widget::searchForTopicsRequired(const QString &query) const {
 void Widget::searchRequested(SearchRequestDelay delay) {
 	if (_searchQuery != currentSearchQuery().trimmed()) {
 		cancelSearchRequest();
+		_inner->clearSearchMessageSelection();
 	}
 	if (search(true, delay)) {
 		return;
