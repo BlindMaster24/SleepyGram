@@ -123,6 +123,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/fields/input_field.h"
 #include "ui/widgets/dropdown_menu.h"
 #include "ui/widgets/labels.h"
+#include "ui/controls/userpic_button.h"
 #include "ui/text/format_values.h"
 #include "ui/controls/compose_ai_button_factory.h"
 #include "ui/controls/emoji_button.h"
@@ -1456,9 +1457,12 @@ ComposeControls::ComposeControls(
 		}, _wrap->lifetime());
 	}
 	init();
-	_accountMarker = std::make_unique<Ui::FlatLabel>(
+	_accountMarker = std::make_unique<Ui::UserpicButton>(
 		_wrap.get(),
-		st::historyAccountMarker);
+		session().user(),
+		st::historyAccountMarker,
+		Ui::PeerUserpicShape::Circle);
+	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_accountMarker->hide();
 	session().domain().accountsChanges() | rpl::on_next([=] {
 		updateAccountMarker();
@@ -3177,12 +3181,6 @@ void ComposeControls::updateAccountMarker() {
 	if (!show) {
 		return;
 	}
-	const auto &accounts = session().domain().accounts();
-	const auto i = ranges::find(accounts, &session().account(), [](const auto &a) {
-		return a.account.get();
-	});
-	const auto number = (i == end(accounts)) ? 1 : (i->index + 1);
-	_accountMarker->setText(QString::number(number));
 	const auto name = session().user()->name();
 	const auto tooltip = tr::lng_compose_current_account_marker(
 		tr::now,
@@ -3190,7 +3188,6 @@ void ComposeControls::updateAccountMarker() {
 		name);
 	_accountMarker->setToolTip(tooltip);
 	_accountMarker->setAccessibleName(tooltip);
-	_accountMarker->resizeToWidth(_accountMarker->textMaxWidth());
 }
 
 bool ComposeControls::showEditStarsButton() const {

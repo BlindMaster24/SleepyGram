@@ -1455,10 +1455,10 @@ historyCharsLimitationLabel: FlatLabel(defaultFlatLabel) {
 	textFg: attentionButtonFg;
 }
 
-historyAccountMarker: FlatLabel(defaultFlatLabel) {
-	minWidth: 28px;
-	align: align(center);
-	textFg: windowSubTextFg;
+historyAccountMarker: UserpicButton(defaultUserpicButton) {
+	size: size(24px, 24px);
+	photoSize: 24px;
+	photoPosition: point(0px, 0px);
 }
 historyAccountMarkerSkip: 4px;
 

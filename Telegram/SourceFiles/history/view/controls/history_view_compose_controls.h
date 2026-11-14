@@ -74,7 +74,7 @@ class EmojiButton;
 class SendAsButton;
 class SilentToggle;
 class DropdownMenu;
-class FlatLabel;
+class UserpicButton;
 struct PreparedBundle;
 struct PreparedList;
 struct SendStarButtonState;
@@ -597,7 +597,7 @@ private:
 	std::unique_ptr<BotMenuButton> _botMenu;
 	PeerId _botMenuPeer = 0;
 	std::unique_ptr<Ui::SendAsButton> _sendAs;
-	std::unique_ptr<Ui::FlatLabel> _accountMarker;
+	std::unique_ptr<Ui::UserpicButton> _accountMarker;
 	rpl::variable<bool> _videoStreamAdmin;
 	std::unique_ptr<Ui::SilentToggle> _silent;
 	std::unique_ptr<Controls::TTLButton> _ttlInfo;

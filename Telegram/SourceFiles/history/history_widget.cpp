@@ -190,6 +190,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/elastic_scroll.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/item_text_options.h"
+#include "ui/controls/userpic_button.h"
 #include "main/main_app_config.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
@@ -1353,7 +1354,12 @@ HistoryWidget::HistoryWidget(
 
 	setupScheduledToggle();
 	setupSendAsToggle();
-	_accountMarker.create(this, st::historyAccountMarker);
+	_accountMarker.create(
+		this,
+		session().user(),
+		st::historyAccountMarker,
+		Ui::PeerUserpicShape::Circle);
+	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
 	session().domain().accountsChanges() | rpl::on_next([=] {
 		updateAccountMarker();
 		updateControlsGeometry();
@@ -4408,12 +4414,6 @@ void HistoryWidget::updateAccountMarker() {
 	if (!show) {
 		return;
 	}
-	const auto &accounts = session().domain().accounts();
-	const auto i = ranges::find(accounts, &session().account(), [](const auto &a) {
-		return a.account.get();
-	});
-	const auto number = (i == end(accounts)) ? 1 : (i->index + 1);
-	_accountMarker->setText(QString::number(number));
 	const auto name = session().user()->name();
 	const auto tooltip = tr::lng_compose_current_account_marker(
 		tr::now,
@@ -4421,7 +4421,6 @@ void HistoryWidget::updateAccountMarker() {
 		name);
 	_accountMarker->setToolTip(tooltip);
 	_accountMarker->setAccessibleName(tooltip);
-	_accountMarker->resizeToWidth(_accountMarker->textMaxWidth());
 }
 
 bool HistoryWidget::contentOverlapped(const QRect &globalRect) {
