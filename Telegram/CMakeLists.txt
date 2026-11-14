@@ -78,6 +78,7 @@ endif()
 include(cmake/test_iv_editor_state.cmake)
 include(cmake/test_iv_editor_table_grid.cmake)
 include(cmake/test_wallet_card_tint.cmake)
+include(cmake/test_offline_history_storage.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -248,6 +249,8 @@ set(ayugram_files
         ayu/features/forward/ayu_sync.h
         ayu/features/offline_history/offline_history.cpp
         ayu/features/offline_history/offline_history.h
+        ayu/features/offline_history/offline_history_storage.cpp
+        ayu/features/offline_history/offline_history_storage.h
         ayu/features/translator/ayu_translator.cpp
         ayu/features/translator/ayu_translator.h
         ayu/features/translator/ayu_translate_provider.cpp

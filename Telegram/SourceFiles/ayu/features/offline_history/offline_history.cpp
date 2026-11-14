@@ -3,6 +3,7 @@
 
 #include "api/api_common.h"
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/features/offline_history/offline_history_storage.h"
 #include "core/application.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -18,14 +19,9 @@
 
 #include <QtCore/QDateTime>
 #include <QtCore/QDir>
-#include <QtCore/QDirIterator>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
-#include <QtCore/QJsonArray>
-#include <QtCore/QJsonDocument>
-#include <QtCore/QJsonObject>
 #include <QtCore/QPointer>
-#include <QtCore/QSaveFile>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
 #include <QtWidgets/QHBoxLayout>
@@ -48,22 +44,12 @@ constexpr auto kPageSize = 100;
 constexpr auto kMaxPages = 100;
 constexpr auto kMaxMessages = kPageSize * kMaxPages;
 constexpr auto kDeviceLimit = int64(1024) * 1024 * 1024;
-constexpr auto kFormatVersion = 1;
+constexpr auto kMaxMessageTextLength = 16 * 1024;
+constexpr auto kMaxTextBytes = int64(48) * 1024 * 1024;
 
-struct Message {
-	MsgId id = 0;
-	TimeId date = 0;
-	QString sender;
-	QString text;
-};
-
-struct Snapshot {
-	int64 from = 0;
-	int64 to = 0;
-	int32 nextOffset = 0;
-	int pages = 0;
-	std::vector<Message> messages;
-};
+using Message = Storage::Message;
+using Snapshot = Storage::Snapshot;
+using Paths = Storage::Paths;
 
 using DialogKey = std::pair<uint64, PeerId>;
 using Dialogs = std::map<DialogKey, QPointer<class OfflineHistoryDialog>>;
@@ -77,12 +63,6 @@ QString RootPath() {
 	return cWorkingDir() + u"tdata/offline-history"_q;
 }
 
-struct Paths {
-	QString root;
-	QString complete;
-	QString partial;
-};
-
 bool PeerAllowsOffline(not_null<PeerData*> peer) {
 	if (peer->isAyuNoForwards()) {
 		return false;
@@ -95,141 +75,10 @@ bool PeerAllowsOffline(not_null<PeerData*> peer) {
 }
 
 Paths PathsFor(not_null<Main::Session*> session, PeerId peerId) {
-	const auto root = RootPath();
-	const auto account = QString::number(session->userId().bare);
-	const auto peer = QString::number(peerId.value);
-	const auto directory = root + '/' + account + '/' + peer;
-	return {
-		.root = root,
-		.complete = directory + u"/history.json"_q,
-		.partial = directory + u"/history.partial.json"_q,
-	};
-}
-
-QJsonObject Encode(const Snapshot &snapshot, uint64 accountId, PeerId peerId) {
-	auto object = QJsonObject();
-	object.insert(u"version"_q, kFormatVersion);
-	object.insert(u"account"_q, QString::number(accountId));
-	object.insert(u"peer"_q, QString::number(peerId.value));
-	object.insert(u"from"_q, snapshot.from);
-	object.insert(u"to"_q, snapshot.to);
-	object.insert(u"nextOffset"_q, snapshot.nextOffset);
-	object.insert(u"pages"_q, snapshot.pages);
-	const auto messages = [&] {
-		auto result = QJsonArray();
-		for (const auto &message : snapshot.messages) {
-			auto item = QJsonObject();
-			item.insert(u"id"_q, QString::number(message.id.bare));
-			item.insert(u"date"_q, message.date);
-			item.insert(u"sender"_q, message.sender);
-			item.insert(u"text"_q, message.text);
-			result.push_back(item);
-		}
-		return result;
-	}();
-	object.insert(u"messages"_q, messages);
-	return object;
-}
-
-bool Decode(
-		const QString &path,
-		uint64 accountId,
-		PeerId peerId,
-		Snapshot *snapshot) {
-	if (!QFileInfo::exists(path)) {
-		return false;
-	}
-	auto file = QFile(path);
-	if (!file.open(QIODevice::ReadOnly)) {
-		return false;
-	}
-	const auto document = QJsonDocument::fromJson(file.readAll());
-	if (!document.isObject()) {
-		return false;
-	}
-	const auto object = document.object();
-	if (object.value(u"version"_q).toInt() != kFormatVersion
-		|| object.value(u"account"_q).toString()
-			!= QString::number(accountId)
-		|| object.value(u"peer"_q).toString()
-			!= QString::number(peerId.value)) {
-		return false;
-	}
-	snapshot->from = object.value(u"from"_q).toInteger();
-	snapshot->to = object.value(u"to"_q).toInteger();
-	snapshot->nextOffset = object.value(u"nextOffset"_q).toInt();
-	snapshot->pages = object.value(u"pages"_q).toInt();
-	const auto messages = object.value(u"messages"_q).toArray();
-	if (messages.size() > kMaxMessages) {
-		return false;
-	}
-	snapshot->messages.clear();
-	snapshot->messages.reserve(messages.size());
-	for (const auto &value : messages) {
-		const auto item = value.toObject();
-		const auto id = item.value(u"id"_q).toString().toLongLong();
-		if (id <= 0) {
-			return false;
-		}
-		snapshot->messages.push_back({
-			.id = MsgId(id),
-			.date = TimeId(item.value(u"date"_q).toInteger()),
-			.sender = item.value(u"sender"_q).toString(),
-			.text = item.value(u"text"_q).toString(),
-		});
-	}
-	return snapshot->from > 0 && snapshot->to >= snapshot->from;
-}
-
-qint64 UsageBytes(const QString &root, const QStringList &excluded) {
-	auto result = qint64(0);
-	if (!QDir(root).exists()) {
-		return result;
-	}
-	for (auto i = QDirIterator(
-			root,
-			QDir::Files,
-			QDirIterator::Subdirectories);
-		i.hasNext();) {
-		const auto path = QFileInfo(i.next()).absoluteFilePath();
-		if (!excluded.contains(path)) {
-			result += QFileInfo(path).size();
-		}
-	}
-	return result;
-}
-
-bool WriteAtomic(
-		const QString &path,
-		const QByteArray &bytes,
-		const QString &root,
-		const QStringList &excluded) {
-	const auto normalized = QFileInfo(path).absoluteFilePath();
-	const auto skip = [&] {
-		auto result = excluded;
-		if (!result.contains(normalized)) {
-			result.push_back(normalized);
-		}
-		return result;
-	}();
-	if (UsageBytes(root, skip) + bytes.size() > kDeviceLimit) {
-		return false;
-	}
-	if (!QDir().mkpath(QFileInfo(path).absolutePath())) {
-		return false;
-	}
-	auto file = QSaveFile(path);
-	if (!file.open(QIODevice::WriteOnly)
-		|| file.write(bytes) != bytes.size()
-		|| !file.commit()) {
-		return false;
-	}
-	return true;
-}
-
-QByteArray Serialize(const Snapshot &snapshot, uint64 accountId, PeerId peerId) {
-	return QJsonDocument(Encode(snapshot, accountId, peerId))
-		.toJson(QJsonDocument::Compact);
+	return Storage::PathsFor(
+		RootPath(),
+		session->userId().bare,
+		peerId);
 }
 
 QString FormatSnapshot(const Snapshot &snapshot) {
@@ -328,12 +177,12 @@ public:
 
 private:
 	void loadSnapshot() {
-		const auto complete = Decode(
+		const auto complete = Storage::ReadSnapshot(
 			_paths.complete,
 			_accountId,
 			_peer->id,
 			&_snapshot);
-		const auto partial = Decode(
+		const auto partial = Storage::ReadSnapshot(
 			_paths.partial,
 			_accountId,
 			_peer->id,
@@ -370,7 +219,11 @@ private:
 			_status->setText(tr::lng_offline_history_restricted(tr::now));
 			return;
 		}
-		if (!Decode(_paths.partial, _accountId, _peer->id, &_snapshot)) {
+		if (!Storage::ReadSnapshot(
+				_paths.partial,
+				_accountId,
+				_peer->id,
+				&_snapshot)) {
 			const auto now = QDateTime::currentSecsSinceEpoch();
 			const auto days = _days->currentData().toInt();
 			_snapshot = Snapshot{
@@ -379,8 +232,10 @@ private:
 			};
 		}
 		_records = std::set<MsgId>();
+		_textBytes = 0;
 		for (const auto &message : _snapshot.messages) {
 			_records.emplace(message.id);
+			_textBytes += message.text.toUtf8().size();
 		}
 		_generation++;
 		_running = true;
@@ -450,6 +305,7 @@ private:
 		auto oldest = MsgId();
 		auto oldestDate = TimeId();
 		auto reachedStart = false;
+		auto reachedTextLimit = false;
 		for (const auto &message : page) {
 			const auto id = IdFromMessage(message);
 			oldest = oldest ? std::min(oldest, id) : id;
@@ -474,9 +330,18 @@ private:
 				continue;
 			}
 			const auto text = item->originalText().text;
-			if (text.isEmpty() || !_records.emplace(id).second) {
+			if (text.isEmpty()
+				|| text.size() > kMaxMessageTextLength
+				|| !_records.emplace(id).second) {
 				continue;
 			}
+			const auto textBytes = text.toUtf8().size();
+			if (_textBytes + textBytes > kMaxTextBytes) {
+				_records.erase(id);
+				reachedTextLimit = true;
+				break;
+			}
+			_textBytes += textBytes;
 			_snapshot.messages.push_back({
 				.id = id,
 				.date = item->date(),
@@ -494,11 +359,15 @@ private:
 		std::ranges::sort(_snapshot.messages, [](const Message &a, const Message &b) {
 			return (a.date == b.date) ? (a.id < b.id) : (a.date < b.date);
 		});
-		const auto partialBytes = Serialize(_snapshot, _accountId, _peer->id);
-		if (!WriteAtomic(
+		const auto partialBytes = Storage::Serialize(
+			_snapshot,
+			_accountId,
+			_peer->id);
+		if (partialBytes.isEmpty() || !Storage::WriteAtomic(
 				_paths.partial,
 				partialBytes,
 				_paths.root,
+				kDeviceLimit,
 				{})) {
 			stopPartial(tr::lng_offline_history_limit(tr::now));
 			return;
@@ -509,6 +378,10 @@ private:
 			tr::now,
 			lt_count,
 			int(_snapshot.messages.size())));
+		if (reachedTextLimit) {
+			stopPartial(tr::lng_offline_history_limit(tr::now));
+			return;
+		}
 		if (reachedStart
 			|| oldestDate < _snapshot.from
 			|| page.size() < kPageSize) {
@@ -522,11 +395,15 @@ private:
 		std::ranges::sort(_snapshot.messages, [](const Message &a, const Message &b) {
 			return (a.date == b.date) ? (a.id < b.id) : (a.date < b.date);
 		});
-		const auto bytes = Serialize(_snapshot, _accountId, _peer->id);
-		if (!WriteAtomic(
+		const auto bytes = Storage::Serialize(
+			_snapshot,
+			_accountId,
+			_peer->id);
+		if (bytes.isEmpty() || !Storage::WriteAtomic(
 				_paths.complete,
 				bytes,
 				_paths.root,
+				kDeviceLimit,
 				{ _paths.partial })) {
 			stopPartial(tr::lng_offline_history_limit(tr::now));
 			return;
@@ -582,6 +459,7 @@ private:
 	Snapshot _snapshot;
 	Snapshot _partial;
 	std::set<MsgId> _records;
+	int64 _textBytes = 0;
 	rpl::lifetime _lockLifetime;
 	int _generation = 0;
 	bool _running = false;
