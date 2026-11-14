@@ -96,6 +96,7 @@ struct FakeRemote final : RemoteSessionEffect {
 	std::map<std::string, EffectResult> results;
 	std::vector<std::string> calledAccountIds;
 	std::vector<CoordinatorClock::TimePoint> deadlines;
+	std::vector<RemoteSessionTargetKind> remoteTargets;
 	std::vector<std::vector<SessionId>> targets;
 	std::chrono::seconds advanceAfterFirstCall = std::chrono::seconds(0);
 	int calls = 0;
@@ -103,11 +104,13 @@ struct FakeRemote final : RemoteSessionEffect {
 
 	EffectResult revoke(
 			const AccountId &accountId,
+			RemoteSessionTargetKind target,
 			std::span<const SessionId> sessionIds,
 			CoordinatorClock::TimePoint deadline) override {
 		++calls;
 	calledAccountIds.push_back(accountId.value);
 		deadlines.push_back(deadline);
+		remoteTargets.push_back(target);
 		targets.emplace_back(sessionIds.begin(), sessionIds.end());
 		const auto persisted = LoadJournal(*store, OperationId("op-coordinator"));
 		const auto claimSaved = persisted && [&] {
@@ -218,6 +221,9 @@ void RemoteClaimsAndSharedDeadlinePrecedeLocalEffects() {
 		f.remote.calls == 2
 		&& f.remote.targets == std::vector<std::vector<SessionId>>{
 			{ SessionId("session-a") }, { SessionId("session-b") } }
+		&& f.remote.remoteTargets == std::vector<RemoteSessionTargetKind>{
+			RemoteSessionTargetKind::SelectedSessions,
+			RemoteSessionTargetKind::SelectedSessions }
 		&& f.remote.deadlines == std::vector<CoordinatorClock::TimePoint>{
 			deadline, deadline });
 	Check("order-is-remote-then-local-then-safe-destination",
@@ -232,6 +238,81 @@ void RemoteClaimsAndSharedDeadlinePrecedeLocalEffects() {
 		&& report.journalStatus == JournalStatus::Complete
 		&& report.remoteAttempts == 2
 		&& report.localAttempts == 2);
+}
+
+void AllOtherSessionsRemainsAServerScope() {
+	auto plan = Plan(1);
+	plan.accounts.front().remoteTarget = RemoteSessionTargetKind::AllOtherSessions;
+	auto journalValue = MakeJournal(plan);
+	Check("all-other-target-survives-journal-codec",
+		journalValue
+		&& journalValue->accounts.front().remoteSessionTarget
+			== RemoteSessionTargetKind::AllOtherSessions
+		&& journalValue->accounts.front().remoteSessionRevoke.state
+			== EffectState::Pending
+		&& journalValue->accounts.front().sessionIdsForRevoke.empty());
+	if (!journalValue) return;
+	const auto decoded = DecodeJournal(EncodeJournal(*journalValue));
+	Check("all-other-target-survives-round-trip",
+		decoded
+		&& decoded->accounts.front().remoteSessionTarget
+			== RemoteSessionTargetKind::AllOtherSessions);
+	auto f = Fixtures();
+	f.journal = *journalValue;
+	const auto report = RunResetCoordinator(
+		f.journal,
+		f.store,
+		f.remote,
+		f.local,
+		f.destination,
+		f.clock);
+	Check("injected-adapter-receives-server-side-all-other-scope",
+		report.result == CoordinatorResult::Complete
+		&& f.remote.calls == 1
+		&& f.remote.remoteTargets.front()
+			== RemoteSessionTargetKind::AllOtherSessions
+		&& f.remote.targets.front().empty());
+
+	auto noKnownSessionsPlan = Plan(1);
+	noKnownSessionsPlan.accounts.front().remoteTarget
+		= RemoteSessionTargetKind::AllOtherSessions;
+	noKnownSessionsPlan.accounts.front().sessionIdsForRevokeRequest.clear();
+	auto noKnownSessions = MakeJournal(noKnownSessionsPlan);
+	Check("all-other-still-runs-with-zero-known-sessions",
+		noKnownSessions
+		&& noKnownSessions->accounts.front().remoteSessionRevoke.state
+			== EffectState::Pending
+		&& noKnownSessions->accounts.front().sessionIdsForRevoke.empty());
+	if (noKnownSessions) {
+		auto empty = Fixtures();
+		empty.journal = *noKnownSessions;
+		const auto emptyReport = RunResetCoordinator(
+			empty.journal,
+			empty.store,
+			empty.remote,
+			empty.local,
+			empty.destination,
+			empty.clock);
+		Check("zero-known-session-adapter-still-gets-all-other",
+			emptyReport.result == CoordinatorResult::Complete
+			&& empty.remote.calls == 1
+			&& empty.remote.remoteTargets.front()
+				== RemoteSessionTargetKind::AllOtherSessions
+			&& empty.remote.targets.front().empty());
+	}
+	auto manyKnownSessionsPlan = Plan(1);
+	manyKnownSessionsPlan.accounts.front().remoteTarget
+		= RemoteSessionTargetKind::AllOtherSessions;
+	for (auto i = 0; i != 129; ++i) {
+		manyKnownSessionsPlan.accounts.front().sessionIdsForRevokeRequest.push_back(
+			SessionId("known-" + std::to_string(i)));
+	}
+	const auto manyKnownSessions = MakeJournal(manyKnownSessionsPlan);
+	Check("all-other-does-not-freeze-or-limit-live-snapshot-ids",
+		manyKnownSessions
+		&& manyKnownSessions->accounts.front().remoteSessionTarget
+			== RemoteSessionTargetKind::AllOtherSessions
+		&& manyKnownSessions->accounts.front().sessionIdsForRevoke.empty());
 }
 
 void OneFiveSecondBudgetIsSharedAcrossAccounts() {
@@ -350,6 +431,7 @@ void LostOutcomeCheckpointRecoversAsUnconfirmed() {
 
 int main() {
 	RemoteClaimsAndSharedDeadlinePrecedeLocalEffects();
+	AllOtherSessionsRemainsAServerScope();
 	OneFiveSecondBudgetIsSharedAcrossAccounts();
 	UnconfirmedRemoteResultDoesNotBlockLocalCleanup();
 	FailedClaimDoesNotCallAnEffect();

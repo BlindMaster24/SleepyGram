@@ -68,6 +68,7 @@ struct JournalEffectState final {
 struct JournalAccount final {
 	AccountId accountId;
 	JournalEffectState localDataClear;
+	RemoteSessionTargetKind remoteSessionTarget = RemoteSessionTargetKind::None;
 	JournalEffectState remoteSessionRevoke;
 	std::vector<SessionId> sessionIdsForRevoke;
 };

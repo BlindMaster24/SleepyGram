@@ -86,6 +86,7 @@ CoordinatorReport RunResetCoordinator(
 	const auto deadline = clock.now() + kRemotePhaseBudget;
 	for (auto i = size_t(0); i != journal.accounts.size(); ++i) {
 		const auto accountId = journal.accounts[i].accountId;
+		const auto target = journal.accounts[i].remoteSessionTarget;
 		const auto sessionIds = journal.accounts[i].sessionIdsForRevoke;
 		const auto state = journal.accounts[i].remoteSessionRevoke;
 		const auto localState = journal.accounts[i].localDataClear;
@@ -111,6 +112,7 @@ CoordinatorReport RunResetCoordinator(
 		try {
 			outcome = remote.revoke(
 				accountId,
+				target,
 				sessionIds,
 				deadline);
 		} catch (...) {

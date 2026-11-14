@@ -11,7 +11,7 @@ namespace Ayu::EmergencyActions {
 namespace {
 
 constexpr auto kMagic = std::array<uint8_t, 4>{ 'A', 'E', 'J', '1' };
-constexpr auto kVersion = uint16_t(1);
+constexpr auto kVersion = uint16_t(2);
 constexpr auto kMaxIdBytes = size_t(128);
 constexpr auto kMaxAccounts = size_t(64);
 constexpr auto kMaxSessionsPerAccount = size_t(128);
@@ -78,14 +78,22 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 	auto ids = std::vector<AccountId>();
 	ids.reserve(journal.accounts.size());
 	for (const auto &account : journal.accounts) {
+		const auto target = account.remoteSessionTarget;
+		const auto targetState = account.remoteSessionRevoke.state;
 		if (!ValidId(account.accountId.value)
 			|| account.sessionIdsForRevoke.size() > kMaxSessionsPerAccount
+			|| uint8_t(target) > uint8_t(RemoteSessionTargetKind::AllOtherSessions)
 			|| !ValidState(account.localDataClear, false)
 			|| !ValidState(account.remoteSessionRevoke, true)
-			|| (account.remoteSessionRevoke.state == EffectState::NotRequested
-				&& !account.sessionIdsForRevoke.empty())
-			|| (account.remoteSessionRevoke.state != EffectState::NotRequested
-				&& account.sessionIdsForRevoke.empty())) {
+			|| (target == RemoteSessionTargetKind::None
+				&& (targetState != EffectState::NotRequested
+					|| !account.sessionIdsForRevoke.empty()))
+			|| (target == RemoteSessionTargetKind::SelectedSessions
+				&& ((targetState == EffectState::NotRequested)
+					!= account.sessionIdsForRevoke.empty()))
+			|| (target == RemoteSessionTargetKind::AllOtherSessions
+				&& (targetState == EffectState::NotRequested
+					|| !account.sessionIdsForRevoke.empty()))) {
 			return false;
 		}
 		ids.push_back(account.accountId);
@@ -264,8 +272,17 @@ std::optional<EmergencyActionJournal> MakeJournal(const DryRunPlan &plan) {
 		.safeProfileId = plan.safeProfileId,
 	};
 	for (const auto &account : plan.accounts) {
-		if (!ValidId(account.accountId.value)
-			|| account.sessionIdsForRevokeRequest.size() > kMaxSessionsPerAccount) {
+		if (!ValidId(account.accountId.value)) {
+			return std::nullopt;
+		}
+		auto sessionTargets = account.sessionIdsForRevokeRequest;
+		if (account.remoteTarget == RemoteSessionTargetKind::AllOtherSessions) {
+			sessionTargets.clear();
+		} else if (account.remoteTarget == RemoteSessionTargetKind::None
+			&& !sessionTargets.empty()) {
+			return std::nullopt;
+		}
+		if (sessionTargets.size() > kMaxSessionsPerAccount) {
 			return std::nullopt;
 		}
 		auto entry = JournalAccount{
@@ -273,10 +290,13 @@ std::optional<EmergencyActionJournal> MakeJournal(const DryRunPlan &plan) {
 			.localDataClear = { .state = account.wouldClearLocalData
 				? EffectState::Pending
 				: EffectState::NotRequested },
-			.remoteSessionRevoke = { .state = account.sessionIdsForRevokeRequest.empty()
-				? EffectState::NotRequested
-				: EffectState::Pending },
-			.sessionIdsForRevoke = account.sessionIdsForRevokeRequest,
+			.remoteSessionTarget = account.remoteTarget,
+			.remoteSessionRevoke = { .state = (account.remoteTarget
+				== RemoteSessionTargetKind::AllOtherSessions
+				|| !sessionTargets.empty())
+				? EffectState::Pending
+				: EffectState::NotRequested },
+			.sessionIdsForRevoke = std::move(sessionTargets),
 		};
 		std::ranges::sort(entry.sessionIdsForRevoke);
 		result.accounts.push_back(std::move(entry));
@@ -477,6 +497,7 @@ std::vector<std::byte> EncodeJournal(const EmergencyActionJournal &journal) {
 	writer.u16(uint16_t(journal.accounts.size()));
 	for (const auto &account : journal.accounts) {
 		writer.string(account.accountId.value);
+		writer.byte(uint8_t(account.remoteSessionTarget));
 		WriteState(writer, account.localDataClear);
 		WriteState(writer, account.remoteSessionRevoke);
 		writer.u16(uint16_t(account.sessionIdsForRevoke.size()));
@@ -504,7 +525,7 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		}
 	}
 	uint16_t version = 0;
-	if (!reader.u16(&version) || version != kVersion) {
+	if (!reader.u16(&version) || (version != 1 && version != kVersion)) {
 		return std::nullopt;
 	}
 	auto result = EmergencyActionJournal();
@@ -537,8 +558,17 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 	result.accounts.reserve(count);
 	for (auto i = uint16_t(0); i != count; ++i) {
 		auto account = JournalAccount();
-		if (!reader.string(&account.accountId.value)
-			|| !ReadState(reader, &account.localDataClear)
+		if (!reader.string(&account.accountId.value)) {
+			return std::nullopt;
+		}
+		if (version >= 2) {
+			if (!reader.byte(&value)
+				|| value > uint8_t(RemoteSessionTargetKind::AllOtherSessions)) {
+				return std::nullopt;
+			}
+			account.remoteSessionTarget = RemoteSessionTargetKind(value);
+		}
+		if (!ReadState(reader, &account.localDataClear)
 			|| !ReadState(reader, &account.remoteSessionRevoke)) {
 			return std::nullopt;
 		}
@@ -554,6 +584,12 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 				return std::nullopt;
 			}
 			account.sessionIdsForRevoke.push_back(std::move(id));
+		}
+		if (version == 1) {
+			// Version 1 stored resolved IDs, so legacy retries stay exact-only.
+			account.remoteSessionTarget = account.sessionIdsForRevoke.empty()
+				? RemoteSessionTargetKind::None
+				: RemoteSessionTargetKind::SelectedSessions;
 		}
 		result.accounts.push_back(std::move(account));
 	}

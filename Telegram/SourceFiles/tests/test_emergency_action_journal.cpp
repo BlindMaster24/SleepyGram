@@ -1,6 +1,7 @@
 #include "ayu/features/emergency_actions/emergency_action_journal.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -93,6 +94,8 @@ void DurableJournalRoundTripsExactPlanTargets() {
 		&& decoded->targetScope == TargetScope::SelectedAccounts
 		&& decoded->accounts.size() == 1
 		&& decoded->accounts.front().accountId == AccountId("account-a")
+		&& decoded->accounts.front().remoteSessionTarget
+			== RemoteSessionTargetKind::SelectedSessions
 		&& decoded->accounts.front().sessionIdsForRevoke
 			== std::vector<SessionId>{ SessionId("session-a"), SessionId("session-b") });
 	Check("initial-resume-list-has-only-planned-effects",
@@ -183,7 +186,7 @@ void CodecRejectsMalformedAndFutureData() {
 	truncated.pop_back();
 	Check("truncated-journal-rejected", !DecodeJournal(truncated));
 	auto future = bytes;
-	future[4] = std::byte(2);
+	future[4] = std::byte(3);
 	Check("unknown-version-rejected", !DecodeJournal(future));
 	Check("oversized-journal-rejected",
 		!DecodeJournal(std::vector<std::byte>(kMaxJournalBytes + 1)));
@@ -193,6 +196,50 @@ void CodecRejectsMalformedAndFutureData() {
 	auto invalidId = MakeJournal(Plan()).value();
 	invalidId.accounts.front().accountId.value = "account/secret";
 	Check("invalid-id-and-free-text-rejected", EncodeJournal(invalidId).empty());
+}
+
+void LegacyJournalDecodesToExactFrozenSessionTargets() {
+	auto bytes = std::vector<std::byte>();
+	const auto byte = [&](uint8_t value) {
+		bytes.push_back(std::byte(value));
+	};
+	const auto u16 = [&](uint16_t value) {
+		byte(uint8_t(value));
+		byte(uint8_t(value >> 8));
+	};
+	const auto string = [&](const std::string &value) {
+		u16(uint16_t(value.size()));
+		for (const auto ch : value) byte(uint8_t(ch));
+	};
+	const auto state = [&](uint8_t value) {
+		byte(value);
+		byte(uint8_t(NetworkOutcome::NotAttempted));
+	};
+	for (const auto ch : std::array<uint8_t, 4>{ 'A', 'E', 'J', '1' }) byte(ch);
+	u16(1);
+	string("legacy-op");
+	string("legacy-rule");
+	string("legacy-install");
+	byte(uint8_t(EmergencyAction::ResetAccountData));
+	byte(uint8_t(TargetScope::SelectedAccounts));
+	byte(uint8_t(SafeDestinationKind::None));
+	string("");
+	u16(1);
+	string("account-a");
+	state(uint8_t(EffectState::Pending));
+	state(uint8_t(EffectState::Pending));
+	u16(1);
+	string("session-a");
+	state(uint8_t(EffectState::NotRequested));
+	state(uint8_t(EffectState::NotRequested));
+	const auto decoded = DecodeJournal(bytes);
+	Check("legacy-v1-keeps-its-frozen-exact-targets",
+		decoded
+		&& decoded->accounts.size() == 1
+		&& decoded->accounts.front().remoteSessionTarget
+			== RemoteSessionTargetKind::SelectedSessions
+		&& decoded->accounts.front().sessionIdsForRevoke
+			== std::vector<SessionId>{ SessionId("session-a") });
 }
 
 void StoreUsesAtomicStorageBoundary() {
@@ -219,6 +266,7 @@ int main() {
 	NetworkUnknownRequiresExplicitRetry();
 	RecoveryAndLocalTransitionsAreIdempotent();
 	CodecRejectsMalformedAndFutureData();
+	LegacyJournalDecodesToExactFrozenSessionTargets();
 	StoreUsesAtomicStorageBoundary();
 	return failures ? 1 : 0;
 }

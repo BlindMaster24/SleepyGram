@@ -36,9 +36,10 @@ public:
 class RemoteSessionEffect {
 public:
 	virtual ~RemoteSessionEffect() = default;
-	// The shared deadline is identical for each request in one run.
+	// The coordinator passes one five-second deadline; adapters must enforce it.
 	[[nodiscard]] virtual EffectResult revoke(
 		const AccountId &accountId,
+		RemoteSessionTargetKind target,
 		std::span<const SessionId> sessionIds,
 		CoordinatorClock::TimePoint deadline) = 0;
 };
