@@ -50,6 +50,12 @@ enum class PasscodeAttempt : uchar {
 	const QString &passcode,
 	Fn<void(bool correct)> done);
 
+// Lock-screen-only routing boundary. No emergency vault is installed yet, so
+// production submissions currently fall through to the legacy verifier.
+[[nodiscard]] PasscodeAttempt TryLockScreenPasscode(
+	const QString &passcode,
+	Fn<void(bool correct)> done);
+
 class LockWidget : public Ui::RpWidget {
 public:
 	LockWidget(QWidget *parent, not_null<Controller*> window);

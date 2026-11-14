@@ -63,6 +63,12 @@ PasscodeAttempt TryPasscode(
 		: PasscodeAttempt::Busy;
 }
 
+PasscodeAttempt TryLockScreenPasscode(
+		const QString &passcode,
+		Fn<void(bool correct)> done) {
+	return TryPasscode(passcode, std::move(done));
+}
+
 LockWidget::LockWidget(QWidget *parent, not_null<Controller*> window)
 : RpWidget(parent)
 , _window(window) {
@@ -291,7 +297,7 @@ void PasscodeLockWidget::submit() {
 			error();
 		}
 	});
-	switch (TryPasscode(_passcode->text(), std::move(done))) {
+	switch (TryLockScreenPasscode(_passcode->text(), std::move(done))) {
 	case PasscodeAttempt::Empty:
 		_passcode->showError();
 		return;

@@ -241,6 +241,8 @@ set(ayugram_files
         ayu/features/streamer_mode/streamer_mode.h
         ayu/features/chat_lock/chat_lock.cpp
         ayu/features/chat_lock/chat_lock.h
+        ayu/features/emergency_actions/lock_screen_submission.cpp
+        ayu/features/emergency_actions/lock_screen_submission.h
         ayu/features/profile_sets/profile_sets.cpp
         ayu/features/profile_sets/profile_sets.h
         ayu/features/profile_sets/profile_sets_password.cpp
