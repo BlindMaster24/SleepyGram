@@ -278,7 +278,7 @@ void WebpageProcessor::apply(Data::WebPageDraft draft, bool reparse) {
 	if (_initialApply) {
 		_initialApply = false;
 		if (_draft.removed) {
-			if (draft.removed || draft.manual || draft.id || !draft.url.isEmpty()) {
+			if (draft.manual || draft.id || !draft.url.isEmpty()) {
 				_parser.setDisabled(false);
 				_defaultDisabled = false;
 			} else {
@@ -366,11 +366,14 @@ void WebpageProcessor::setDisabled(bool disabled) {
 void WebpageProcessor::enableForDraft() {
 	_defaultDisabled = false;
 	_parser.setDisabled(false);
+	_draft.removed = false;
 	checkNow(false);
 }
 
 void WebpageProcessor::resetForNewDraft() {
 	_initialApply = false;
+	_timer.cancel();
+	_resolver->cancel(_link);
 	const auto disabled = Core::App().settings().readPref<bool>(
 		Core::kDisableLinkPreviewsByDefaultKey,
 		false);
