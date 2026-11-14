@@ -104,6 +104,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/qthelp_url.h"
 #include "boxes/premium_limits_box.h"
 #include "ui/accessible/ui_accessible_factory.h"
+#include "ui/ui_utility.h"
 #include "ui/boxes/confirm_box.h"
 #include "core/cached_webview_availability.h"
 #include "test/test_agent.h"
