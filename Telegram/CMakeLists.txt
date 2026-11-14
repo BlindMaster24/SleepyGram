@@ -82,6 +82,7 @@ include(cmake/test_offline_history_storage.cmake)
 include(cmake/test_profile_set_model.cmake)
 include(cmake/test_account_keyring.cmake)
 include(cmake/test_profile_vault.cmake)
+include(cmake/test_profile_migration.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -247,6 +248,8 @@ set(ayugram_files
         ayu/features/profile_sets/account_keyring.h
         ayu/features/profile_sets/profile_vault.cpp
         ayu/features/profile_sets/profile_vault.h
+        ayu/features/profile_sets/profile_migration.cpp
+        ayu/features/profile_sets/profile_migration.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp
