@@ -82,6 +82,7 @@ include(cmake/test_offline_history_storage.cmake)
 include(cmake/test_profile_set_model.cmake)
 include(cmake/test_account_keyring.cmake)
 include(cmake/test_profile_vault.cmake)
+include(cmake/test_archive_snapshot_vault.cmake)
 include(cmake/test_profile_migration.cmake)
 include(cmake/test_account_registry.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
@@ -293,6 +294,8 @@ set(ayugram_files
         ayu/data/ayu_database.cpp
         ayu/data/archive_backup.cpp
         ayu/data/archive_backup.h
+        ayu/data/archive_snapshot_vault.cpp
+        ayu/data/archive_snapshot_vault.h
         ayu/data/ayu_database.h
 
         info/profile/info_profile_music_button.cpp
