@@ -343,9 +343,17 @@ System::SkipState System::computeSkipState(
 		Data::ItemNotification notification) const {
 	const auto type = notification.type;
 	const auto item = notification.item;
+	const auto messageType = (type == Data::ItemNotificationType::Message);
+	if (messageType
+		&& item->Has<HistoryServicePinned>()
+		&& item->history()->session().settings()
+			.pinnedNotificationsSuppressed(
+				item->history()->peer->id,
+				item->topicRootId())) {
+		return { SkipState::Skip };
+	}
 	const auto thread = item->notificationThread();
 	const auto notifySettings = &thread->owner().notifySettings();
-	const auto messageType = (type == Data::ItemNotificationType::Message);
 	const auto withSilent = [&](
 			SkipState::Value value,
 			bool forceSilent = false) {

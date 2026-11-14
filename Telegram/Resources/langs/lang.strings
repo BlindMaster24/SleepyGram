@@ -9475,6 +9475,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_WhyHiddenShadowBan" = "Hidden by a local shadow ban.";
 "ayu_WhyHiddenNoLongerApplies" = "This message is no longer hidden by an active filter.";
 "ayu_OpenFilterSettings" = "Open filter settings";
+"ayu_MutePinnedNotificationsHere" = "Mute pinned notifications here";
+"ayu_EnablePinnedNotificationsHere" = "Enable pinned notifications here";
 "ayu_ReadExclusionMenuText" = "Read Exclusion";
 "ayu_TypingExclusionMenuText" = "Typing Exclusion";
 "ayu_ExclusionTitle" = "Select exclusion type";

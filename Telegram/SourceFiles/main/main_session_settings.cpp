@@ -88,6 +88,8 @@ QByteArray SessionSettings::serialize() const {
 	size += sizeof(qint32); // _setupEmailState
 	size += sizeof(qint32) // _moderateCommonGroups size
 		+ (_moderateCommonGroups.size() * sizeof(qint32));
+	size += sizeof(qint32) + _pinnedNotificationSuppressions.size()
+		* (sizeof(quint64) + sizeof(qint64) + sizeof(qint32));
 	size += sizeof(qint32); // _disableSharingBoxShowsCount
 	size += sizeof(qint32) // _subsectionTabsModes size
 		+ _subsectionTabsModes.size() * (sizeof(quint64) + sizeof(qint32));
@@ -190,6 +192,13 @@ QByteArray SessionSettings::serialize() const {
 			stream << quint64(id.custom()) << id.emoji();
 		}
 		stream << qint32(_stashHintShowsCount);
+		stream << qint32(_pinnedNotificationSuppressions.size());
+		for (const auto &[key, value] : _pinnedNotificationSuppressions) {
+			stream
+				<< SerializePeerId(key.peerId)
+				<< qint64(key.topicRootId.bare)
+				<< qint32(value ? 1 : 0);
+		}
 	}
 
 	Ensures(result.size() == size);
@@ -270,6 +279,7 @@ void SessionSettings::addFromSerialized(
 	qint32 phoneNumberHidden = 0;
 	std::vector<Data::ReactionId> extraFavoriteReactions;
 	qint32 stashHintShowsCount = 0;
+	base::flat_map<ThreadId, bool> pinnedNotificationSuppressions;
 
 	stream >> versionTag;
 	if (versionTag == kVersionTag) {
@@ -755,6 +765,29 @@ void SessionSettings::addFromSerialized(
 	if (!stream.atEnd()) {
 		stream >> stashHintShowsCount;
 	}
+	if (!stream.atEnd()) {
+		auto count = qint32(0);
+		stream >> count;
+		if (stream.status() == QDataStream::Ok) {
+			for (auto i = 0; i != count; ++i) {
+				auto peerId = quint64();
+				auto topicRootId = qint64();
+				auto suppressed = qint32();
+				stream >> peerId >> topicRootId >> suppressed;
+				if (stream.status() != QDataStream::Ok) {
+					LOG(("App Error: "
+						"Bad data for SessionSettings::addFromSerialized()"
+						"with pinnedNotificationSuppressions"));
+					return;
+				}
+				pinnedNotificationSuppressions.emplace(ThreadId{
+					DeserializePeerId(peerId),
+					topicRootId,
+					PeerId(0),
+				}, suppressed == 1);
+			}
+		}
+	}
 	if (stream.status() != QDataStream::Ok) {
 		LOG(("App Error: "
 			"Bad data for SessionSettings::addFromSerialized()"));
@@ -822,6 +855,7 @@ void SessionSettings::addFromSerialized(
 	_phoneNumberHidden = (phoneNumberHidden == 1);
 	_extraFavoriteReactions = std::move(extraFavoriteReactions);
 	_stashHintShowsCount = stashHintShowsCount;
+	_pinnedNotificationSuppressions = std::move(pinnedNotificationSuppressions);
 
 	if (version < 2) {
 		app.setLastSeenWarningSeen(appLastSeenWarningSeen == 1);
@@ -958,6 +992,37 @@ void SessionSettings::setHiddenPinnedMessageId(
 		_hiddenPinnedMessages[id] = msgId;
 	} else {
 		_hiddenPinnedMessages.remove(id);
+	}
+}
+
+bool SessionSettings::pinnedNotificationsSuppressed(
+		PeerId peerId,
+		MsgId topicRootId) const {
+	const auto exact = _pinnedNotificationSuppressions.find({
+		peerId,
+		topicRootId,
+		PeerId(0),
+	});
+	if (exact != end(_pinnedNotificationSuppressions)) {
+		return exact->second;
+	}
+	const auto peer = _pinnedNotificationSuppressions.find({
+		peerId,
+		MsgId(0),
+		PeerId(0),
+	});
+	return (peer != end(_pinnedNotificationSuppressions)) && peer->second;
+}
+
+void SessionSettings::setPinnedNotificationsSuppressed(
+		PeerId peerId,
+		MsgId topicRootId,
+		bool suppressed) {
+	const auto id = ThreadId{ peerId, topicRootId, PeerId(0) };
+	if (topicRootId || suppressed) {
+		_pinnedNotificationSuppressions[id] = suppressed;
+	} else {
+		_pinnedNotificationSuppressions.remove(id);
 	}
 }
 

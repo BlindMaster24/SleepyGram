@@ -38,6 +38,7 @@
 #include "history/view/history_view_context_menu.h"
 #include "history/view/history_view_element.h"
 #include "main/main_session.h"
+#include "main/main_session_settings.h"
 #include "main/session/send_as_peers.h"
 #include "styles/style_ayu_icons.h"
 #include "styles/style_layers.h"
@@ -324,6 +325,26 @@ void AddAyuGramActions(PeerData *peerData,
 					*filteredToggleShown
 						? &st::menuIconCaptionHide
 						: &st::menuIconCaptionShow);
+			}
+			if (peerData->isChat() || peerData->isMegagroup()) {
+				const auto &sessionSettings = sessionController->session().settings();
+				const auto suppressed = sessionSettings.pinnedNotificationsSuppressed(
+					peerData->id,
+					MsgId(topicId));
+				addAction(
+					suppressed
+						? tr::ayu_EnablePinnedNotificationsHere(tr::now)
+						: tr::ayu_MutePinnedNotificationsHere(tr::now),
+					[=] {
+						sessionController->session().settings()
+							.setPinnedNotificationsSuppressed(
+								peerData->id,
+								MsgId(topicId),
+								!suppressed);
+					},
+					suppressed
+						? &st::menuIconShowInChat
+						: &st::menuIconCaptionHide);
 			}
 			addAction(
 				tr::ayu_ViewEditedMessagesMenuText(tr::now),

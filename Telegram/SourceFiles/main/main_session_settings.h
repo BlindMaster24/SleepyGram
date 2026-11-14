@@ -120,6 +120,13 @@ public:
 		MsgId topicRootId,
 		PeerId monoforumPeerId,
 		MsgId msgId);
+	[[nodiscard]] bool pinnedNotificationsSuppressed(
+		PeerId peerId,
+		MsgId topicRootId = 0) const;
+	void setPinnedNotificationsSuppressed(
+		PeerId peerId,
+		MsgId topicRootId,
+		bool suppressed);
 
 	[[nodiscard]] qint32 subsectionTabsMode(PeerId peerId) const;
 	void setSubsectionTabsMode(PeerId peerId, qint32 mode);
@@ -226,6 +233,7 @@ private:
 	rpl::variable<bool> _archiveCollapsed = false;
 	rpl::variable<bool> _archiveInMainMenu = false;
 	base::flat_map<ThreadId, MsgId> _hiddenPinnedMessages;
+	base::flat_map<ThreadId, bool> _pinnedNotificationSuppressions;
 	base::flat_map<PeerId, qint32> _subsectionTabsModes;
 	base::flat_map<Data::DefaultNotify, ushort> _ringtoneDefaultVolumes;
 	base::flat_map<ThreadId, ushort> _ringtoneVolumes;
