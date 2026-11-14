@@ -607,15 +607,21 @@ void AddWhyHiddenAction(
 	if (!item || !FiltersController::whyHidden(item)) {
 		return;
 	}
+	const auto fullId = item->fullId();
 	menu->addAction(
 		tr::ayu_WhyHiddenMenuText(tr::now),
 		[=] {
-			const auto reason = FiltersController::whyHidden(item);
+			const auto current = controller->session().data().message(fullId);
+			const auto reason = current
+				? FiltersController::whyHidden(current)
+				: std::nullopt;
 			if (!reason) {
 				controller->show(Ui::MakeInformBox(
 					tr::ayu_WhyHiddenNoLongerApplies(tr::now)));
 				return;
 			}
+			const auto dialogId = getDialogIdFromPeer(
+				current->history()->peer);
 			auto text = QString();
 			auto shadowBan = false;
 			switch (reason->kind) {
@@ -650,8 +656,7 @@ void AddWhyHiddenAction(
 					const auto dialogFilter = reason->kind
 						== FiltersController::HiddenReason::Kind::DialogFilter;
 					controller->dialogId = dialogFilter
-						? std::optional<ID>(getDialogIdFromPeer(
-							item->history()->peer))
+						? std::optional<ID>(dialogId)
 						: std::nullopt;
 					controller->showExclude = dialogFilter;
 					controller->shadowBan = shadowBan;
