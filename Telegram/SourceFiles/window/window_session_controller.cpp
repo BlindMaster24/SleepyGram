@@ -1594,6 +1594,22 @@ void SessionNavigation::showThread(
 void SessionNavigation::showPeerInfo(
 		not_null<PeerData*> peer,
 		const SectionShow &params) {
+	if (Ayu::ChatLock::IsChatLocked(_session, peer->id)) {
+		const auto peerId = peer->id;
+		Ayu::ChatLock::ShowUnlockDialog(
+			parentController(),
+			peerId,
+			[weak = base::make_weak(this), peerId, params](bool unlocked) {
+				if (unlocked) {
+					if (const auto strong = weak.get()) {
+						if (const auto peer = strong->_session->data().peerLoaded(peerId)) {
+							strong->showPeerInfo(peer, params);
+						}
+					}
+				}
+			});
+		return;
+	}
 	//if (Adaptive::ThreeColumn()
 	//	&& !Core::App().settings().thirdSectionInfoEnabled()) {
 	//	Core::App().settings().setThirdSectionInfoEnabled(true);
@@ -1605,6 +1621,10 @@ void SessionNavigation::showPeerInfo(
 void SessionNavigation::showPeerInfo(
 		not_null<Data::Thread*> thread,
 		const SectionShow &params) {
+	if (Ayu::ChatLock::IsChatLocked(_session, thread->peer()->id)) {
+		showPeerInfo(thread->peer()->id, params);
+		return;
+	}
 	if (const auto topic = thread->asTopic()) {
 		showSection(std::make_shared<Info::Memento>(topic), params);
 	} else if (const auto sublist = thread->asSublist()
@@ -1796,11 +1816,11 @@ SessionController::SessionController(
 		} else {
 			Core::App().notifications().clearAllFast();
 		}
-		const auto thread = activeChatCurrent().thread();
-		if (!thread || (change.peerId && thread->peer()->id != change.peerId)) {
+		const auto peer = activeChatCurrent().peer();
+		if (!peer || (change.peerId && peer->id != change.peerId)) {
 			return;
 		}
-		if (!Ayu::ChatLock::IsChatLocked(session, thread->peer()->id)) {
+		if (!Ayu::ChatLock::IsChatLocked(session, peer->id)) {
 			return;
 		}
 		showPeerHistory(PeerId(0), SectionShow::Way::ClearStack);
