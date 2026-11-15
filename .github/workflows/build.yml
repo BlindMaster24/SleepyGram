@@ -518,6 +518,7 @@ jobs:
         run: '%REPO_PATH%\Telegram\build\prepare\win.bat silent'
 
       - name: Prune Qt build sources
+        continue-on-error: true
         run: python "$env:REPO_PATH\.github\ci\prune_windows_qt_sources.py" --libraries "$env:LIBRARIES_PATH" --qt-version "$env:CI_QT_VERSION"
 
       - name: Save Windows build tools
@@ -549,6 +550,8 @@ jobs:
 
       - name: Build
         id: build
+        env:
+          _CL_: /MP2
         run: |
           python "$env:REPO_PATH\.github\ci\build_diagnostics.py" `
             --log-file "$env:RUNNER_TEMP\windows-x64-build.log" -- `
