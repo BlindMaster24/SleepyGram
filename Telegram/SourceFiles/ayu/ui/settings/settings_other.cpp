@@ -27,6 +27,7 @@
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/text/text_utilities.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/checkbox.h"
 #include "ui/widgets/fields/input_field.h"
@@ -370,13 +371,13 @@ void ExportArchiveBackup(
 		.text = tr::ayu_ArchiveBackupExportCounts(
 			tr::now,
 			lt_edited_count,
-			counts.edited,
+			QString::number(counts.edited),
 			lt_deleted_count,
-			counts.deleted),
+			QString::number(counts.deleted)),
 		.confirmed = [=](Fn<void()> &&close) {
 			close();
 			const auto password = QInputDialog::getText(
-				controller->widget(),
+				controller->widget().get(),
 				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
 				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
 				QLineEdit::Password);
@@ -391,7 +392,7 @@ void ExportArchiveBackup(
 				return;
 			}
 			FileDialog::GetWritePath(
-				controller->widget(),
+				controller->widget().get(),
 				tr::ayu_ArchiveBackupExportTitle(tr::now),
 				u"SleepyGram archive (*.sgarchive)"_q,
 				u"sleepygram-archive.sgarchive"_q,
@@ -418,7 +419,7 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 	const auto accountId = controller->session().userId().bare
 		& PeerId::kChatTypeMask;
 	FileDialog::GetOpenPath(
-		controller->widget(),
+		controller->widget().get(),
 		tr::ayu_ArchiveBackupImportTitle(tr::now),
 		u"SleepyGram archive (*.sgarchive);;All files (*)"_q,
 		crl::guard(controller, [=](FileDialog::OpenResult &&result) {
@@ -434,7 +435,7 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 				return;
 			}
 			const auto password = QInputDialog::getText(
-				controller->widget(),
+				controller->widget().get(),
 				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
 				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
 				QLineEdit::Password);
@@ -456,9 +457,11 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 						? tr::ayu_ArchiveBackupImportResult(
 							tr::now,
 							lt_added_count,
-							imported.editedAdded + imported.deletedAdded,
+							QString::number(
+								imported.editedAdded + imported.deletedAdded),
 							lt_skipped_count,
-							imported.editedSkipped + imported.deletedSkipped)
+							QString::number(
+								imported.editedSkipped + imported.deletedSkipped))
 						: tr::ayu_SettingsTransferFailure(tr::now));
 				},
 			}));
@@ -470,7 +473,7 @@ void ExportTransferSettings(
 		Fn<void()> completed) {
 	const auto accountId = controller->session().userId().bare;
 	FileDialog::GetWritePath(
-		controller->widget(),
+		controller->widget().get(),
 		tr::ayu_SettingsExport(tr::now),
 		u"JSON files (*.json)"_q,
 		u"sleepygram-settings.json"_q,
@@ -518,7 +521,7 @@ void BuildOtherThings(SectionBuilder &builder) {
 		.title = tr::ayu_SettingsExport(),
 		.onClick = [=] {
 			FileDialog::GetWritePath(
-				controller->widget(),
+				controller->widget().get(),
 				tr::ayu_SettingsExport(tr::now),
 				u"JSON files (*.json)"_q,
 				u"sleepygram-settings.json"_q,
@@ -544,7 +547,7 @@ void BuildOtherThings(SectionBuilder &builder) {
 		.title = tr::ayu_SettingsImport(),
 		.onClick = [=] {
 			FileDialog::GetOpenPath(
-				controller->widget(),
+				controller->widget().get(),
 				tr::ayu_SettingsImport(tr::now),
 				u"JSON files (*.json);;All files (*)"_q,
 				crl::guard(controller, [=](FileDialog::OpenResult &&result) {
@@ -607,7 +610,8 @@ void BuildOtherThings(SectionBuilder &builder) {
 		.icon = { &st::menuIconRestore },
 		.onClick = [=] {
 			controller->show(Ui::MakeConfirmBox({
-				.text = tr::ayu_ResetSettingsConfirmation(tr::rich),
+				.text = tr::ayu_ResetSettingsConfirmation(
+					Ui::Text::RichLangValue),
 				.confirmed = [=](Fn<void()> &&close) {
 					AyuSettings::reset();
 					controller->showToast(tr::lng_box_done(tr::now));
@@ -639,7 +643,6 @@ void ShowAccountTransferWizard(
 		not_null<Window::SessionController*> controller) {
 	controller->show(Ui::MakeConfirmBox({
 		.text = tr::ayu_AccountTransferInstructions(tr::now),
-		.confirmText = tr::ayu_AccountTransferPrepare(),
 		.confirmed = [=](Fn<void()> &&close) {
 			close();
 			ExportTransferSettings(controller, [=] {
@@ -649,6 +652,7 @@ void ShowAccountTransferWizard(
 				});
 			});
 		},
+		.confirmText = tr::ayu_AccountTransferPrepare(),
 	}));
 }
 

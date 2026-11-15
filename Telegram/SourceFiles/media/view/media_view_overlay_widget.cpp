@@ -129,6 +129,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtWidgets/QApplication>
 #include <QtCore/QBuffer>
+#include <QtCore/QPointer>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QNativeGestureEvent>
 #include <QtGui/QPainterPathStroker>
@@ -3573,7 +3574,7 @@ void OverlayWidget::downloadMedia() {
 			const auto document = _document;
 			const auto photo = _photo;
 			FileDialog::GetFolder(
-				_widget,
+				QPointer<QWidget>(_widget.get()),
 				tr::lng_download_path_choose(tr::now),
 				QString(),
 				crl::guard(_widget.get(), [=](QString &&result) {
