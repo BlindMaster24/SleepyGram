@@ -896,7 +896,7 @@ void MonospaceClickHandler::onClick(ClickContext context) const {
 		const auto peer = item->history()->peer;
 		if (!peer->allowsForwarding() || item->forbidsForward()) {
 			if (controller) {
-				controller->showToast({
+				controller->showToast(Ui::Toast::Config{
 					.text = { peer->isBroadcast()
 						? tr::lng_error_nocopy_channel(tr::now)
 						: peer->isUser()
@@ -908,20 +908,20 @@ void MonospaceClickHandler::onClick(ClickContext context) const {
 		}
 	}
 	if (controller) {
-		controller->showToast({
+		controller->showToast(Ui::Toast::Config{
 			.text = { tr::lng_text_copied(tr::now) },
 			.iconLottie = u"toast/copy"_q,
 			.iconLottieSize = st::toastLottieIconSize,
 		});
 	}
-	const auto text = (_entity.type() == EntityType::Pre)
+	const auto text = (_entity.type == EntityType::Pre)
 		? _text
 		: _text.trimmed();
 	TextUtilities::SetClipboardText(TextForMimeData::Simple(text));
 }
 
 QString MonospaceClickHandler::copyToClipboardText() const {
-	return (_entity.type() == EntityType::Pre) ? _text : _text.trimmed();
+	return (_entity.type == EntityType::Pre) ? _text : _text.trimmed();
 }
 
 QString MonospaceClickHandler::copyToClipboardContextItemText() const {

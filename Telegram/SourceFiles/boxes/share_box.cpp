@@ -1939,7 +1939,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 			}
 			return text;
 		};
-		const auto finish = [=] {
+		const auto finish = [=](auto &&finish) {
 			const auto state = weakState.lock();
 			if (!state
 				|| !state->initialComplete
@@ -1973,7 +1973,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 							retry();
 						}
 						state->schedulingRetries = false;
-						finish();
+						finish(finish);
 					},
 					.confirmText = tr::lng_forward_share_retry(),
 				}));
@@ -2161,7 +2161,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 								}
 								state->retriedMessages += msgCount;
 								state->requests.remove(requestKey);
-								finish();
+								finish(finish);
 							},
 							[=](const MTP::Error &error,
 									const MTP::Response &) {
@@ -2177,7 +2177,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 									state->retryFailedMessages += msgCount;
 								}
 								state->requests.remove(requestKey);
-								finish();
+								finish(finish);
 							});
 					};
 					const auto requestKey = ++state->nextRequestKey;
@@ -2198,7 +2198,7 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 							}
 							state->sentMessages += msgCount;
 							state->requests.remove(requestKey);
-							finish();
+							finish(finish);
 						},
 						[=](const MTP::Error &error,
 								const MTP::Response &) {
@@ -2236,13 +2236,13 @@ ShareBox::SubmitCallback ShareBox::DefaultForwardCallback(
 								}
 							}
 							state->requests.remove(requestKey);
-							finish();
+							finish(finish);
 						});
 				}
 			}
 		}
 		state->initialComplete = true;
-		finish();
+		finish(finish);
 	};
 }
 

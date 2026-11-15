@@ -44,7 +44,9 @@
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "main/main_session_settings.h"
+#include "styles/style_ayu_icons.h"
 #include "styles/style_chat.h"
+#include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "ui/layers/generic_box.h"
 #include "ui/inactive_press.h"
@@ -274,7 +276,7 @@ void ShowRevisionDiff(
 		const QString &older,
 		const QString &newer,
 		Fn<void(RevisionDiff)> show) {
-	const auto compute = [older, newer, show = std::move(show)]() mutable {
+	auto compute = [older, newer, show = std::move(show)]() mutable {
 		const auto diff = ComputeRevisionDiff(older, newer);
 		crl::on_main([diff, show = std::move(show)]() mutable {
 			show(diff);

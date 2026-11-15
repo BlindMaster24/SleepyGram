@@ -49,10 +49,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_media_prepare.h"
 #include "api/api_chat_filters.h"
 #include "apiwrap.h"
-#include "styles/style_widgets.h"
-#include "styles/style_window.h"
+#include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_passcode_box.h"
+#include "styles/style_widgets.h"
+#include "styles/style_window.h"
 
 #include <QtGui/QtEvents>
 #include <algorithm>
@@ -521,7 +522,9 @@ void FiltersMenu::refresh() {
 	}
 	_reorder->addPinnedInterval(
 		visibleBefore(premiumFrom),
-		std::max(1, visibleBefore(int(list.size()) - maxLimit)));
+		std::max(
+			1,
+			int(visibleBefore(int(list.size()) - maxLimit))));
 
 	// Remember which folder holds keyboard focus so the roving Tab-stop can be
 	// re-established on its replacement after the rebuild: the new buttons are
@@ -538,7 +541,7 @@ void FiltersMenu::refresh() {
 	auto now = base::flat_map<int, base::unique_qptr<Ui::SideBarButton>>();
 	auto currentFilter = _session->activeChatsFilterCurrent();
 	if (!visibleIds.empty()
-		&& ChatFilterTabHidden(&_session->session(), currentFilter)) {
+		&& Ui::ChatFilterTabHidden(&_session->session(), currentFilter)) {
 		currentFilter = visibleIds.front();
 		_session->setActiveChatsFilter(currentFilter);
 	}

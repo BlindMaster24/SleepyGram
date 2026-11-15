@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_account.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Ui {
@@ -47,7 +48,7 @@ inline void SetChatFilterTabHidden(
 	session->local().writePref<bool>(
 		details::ChatFilterTabVisibilityPrefKey(id),
 		hidden);
-	details::ChatFilterTabVisibilityChanges().fire(session);
+	details::ChatFilterTabVisibilityChanges().fire(std::move(session));
 }
 
 [[nodiscard]] inline rpl::producer<not_null<Main::Session*>>

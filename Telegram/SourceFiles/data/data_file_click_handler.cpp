@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h"
 #include "core/file_utilities.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "data/data_document.h"
 #include "data/data_document_resolver.h"
 #include "data/data_session.h"

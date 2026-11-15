@@ -17,7 +17,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_file_click_handler.h"
 #include "data/data_photo.h"
 #include "data/data_photo_media.h"
+#include "data/data_peer.h"
 #include "data/data_session.h"
+#include "history/history.h"
 #include "history/history_inner_widget.h"
 #include "history/history_item.h"
 #include "history/view/history_view_list_widget.h" // HistoryView::SelectedItem.
@@ -35,6 +37,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_session_controller.h"
 #include "window/window_controller.h"
 #include "styles/style_chat_helpers.h"
+#include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_widgets.h"
 

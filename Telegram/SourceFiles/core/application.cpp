@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_channel.h"
 #include "data/data_forum.h"
 #include "data/data_message_reactions.h"
+#include "data/data_user.h"
 #include "data/data_session.h"
 #include "data/data_download_manager.h"
 #include "base/battery_saving.h"

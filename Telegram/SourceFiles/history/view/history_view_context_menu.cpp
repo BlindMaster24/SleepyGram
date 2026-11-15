@@ -2054,7 +2054,7 @@ void FillContextMenuItems(
 	const auto monospaceLink = link
 		&& dynamic_cast<const MonospaceClickHandler*>(link.get());
 	if (!monospaceLink
-		|| !list->hasCopyRestriction(view ? view->data() : item)) {
+		|| !list->hasCopyRestriction(view ? view->data().get() : item)) {
 		AddCopyLinkAction(result, link);
 	}
 	AddMessageActions(result, request, list);

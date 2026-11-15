@@ -484,7 +484,9 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 				}
 				state->reorder->addPinnedInterval(
 					visiblePremiumFrom,
-					std::max(1, visibleBefore(int(list.size()) - maxLimit)));
+					std::max(
+						1,
+						int(visibleBefore(int(list.size()) - maxLimit))));
 			}
 		}
 		if (trackActiveFilterAndUnreadAndReorder) {

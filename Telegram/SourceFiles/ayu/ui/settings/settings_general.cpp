@@ -13,6 +13,7 @@
 #include "ayu/ui/settings/settings_main.h"
 #include "base/platform/base_platform_info.h"
 #include "core/application.h"
+#include "lang/lang_keys.h"
 #include "lang/lang_text_entity.h"
 #include "platform/platform_translate_provider.h"
 #include "settings/settings_builder.h"

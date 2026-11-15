@@ -311,16 +311,16 @@ std::vector<EditedMessage> getEditedMessages(
 	std::lock_guard lock(databaseMutex);
 	try {
 		const auto latestPerMessage = in(
-			&EditedMessage::fakeId,
+			column<EditedMessage>(&EditedMessage::fakeId),
 			select(
-				max(&EditedMessage::fakeId),
+				max(column<EditedMessage>(&EditedMessage::fakeId)),
 				where(
 					column<EditedMessage>(&EditedMessage::userId) == userId and
 					column<EditedMessage>(&EditedMessage::dialogId) == dialogId and
 					(column<EditedMessage>(&EditedMessage::topicId) == topicId or topicId == 0)),
 				group_by(
-					&EditedMessage::messageId,
-					&EditedMessage::topicId)));
+					column<EditedMessage>(&EditedMessage::messageId),
+					column<EditedMessage>(&EditedMessage::topicId))));
 		if (searchQuery.empty()) {
 			return storage.get_all<EditedMessage>(
 				where(
@@ -557,18 +557,18 @@ std::vector<ArchiveSearchResult> searchArchive(
 			auto rows = query.empty()
 				? storage.get_all<EditedMessage>(
 					where(common),
-					order_by(
-						column<EditedMessage>(&EditedMessage::editDate).desc(),
-						column<EditedMessage>(&EditedMessage::fakeId).desc()),
+					multi_order_by(
+						order_by(column<EditedMessage>(&EditedMessage::editDate)).desc(),
+						order_by(column<EditedMessage>(&EditedMessage::fakeId)).desc()),
 					limit(pageSize))
 				: storage.get_all<EditedMessage>(
 					where(common and like(
 						column<EditedMessage>(&EditedMessage::text),
 						"%" + query + "%",
 						"\\")),
-					order_by(
-						column<EditedMessage>(&EditedMessage::editDate).desc(),
-						column<EditedMessage>(&EditedMessage::fakeId).desc()),
+					multi_order_by(
+						order_by(column<EditedMessage>(&EditedMessage::editDate)).desc(),
+						order_by(column<EditedMessage>(&EditedMessage::fakeId)).desc()),
 					limit(pageSize));
 			for (const auto &row : rows) {
 				result.push_back({
@@ -602,18 +602,18 @@ std::vector<ArchiveSearchResult> searchArchive(
 			auto rows = query.empty()
 				? storage.get_all<DeletedMessage>(
 					where(common),
-					order_by(
-						column<DeletedMessage>(&DeletedMessage::date).desc(),
-						column<DeletedMessage>(&DeletedMessage::fakeId).desc()),
+					multi_order_by(
+						order_by(column<DeletedMessage>(&DeletedMessage::date)).desc(),
+						order_by(column<DeletedMessage>(&DeletedMessage::fakeId)).desc()),
 					limit(pageSize))
 				: storage.get_all<DeletedMessage>(
 					where(common and like(
 						column<DeletedMessage>(&DeletedMessage::text),
 						"%" + query + "%",
 						"\\")),
-					order_by(
-						column<DeletedMessage>(&DeletedMessage::date).desc(),
-						column<DeletedMessage>(&DeletedMessage::fakeId).desc()),
+					multi_order_by(
+						order_by(column<DeletedMessage>(&DeletedMessage::date)).desc(),
+						order_by(column<DeletedMessage>(&DeletedMessage::fakeId)).desc()),
 					limit(pageSize));
 			for (const auto &row : rows) {
 				result.push_back({
