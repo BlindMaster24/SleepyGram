@@ -419,9 +419,28 @@ jobs:
 
       - name: Prepare directories
         run: |
-          New-Item -ItemType Directory -Force "$env:USERPROFILE\TBuild\Libraries" | Out-Null
-          cmd /c mklink /d "$env:GITHUB_WORKSPACE\TBuild" "$env:USERPROFILE\TBuild"
-          "TBUILD=$env:GITHUB_WORKSPACE\TBuild" >> $env:GITHUB_ENV
+          $cDrive = [System.IO.DriveInfo]::new('C:\')
+          $buildRoot = Join-Path $env:USERPROFILE 'TBuild'
+          $dDrive = [System.IO.DriveInfo]::new('D:\')
+          $dFree = if ($dDrive.IsReady) { "$([math]::Round($dDrive.AvailableFreeSpace / 1GB)) GiB" } else { 'unavailable' }
+          if ($dDrive.IsReady -and $dDrive.DriveType -eq [System.IO.DriveType]::Fixed -and
+              $dDrive.AvailableFreeSpace -ge 20GB -and
+              $dDrive.AvailableFreeSpace -ge ($cDrive.AvailableFreeSpace + 10GB)) {
+            $buildRoot = 'D:\TBuild'
+            $buildVolume = 'D'
+          } else {
+            $buildVolume = 'C'
+          }
+          Write-Host "C: has $([math]::Round($cDrive.AvailableFreeSpace / 1GB)) GiB free; D: has $dFree available."
+          Write-Host "Using $buildRoot for build data."
+          if (Test-Path $buildRoot) { throw "Build root already exists: $buildRoot" }
+          New-Item -ItemType Directory -Force (Join-Path $buildRoot 'Libraries') | Out-Null
+          $workspaceAlias = Join-Path $env:GITHUB_WORKSPACE 'TBuild'
+          if (Test-Path $workspaceAlias) { throw "Workspace alias already exists: $workspaceAlias" }
+          cmd /c mklink /d "$workspaceAlias" "$buildRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Could not create workspace alias to $buildRoot" }
+          "TBUILD=$workspaceAlias" >> $env:GITHUB_ENV
+          "TBUILD_VOLUME=$buildVolume" >> $env:GITHUB_ENV
           "REPO_PATH=$env:GITHUB_WORKSPACE\TBuild\tdesktop" >> $env:GITHUB_ENV
           "LIBRARIES_PATH=$env:GITHUB_WORKSPACE\TBuild\Libraries\win64" >> $env:GITHUB_ENV
 
@@ -459,14 +478,14 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: TBuild\ThirdParty
-          key: windows-x64-third-party-${{ steps.cache-key.outputs.key }}
+          key: windows-x64-third-party-${{ env.TBUILD_VOLUME }}-${{ steps.cache-key.outputs.key }}
 
       - name: Cache libraries
         id: windows-libraries-cache
         uses: actions/cache/restore@v4
         with:
           path: TBuild\Libraries\win64
-          key: windows-x64-libraries-${{ steps.cache-key.outputs.key }}
+          key: windows-x64-libraries-v2-${{ env.TBUILD_VOLUME }}-${{ steps.cache-key.outputs.key }}
 
       - name: NuGet sources
         run: |
@@ -498,19 +517,22 @@ jobs:
           GYP_MSVS_VERSION: 2022
         run: '%REPO_PATH%\Telegram\build\prepare\win.bat silent'
 
+      - name: Prune Qt build sources
+        run: python "$env:REPO_PATH\.github\ci\prune_windows_qt_sources.py" --libraries "$env:LIBRARIES_PATH" --qt-version "$env:CI_QT_VERSION"
+
       - name: Save Windows build tools
         if: steps.windows-third-party-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: TBuild\ThirdParty
-          key: windows-x64-third-party-${{ steps.cache-key.outputs.key }}
+          key: windows-x64-third-party-${{ env.TBUILD_VOLUME }}-${{ steps.cache-key.outputs.key }}
 
       - name: Save Windows libraries
         if: steps.windows-libraries-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: TBuild\Libraries\win64
-          key: windows-x64-libraries-${{ steps.cache-key.outputs.key }}
+          key: windows-x64-libraries-v2-${{ env.TBUILD_VOLUME }}-${{ steps.cache-key.outputs.key }}
 
       - name: Configure
         shell: cmd
