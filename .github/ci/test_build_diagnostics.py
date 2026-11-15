@@ -1,3 +1,8 @@
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from build_diagnostics import diagnostic_priority, prioritized_diagnostics
@@ -41,6 +46,34 @@ class BuildDiagnosticTests(unittest.TestCase):
         ]
         selected = prioritized_diagnostics(candidates)
         self.assertEqual(selected, [compiler, "ninja: error: subcommand failed"])
+
+    def test_failed_build_log_is_sanitized_and_exit_code_is_preserved(self):
+        script = Path(__file__).with_name("build_diagnostics.py")
+        secret = "private-api-hash"
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "diagnostics" / "build.log"
+            environment = os.environ.copy()
+            environment["TEST_API_HASH"] = secret
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--log-file",
+                    str(log),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    f"print('src/file.cpp:1: error: broken'); print('{secret}'); raise SystemExit(7)",
+                ],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 7)
+            self.assertIn("::error::src/file.cpp:1: error: broken", result.stdout)
+            self.assertIn("***", log.read_text(encoding="utf-8"))
+            self.assertNotIn(secret, log.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":
