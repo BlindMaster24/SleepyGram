@@ -16,11 +16,13 @@ COMPILER_ERROR = re.compile(
 )
 BUILD_ERROR = re.compile(
     r"^CMake Error\b|^ld(?:\.lld)?:\s*error:"
-    r"|^Undefined symbols for architecture\b",
+    r"|^Undefined symbols for architecture\b"
+    r"|^.+:\s*undefined reference to\s+.+$",
     re.IGNORECASE,
 )
 SUMMARY_ERROR = re.compile(
-    r"^ninja: error:|No space left on device",
+    r"^ninja: error:|^collect2: error: ld returned \d+ exit status$"
+    r"|No space left on device",
     re.IGNORECASE,
 )
 DIAGNOSTIC = re.compile(

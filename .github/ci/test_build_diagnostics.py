@@ -25,6 +25,23 @@ class BuildDiagnosticTests(unittest.TestCase):
         line = "src/parser.cpp:12:8: error C2039: unknown member"
         self.assertEqual(diagnostic_priority(line), 0)
 
+    def test_gnu_linker_undefined_references_are_primary_diagnostics(self):
+        undefined_references = [
+            "file_utilities.cpp:(.text._ZN7Storage7Account12readPrefImplI10QByteArrayEESt8optionalIT_ERK7QString+0x40d): undefined reference to `std::optional<QByteArray> Storage::Account::readPrefImpl<QByteArray>(QString const&)'",
+            "file_utilities.cpp:(.text._ZN7Storage7Account13writePrefImplI10QByteArrayEEbRK7QStringRKT_+0x40d): undefined reference to `bool Storage::Account::writePrefImpl<QByteArray>(QString const&, QByteArray const&)'",
+        ]
+        collect2 = "collect2: error: ld returned 1 exit status"
+
+        self.assertTrue(all(diagnostic_priority(line) == 0 for line in undefined_references))
+        candidates = [
+            (diagnostic_priority(line), index, line)
+            for index, line in enumerate([collect2, *undefined_references])
+        ]
+        self.assertEqual(
+            prioritized_diagnostics(candidates),
+            [*undefined_references, collect2],
+        )
+
     def test_harmless_gobject_warnings_do_not_fill_error_slots(self):
         warning_lines = [
             f"gobject warning: deprecated property {index}"
