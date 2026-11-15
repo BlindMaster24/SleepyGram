@@ -305,7 +305,7 @@ jobs:
         env:
           QT: ${{ env.CI_QT_VERSION }}
           SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE: "1"
-        run: python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- ./tdesktop/Telegram/build/prepare/mac.sh silent
+        run: python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- bash ./tdesktop/Telegram/build/prepare/mac.sh silent
 
       - name: Save macOS dependencies
         if: steps.mac-cache.outputs.cache-hit != 'true'
