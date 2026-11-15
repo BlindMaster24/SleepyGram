@@ -66,6 +66,7 @@ public:
 	void readClientSideMessage(not_null<HistoryItem*> item);
 	void sendPendingReadInbox(not_null<History*> history);
 	void reportDelivery(not_null<HistoryItem*> item);
+	void dropPendingReadRequests(uint64 peerId);
 
 	struct ShownRead {
 		not_null<HistoryItem*> shown;
@@ -208,7 +209,6 @@ private:
 		MsgId tillId,
 		bool force);
 	void sendReadRequests();
-	void dropPendingReadRequests(uint64 peerId);
 	void sendReadRequest(not_null<History*> history, State &state);
 	[[nodiscard]] State *lookup(not_null<History*> history);
 	void checkEmptyState(not_null<History*> history);

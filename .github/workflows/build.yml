@@ -301,9 +301,11 @@ jobs:
           key: macos-arm64-libraries-${{ steps.cache-key.outputs.key }}
 
       - name: Prepare libraries
+        id: prepare
         env:
           QT: ${{ env.CI_QT_VERSION }}
-        run: ./tdesktop/Telegram/build/prepare/mac.sh silent
+          SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE: "1"
+        run: python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- ./tdesktop/Telegram/build/prepare/mac.sh silent
 
       - name: Save macOS dependencies
         if: steps.mac-cache.outputs.cache-hit != 'true'
@@ -338,11 +340,12 @@ jobs:
             cmake --build ../out --config Release --parallel
 
       - name: Upload failed build logs
-        if: ${{ failure() && steps.build.outcome == 'failure' }}
+        if: ${{ failure() && (steps.prepare.outcome == 'failure' || steps.build.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-macos-arm64
           path: |
+            ${{ runner.temp }}/macos-arm64-prepare.log
             ${{ runner.temp }}/macos-arm64-configure.log
             ${{ runner.temp }}/macos-arm64-build.log
           if-no-files-found: ignore
@@ -527,7 +530,7 @@ jobs:
         run: |
           python "$env:REPO_PATH\.github\ci\build_diagnostics.py" `
             --log-file "$env:RUNNER_TEMP\windows-x64-build.log" -- `
-            cmake --build "$env:REPO_PATH\out" --config Release --parallel
+            cmake --build "$env:REPO_PATH\out" --config Release --parallel 2
           exit $LASTEXITCODE
 
       - name: Upload failed build logs

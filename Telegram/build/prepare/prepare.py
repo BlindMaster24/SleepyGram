@@ -22,6 +22,8 @@ def nativeToolsError():
 
 win = (sys.platform == 'win32')
 mac = (sys.platform == 'darwin')
+sleepygramMacTgOwtArm64Release = (
+    mac and os.environ.get('SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE') == '1')
 
 if win and not 'Platform' in os.environ:
     nativeToolsError()
@@ -1856,7 +1858,7 @@ win:
     cmake --install .
 """)
 
-stage('tg_owt', """
+tgOwtCommands = """
     git clone https://github.com/desktop-app/tg_owt.git
     cd tg_owt
     git checkout 020feec5c040fdae2cf752c2c2be62ddde7c236d
@@ -1881,7 +1883,9 @@ win:
     cmake --build out --config Debug
 release:
     cmake --build out --config Release
-mac:
+"""
+
+tgOwtMacCommands = """mac:
     MOZJPEG_PATH=$USED_PREFIX/include
     OPUS_PATH=$USED_PREFIX/include/opus
     LIBVPX_PATH=$USED_PREFIX/include
@@ -1952,7 +1956,33 @@ release:
     cd ..
     mkdir Release
     lipo -create Release.arm64/libtg_owt.a Release.x86_64/libtg_owt.a -output Release/libtg_owt.a
-""")
+"""
+
+if sleepygramMacTgOwtArm64Release:
+    tgOwtMacCommands = """mac_release:
+    MOZJPEG_PATH=$USED_PREFIX/include
+    OPUS_PATH=$USED_PREFIX/include/opus
+    LIBVPX_PATH=$USED_PREFIX/include
+    OPENH264_PATH=$USED_PREFIX/include
+    FFMPEG_PATH=$USED_PREFIX/include
+    mkdir out
+    cd out
+    mkdir Release
+    cd Release
+    cmake \\
+        -DCMAKE_BUILD_TYPE=Release \\
+        -DCMAKE_OSX_ARCHITECTURES=arm64 \\
+        -DTG_OWT_SPECIAL_TARGET=$SPECIAL_TARGET \\
+        -DTG_OWT_LIBJPEG_INCLUDE_PATH=$MOZJPEG_PATH \\
+        -DTG_OWT_OPENSSL_INCLUDE_PATH=$LIBS_DIR/openssl3/include \\
+        -DTG_OWT_OPUS_INCLUDE_PATH=$OPUS_PATH \\
+        -DTG_OWT_LIBVPX_INCLUDE_PATH=$LIBVPX_PATH \\
+        -DTG_OWT_OPENH264_INCLUDE_PATH=$OPENH264_PATH \\
+        -DTG_OWT_FFMPEG_INCLUDE_PATH=$FFMPEG_PATH ../..
+    cmake --build .
+"""
+
+stage('tg_owt', tgOwtCommands + tgOwtMacCommands)
 
 stage('ada', """
     git clone -b v3.2.9 https://github.com/ada-url/ada.git

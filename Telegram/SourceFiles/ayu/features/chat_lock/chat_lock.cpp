@@ -2,13 +2,16 @@
 
 #include "base/random.h"
 #include "base/weak_ptr.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "mtproto/mtproto_auth_key.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/storage_account.h"
 #include "ui/layers/generic_box.h"
 #include "ui/widgets/fields/password_input.h"
 #include "ui/vertical_list.h"
 #include "window/window_session_controller.h"
+#include "styles/style_settings.h"
 #include "styles/style_passcode_box.h"
 
 #include <openssl/crypto.h>
@@ -377,11 +380,11 @@ void VerifyPin(
 			return;
 		}
 		if (!result.matched) {
-			manager.failed(strong);
+			Manager::Instance().failed(strong);
 			done(false);
 			return;
 		}
-		manager.unlockPeer(strong, peerId);
+		Manager::Instance().unlockPeer(strong, peerId);
 		done(true);
 	});
 }

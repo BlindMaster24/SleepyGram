@@ -19,8 +19,11 @@
 #include "history/history_item.h"
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
+#include "main/main_account.h"
 #include "mtproto/sender.h"
 #include "rpl/lifetime.h"
+#include "storage/storage_account.h"
+#include "window/window_controller.h"
 #include "window/window_session_controller.h"
 
 #include <QtCore/QDateTime>
@@ -28,6 +31,7 @@
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QPointer>
+#include <QtCore/QLocale>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QCloseEvent>
@@ -103,8 +107,9 @@ Paths PathsFor(not_null<Main::Session*> session, PeerId peerId) {
 QString FormatSnapshot(const Snapshot &snapshot) {
 	auto result = QString();
 	for (const auto &message : snapshot.messages) {
-		const auto date = QDateTime::fromSecsSinceEpoch(message.date)
-			.toString(Qt::DefaultLocaleShortDate);
+		const auto date = QLocale().toString(
+			QDateTime::fromSecsSinceEpoch(message.date),
+			QLocale::ShortFormat);
 		result += u"[%1] %2\n%3\n\n"_q.arg(
 			date,
 			message.sender,
@@ -177,7 +182,7 @@ public:
 		_openAttachment = new QPushButton(
 			tr::lng_offline_history_open_attachment(tr::now),
 			this);
-		_close = new QPushButton(tr::lng_close(), this);
+		_close = new QPushButton(tr::lng_close(tr::now), this);
 		buttons->addWidget(_save);
 		buttons->addWidget(_delete);
 		buttons->addWidget(_openAttachment);
@@ -651,9 +656,9 @@ private:
 			_status->setText(tr::lng_offline_history_attachment_progress(
 				tr::now,
 				lt_current,
-				_attachmentIndex,
+				QString::number(_attachmentIndex),
 				lt_total,
-				int(_attachmentTasks.size())));
+				QString::number(int(_attachmentTasks.size()))));
 			if (!candidateAllowed(task)) {
 				continue;
 			}

@@ -58,7 +58,7 @@ std::optional<HiddenReason> matchingFilter(
 			return false;
 		}
 		const auto found = matcher->find();
-		return pattern.reversed ? !found : found;
+		return pattern.reversed ? !found : bool(found);
 	};
 	if (const auto i = cache->patternsByDialogId.find(dialogId);
 		i != cache->patternsByDialogId.end()) {

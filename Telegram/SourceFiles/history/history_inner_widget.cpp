@@ -3696,8 +3696,8 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 						}
 						if (_selected.contains(current->data())) {
 							if (distance < nearestDistance) {
-								start = isBefore ? current->data() : toItem;
-								end = isBefore ? toItem : current->data();
+								start = isBefore ? current->data() : toItem.get();
+								end = isBefore ? toItem.get() : current->data();
 								nearestDistance = distance;
 							}
 							break;

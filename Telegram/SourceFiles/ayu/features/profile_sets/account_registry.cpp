@@ -89,7 +89,7 @@ bool ValidDataName(const QString &dataName) {
 		return false;
 	}
 	return std::none_of(dataName.cbegin(), dataName.cend(), [](QChar ch) {
-		return ch.isNull() || ch.isControl();
+		return ch.isNull() || ch.category() == QChar::Other_Control;
 	});
 }
 

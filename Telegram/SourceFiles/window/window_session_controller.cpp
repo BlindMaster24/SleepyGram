@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_chat_preview.h"
 #include "window/window_chat_switch_process.h"
 #include "window/window_columns.h"
+#include "window/notifications_manager.h"
 #include "window/window_controller.h"
 #include "window/window_filters_menu.h"
 #include "window/section_widget.h"

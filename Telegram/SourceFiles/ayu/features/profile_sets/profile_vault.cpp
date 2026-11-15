@@ -298,13 +298,13 @@ QByteArray OpenAesGcm(
 			int(length)) == 1;
 		total = outLength;
 	}
+	auto tag = ciphertext.mid(int(length), kTagSize);
 	if (ok) {
 		ok = (EVP_CIPHER_CTX_ctrl(
 			context,
 			EVP_CTRL_GCM_SET_TAG,
 			kTagSize,
-			reinterpret_cast<const unsigned char*>(ciphertext.constData())
-				+ length) == 1)
+			reinterpret_cast<unsigned char*>(tag.data())) == 1)
 			&& (EVP_DecryptFinal_ex(
 				context,
 				reinterpret_cast<unsigned char*>(result.data()) + total,

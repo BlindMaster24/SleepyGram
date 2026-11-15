@@ -23,6 +23,7 @@
 #include "main/main_session.h"
 #include "settings/settings_builder.h"
 #include "settings/settings_common.h"
+#include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
 #include "ui/boxes/confirm_box.h"
@@ -89,7 +90,7 @@ bool IsArchivedMessageLocked(
 }
 
 PeerData *FindArchivedPeer(
-		Main::Session &session,
+		const Main::Session &session,
 		const AyuMessageBase &message) {
 	auto &data = session.data();
 	const auto id = message.peerId;
@@ -114,7 +115,7 @@ PeerData *FindArchivedPeer(
 void OpenArchivedMessage(
 		not_null<Window::SessionController*> controller,
 		AyuDatabase::ArchiveSearchResult result,
-		const QString &searchQuery) {
+		QString searchQuery) {
 	const auto &session = controller->session();
 	if (IsArchivedMessageLocked(&controller->session(), result.message)) {
 		return;
@@ -134,7 +135,7 @@ void OpenArchivedMessage(
 				peer,
 				nullptr,
 				result.message.topicId);
-			memento->setSearchQuery(searchQuery);
+			memento->setSearchQuery(std::move(searchQuery));
 			window->showSection(std::move(memento));
 		}
 		return;
@@ -165,7 +166,7 @@ void LoadArchiveSearchPage(
 	crl::async([=] {
 		const auto page = AyuMessages::searchArchive(
 			sessionId,
-			query.toStdString(),
+			query,
 			type,
 			dateFrom,
 			dateTo,

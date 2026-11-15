@@ -356,7 +356,7 @@ bool ReadAttachments(
 			.messageId = MsgId(item.value(QStringLiteral("message"))
 				.toString().toLongLong()),
 			.mediaId = item.value(QStringLiteral("media"))
-				.toString().toLongLong(),
+				.toString().toULongLong(),
 			.photo = item.value(QStringLiteral("photo")).toBool(),
 			.name = item.value(QStringLiteral("name")).toString(),
 			.fileName = item.value(QStringLiteral("file")).toString(),

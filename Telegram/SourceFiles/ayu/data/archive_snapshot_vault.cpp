@@ -269,8 +269,9 @@ QByteArray Crypt(
 		total = outLength;
 	}
 	if (!encrypt && ok == 1) {
+		auto tag = input.mid(textSize, kTagSize);
 		ok = EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_TAG, kTagSize,
-			reinterpret_cast<const unsigned char*>(input.constData()) + textSize);
+			reinterpret_cast<unsigned char*>(tag.data()));
 	}
 	if (ok == 1) {
 		ok = encrypt

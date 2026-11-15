@@ -3576,7 +3576,7 @@ void OverlayWidget::downloadMedia() {
 				_widget,
 				tr::lng_download_path_choose(tr::now),
 				QString(),
-				crl::guard(this, [=](QString &&result) {
+				crl::guard(_widget.get(), [=](QString &&result) {
 					if (result.isEmpty()
 						|| !_message
 						|| _message->fullId() != messageId

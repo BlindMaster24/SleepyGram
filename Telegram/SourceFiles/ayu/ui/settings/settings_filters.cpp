@@ -20,6 +20,7 @@
 #include "filters/per_dialog_filter.h"
 #include "filters/settings_filters_list.h"
 #include "inline_bots/bot_attach_web_view.h"
+#include "main/main_session.h"
 #include "settings/settings_builder.h"
 #include "settings/settings_common.h"
 #include "styles/style_ayu_icons.h"
@@ -61,7 +62,7 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 		enabledButton->toggledValue(
 		) | rpl::filter([=](bool enabled) {
 			return (enabled != settings->filtersEnabled());
-		}) | on_next([=](bool enabled) {
+		}) | rpl::on_next([=](bool enabled) {
 			AyuSettings::getInstance().setFiltersEnabled(enabled);
 			FiltersCacheController::rebuildCache();
 			FiltersCacheController::fireUpdate();
@@ -79,7 +80,7 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 		sharedButton->toggledValue(
 		) | rpl::filter([=](bool enabled) {
 			return (enabled != settings->filtersEnabledInChats());
-		}) | on_next([=](bool enabled) {
+		}) | rpl::on_next([=](bool enabled) {
 			AyuSettings::getInstance().setFiltersEnabledInChats(enabled);
 			FiltersCacheController::rebuildCache();
 			FiltersCacheController::fireUpdate();
@@ -96,7 +97,7 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 		blockedButton->toggledValue(
 		) | rpl::filter([=](bool enabled) {
 			return (enabled != settings->hideFromBlocked());
-		}) | on_next([=](bool enabled) {
+		}) | rpl::on_next([=](bool enabled) {
 			AyuSettings::getInstance().setHideFromBlocked(enabled);
 			FiltersCacheController::rebuildCache();
 			FiltersCacheController::fireUpdate();
@@ -114,7 +115,7 @@ void BuildFiltersSettings(SectionBuilder &builder) {
 		filteredUnreadButton->toggledValue(
 		) | rpl::filter([=](bool enabled) {
 			return enabled != settings->countFilteredUnreadInBadge(accountId);
-		}) | on_next([=](bool enabled) {
+		}) | rpl::on_next([=](bool enabled) {
 			AyuSettings::getInstance().setCountFilteredUnreadInBadge(
 				accountId,
 				enabled);

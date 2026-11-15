@@ -1,6 +1,7 @@
 #include "ayu/features/profile_sets/profile_sets.h"
 
 #include "crl/crl_async.h"
+#include "mtproto/mtproto_auth_key.h"
 #include "storage/details/storage_file_utilities.h"
 
 #include <openssl/crypto.h>

@@ -9531,8 +9531,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_ShowFilteredMessagesMenuText" = "Show Filtered";
 "ayu_HideFilteredMessagesMenuText" = "Hide Filtered";
 "ayu_WhyHiddenMenuText" = "Why hidden";
-"ayu_WhyHiddenDialogFilter" = "Hidden by this chat's filter: %1";
-"ayu_WhyHiddenSharedFilter" = "Hidden by a shared filter: %1";
+"ayu_WhyHiddenDialogFilter" = "Hidden by this chat's filter: {rule}";
+"ayu_WhyHiddenSharedFilter" = "Hidden by a shared filter: {rule}";
 "ayu_WhyHiddenBlocked" = "Hidden because the sender is blocked and AyuGram is set to hide blocked senders.";
 "ayu_WhyHiddenShadowBan" = "Hidden by a local shadow ban.";
 "ayu_WhyHiddenNoLongerApplies" = "This message is no longer hidden by an active filter.";

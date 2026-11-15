@@ -152,7 +152,7 @@ ValidationError Validate(const Metadata &metadata) {
 		} else if (set.name.trimmed().isEmpty()
 			|| set.name.size() > kMaximumNameSize
 			|| std::any_of(set.name.cbegin(), set.name.cend(), [](QChar ch) {
-				return ch.isNull() || ch.isControl();
+				return ch.isNull() || ch.category() == QChar::Other_Control;
 			})) {
 			return ValidationError::InvalidSetName;
 		} else if (set.verifier.size() != kVerifierSize) {

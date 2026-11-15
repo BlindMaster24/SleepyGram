@@ -1893,7 +1893,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 						? isSearchResultActive(result.get(), _chatPreviewRow)
 						: (from == (isPressed()
 							? _searchedPressed
-							: _searchedSelected));
+							: _searchedSelected)));
 					Ui::RowPainter::Paint(p, result.get(), {
 						.st = _st,
 						.folder = _openedFolder,

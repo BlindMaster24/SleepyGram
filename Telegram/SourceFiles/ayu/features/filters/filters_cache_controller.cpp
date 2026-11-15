@@ -13,6 +13,7 @@
 #include "data/data_session.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "main/main_session.h"
 #include "rpl/event_stream.h"
 
 #include <algorithm>
