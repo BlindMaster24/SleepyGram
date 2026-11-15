@@ -6,7 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/profile_vault.h"
-#include "base/qt/qt_string.h"
+#include "base/basic_types.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QEventLoop>

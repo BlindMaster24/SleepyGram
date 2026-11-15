@@ -1,7 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #pragma once
 
-#include "base/functional.h"
+#include "base/basic_types.h"
 
 #include <QtCore/QByteArray>
 #include <QtCore/QString>

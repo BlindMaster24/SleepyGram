@@ -7,7 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/account_registry.h"
 
-#include "base/qt/qt_string.h"
+#include "base/basic_types.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QJsonArray>

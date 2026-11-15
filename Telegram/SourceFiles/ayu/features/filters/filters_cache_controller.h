@@ -8,7 +8,7 @@
 
 #include "ayu/data/entities.h"
 #include "ayu/features/filters/filters_controller.h"
-#include "base/functional.h"
+#include "base/basic_types.h"
 #include "rpl/producer.h"
 
 #include <memory>

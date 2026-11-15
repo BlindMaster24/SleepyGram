@@ -4,7 +4,7 @@
 #include "rpl/event_stream.h"
 #include "rpl/producer.h"
 #include "data/data_peer_id.h"
-#include "base/functional.h"
+#include "base/basic_types.h"
 
 namespace Main {
 class Session;
