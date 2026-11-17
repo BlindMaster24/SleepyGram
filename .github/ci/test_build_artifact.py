@@ -99,6 +99,60 @@ class SubmoduleRevisionTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Submodule is not initialized"):
                 submodule_revisions(uninitialized)
 
+    def test_records_only_the_known_uninitialized_test262_gitlink(self):
+        with tempfile.TemporaryDirectory(prefix="artifact-optional-submodule-") as temporary:
+            root = Path(temporary) / "root"
+            widget_source = Path(temporary) / "widget-source"
+            quickjs_source = Path(temporary) / "quickjs-source"
+            test262_source = Path(temporary) / "test262-source"
+            path = "Telegram/ThirdParty/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/test262"
+
+            _init_repo(test262_source, "test262")
+            _init_repo(quickjs_source, "quickjs")
+            _git(quickjs_source, "-c", "protocol.file.allow=always", "submodule",
+                "add", "-q", str(test262_source), "test262")
+            _git(quickjs_source, "config", "-f", ".gitmodules",
+                "submodule.test262.update", "none")
+            _git(quickjs_source, "-c", "protocol.file.allow=always", "submodule",
+                "add", "-q", str(test262_source), "required")
+            _git(quickjs_source, "add", ".gitmodules", "test262", "required")
+            _git(quickjs_source, "commit", "-qm", "add test suite and required fixture")
+
+            _init_repo(widget_source, "widget-sandbox")
+            quickjs_path = "packages/ios/Sources/CQuickJS/quickjs"
+            _git(widget_source, "-c", "protocol.file.allow=always", "submodule",
+                "add", "-q", str(quickjs_source), quickjs_path)
+            _git(widget_source, "add", ".gitmodules", quickjs_path)
+            _git(widget_source, "commit", "-qm", "add QuickJS")
+
+            _init_repo(root, "root")
+            widget_path = "Telegram/ThirdParty/widget-sandbox"
+            _git(root, "-c", "protocol.file.allow=always", "submodule",
+                "add", "-q", str(widget_source), widget_path)
+            _git(root, "add", ".gitmodules", widget_path)
+            _git(root, "commit", "-qm", "add widget sandbox")
+            _git(root, "-c", "protocol.file.allow=always", "submodule", "update",
+                "--init", "--", widget_path)
+            _git(root / widget_path, "-c", "protocol.file.allow=always", "submodule",
+                "update", "--init", "--", quickjs_path)
+            quickjs_checkout = root / widget_path / quickjs_path
+            _git(quickjs_checkout, "-c", "protocol.file.allow=always", "submodule",
+                "update", "--init", "--", "required")
+
+            entry = next(item for item in submodule_revisions(root) if item["path"] == path)
+            expected = _git(quickjs_source, "ls-tree", "HEAD", "test262").split()[2]
+            self.assertEqual(entry, {
+                "path": path,
+                "expected_sha": expected,
+                "actual_sha": None,
+                "initialized": False,
+                "gitlink_match": None,
+            })
+
+            _git(quickjs_checkout, "submodule", "deinit", "-f", "--", "required")
+            with self.assertRaisesRegex(RuntimeError, "Submodule is not initialized"):
+                submodule_revisions(root)
+
 
 def _git(directory: Path, *arguments: str) -> str:
     result = subprocess.run(

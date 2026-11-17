@@ -23,6 +23,9 @@ PLATFORMS = {
     "windows-x64": ("SleepyGram-windows-x64.zip", "zip"),
 }
 MAX_MANIFEST_SIZE = 1024 * 1024
+OPTIONAL_UNINITIALIZED_SUBMODULES = {
+    "Telegram/ThirdParty/widget-sandbox/packages/ios/Sources/CQuickJS/quickjs/test262",
+}
 
 
 def command_output(command: list[str], cwd: Path | None = None) -> str | None:
@@ -76,7 +79,7 @@ def qt_version(values: dict[str, str], requested: str | None) -> tuple[str, str]
     raise RuntimeError("Could not determine the Qt version.")
 
 
-def submodule_revisions(repo_root: Path) -> list[dict[str, str | bool]]:
+def submodule_revisions(repo_root: Path) -> list[dict[str, str | bool | None]]:
     revisions = []
     _read_submodules(repo_root, b"", revisions)
     return revisions
@@ -85,7 +88,7 @@ def submodule_revisions(repo_root: Path) -> list[dict[str, str | bool]]:
 def _read_submodules(
         directory: Path,
         prefix: bytes,
-        revisions: list[dict[str, str | bool]]) -> None:
+        revisions: list[dict[str, str | bool | None]]) -> None:
     for path, expected in _parse_gitlinks(
             _git_output(directory, "ls-files", "--stage", "-z")):
         if (
@@ -98,7 +101,15 @@ def _read_submodules(
         full_path = prefix + (b"/" if prefix else b"") + path
         decoded_path = os.fsdecode(full_path)
         child = directory / os.fsdecode(path)
-        if child.is_symlink() or not child.is_dir():
+        optional = decoded_path in OPTIONAL_UNINITIALIZED_SUBMODULES
+        if child.is_symlink():
+            raise RuntimeError(f"Submodule is not initialized: {decoded_path}")
+        if optional and (
+                not child.exists()
+                or (child.is_dir() and not any(child.iterdir()))):
+            _record_uninitialized_submodule(revisions, decoded_path, expected)
+            continue
+        if not child.is_dir():
             raise RuntimeError(f"Submodule is not initialized: {decoded_path}")
 
         child_prefix = _git_output(child, "rev-parse", "--show-prefix").rstrip(b"\r\n")
@@ -110,10 +121,25 @@ def _read_submodules(
 
         revisions.append({
             "path": decoded_path,
+            "expected_sha": expected.decode("ascii"),
             "actual_sha": actual.decode("ascii"),
+            "initialized": True,
             "gitlink_match": actual == expected,
         })
         _read_submodules(child, full_path, revisions)
+
+
+def _record_uninitialized_submodule(
+        revisions: list[dict[str, str | bool | None]],
+        path: str,
+        expected: bytes) -> None:
+    revisions.append({
+        "path": path,
+        "expected_sha": expected.decode("ascii"),
+        "actual_sha": None,
+        "initialized": False,
+        "gitlink_match": None,
+    })
 
 
 def _parse_gitlinks(output: bytes) -> list[tuple[bytes, bytes]]:
