@@ -140,6 +140,7 @@ jobs:
           image_id="$(docker image inspect --format='{{.Id}}' "$IMAGE_TAG")"
           cmake_version="$(docker run --rm --network none "$IMAGE_TAG" cmake --version | head -n 1)"
           compiler_version="$(docker run --rm --network none "$IMAGE_TAG" c++ --version | head -n 1)"
+          docker run --rm --network none "$IMAGE_TAG" /usr/bin/python3.11 -c 'import xml.parsers.expat'
           {
             echo "CI_CONTAINER_IMAGE=$image_id"
             echo "CI_CONTAINER_CMAKE=$cmake_version"
@@ -160,6 +161,7 @@ jobs:
             "$IMAGE_TAG" \
             /usr/src/tdesktop/Telegram/build/docker/centos_env/build.sh \
               -D CMAKE_CONFIGURATION_TYPES=Release \
+              -D Python3_EXECUTABLE=/usr/bin/python3.11 \
               -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
               -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
               -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
