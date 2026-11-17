@@ -53,6 +53,8 @@ jobs:
         run: python3 .github/ci/test_preflight_lang.py
       - name: Test build diagnostics
         run: python3 .github/ci/test_build_diagnostics.py
+      - name: Test build manifest
+        run: python3 .github/ci/test_build_artifact.py
       - name: Test macOS Qt cache pruning
         run: python3 .github/ci/test_prune_macos_qt_sources.py
       - name: Check plural string forms
@@ -248,10 +250,126 @@ jobs:
           path: ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
           if-no-files-found: error
 
+  macos-prepare:
+    name: macos-prepare
+    runs-on: macos-15
+    timeout-minutes: 360
+    needs: preflight
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'macos-windows' || inputs.platform == 'linux-macos' || inputs.platform == 'macos-arm64' || inputs.platform == 'all' }}
+    outputs:
+      cache-key: ${{ steps.cache-key.outputs.key }}
+      artifact-name: ${{ steps.archive-deps.outputs.name }}
+    env:
+      TDESKTOP_API_ID: ""
+      TDESKTOP_API_HASH: ""
+    steps:
+      - name: Verify Apple Silicon runner
+        run: |
+          if [ "$(uname -m)" != "arm64" ]; then
+            echo "::error::macos-15 runner must be arm64, got $(uname -m)"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: tdesktop
+
+      - name: Sync AyuGram submodules
+        run: python3 tdesktop/Telegram/build/sync_ayu_submodules.py
+
+      - name: Install tools
+        run: |
+          sudo chown -R "$(whoami):admin" /usr/local/share || true
+          brew update
+          brew install automake cmake gnu-tar libtool meson nasm ninja pkg-config wget
+          sudo mdutil -a -i off || true
+          sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+          sudo sed -i '' '/CMAKE_${lang}_FLAGS_DEBUG_INIT/s/ -g//' /opt/homebrew/share/cmake/Modules/Compiler/GNU.cmake || true
+
+      - name: Test macOS permission wrapper
+        run: python3 tdesktop/tools/tests/test_mac_permissions.py
+
+      - name: Cache key inputs
+        id: cache-key
+        run: python3 tdesktop/.github/ci/build_artifact.py cache-key --platform macos-arm64 --repo-root tdesktop
+
+      - name: Cache libraries
+        id: mac-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: macos-arm64-libraries-v2-${{ steps.cache-key.outputs.key }}
+
+      - name: Prepare libraries
+        id: prepare
+        if: steps.mac-cache.outputs.cache-hit != 'true'
+        env:
+          QT: ${{ env.CI_QT_VERSION }}
+          SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE: "1"
+        run: python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- bash ./tdesktop/Telegram/build/prepare/mac.sh silent
+
+      - name: Prune macOS Qt build sources
+        id: mac-qt-prune
+        if: ${{ steps.prepare.outcome != 'failure' }}
+        continue-on-error: true
+        run: python3 tdesktop/.github/ci/prune_macos_qt_sources.py --libraries Libraries --qt-version "$CI_QT_VERSION"
+
+      - name: Report compact dependency footprint
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          echo "Dependency cache footprint before save (uncompressed):"
+          du -sh Libraries ThirdParty
+
+      - name: Save macOS dependencies
+        if: steps.mac-cache.outputs.cache-hit != 'true' && steps.mac-qt-prune.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            Libraries
+            ThirdParty
+          key: macos-arm64-libraries-v2-${{ steps.cache-key.outputs.key }}
+
+      - name: Archive cold macOS dependencies
+        id: archive-deps
+        if: ${{ steps.mac-cache.outputs.cache-hit != 'true' && steps.prepare.outcome == 'success' && steps.mac-qt-prune.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          echo "name=macos-arm64-dependencies-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
+          gtar --use-compress-program='gzip -1' -cf "$RUNNER_TEMP/macos-arm64-dependencies.tar.gz" Libraries ThirdParty
+
+      - name: Upload cold macOS dependencies
+        id: upload-deps
+        if: ${{ steps.archive-deps.outcome == 'success' }}
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.archive-deps.outputs.name }}
+          path: ${{ runner.temp }}/macos-arm64-dependencies.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+      - name: Upload dependency preparation diagnostics
+        if: ${{ failure() && steps.prepare.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-macos-arm64-prepare-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/macos-arm64-prepare.log
+          if-no-files-found: ignore
+
   macos-arm64:
     name: macos-arm64
     runs-on: macos-15
-    needs: preflight
+    timeout-minutes: 360
+    needs:
+      - preflight
+      - macos-prepare
     if: ${{ github.event_name != 'workflow_dispatch' || inputs.platform == 'macos-windows' || inputs.platform == 'linux-macos' || inputs.platform == 'macos-arm64' || inputs.platform == 'all' }}
     steps:
       - name: Verify Apple Silicon runner
@@ -302,35 +420,44 @@ jobs:
             ThirdParty
           key: macos-arm64-libraries-v2-${{ steps.cache-key.outputs.key }}
 
-      - name: Prepare libraries
-        id: prepare
+      - name: Download cold macOS dependencies
+        id: download-deps
+        if: ${{ steps.mac-cache.outputs.cache-hit != 'true' && needs.macos-prepare.outputs.cache-key == steps.cache-key.outputs.key && needs.macos-prepare.outputs.artifact-name != '' }}
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.macos-prepare.outputs.artifact-name }}
+          path: ${{ runner.temp }}/macos-arm64-dependencies
+
+      - name: Restore cold macOS dependencies
+        id: restore-cold-deps
+        if: ${{ steps.download-deps.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/macos-arm64-dependencies/macos-arm64-dependencies.tar.gz"
+          trap 'rm -f "$archive"' EXIT
+          gtar -xzf "$archive"
+          test -d Libraries
+          test -d ThirdParty
+
+      - name: Prepare libraries after cache or artifact miss
+        id: prepare-fallback
+        if: ${{ steps.mac-cache.outputs.cache-hit != 'true' && steps.restore-cold-deps.outcome != 'success' }}
         env:
           QT: ${{ env.CI_QT_VERSION }}
           SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE: "1"
-        run: python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- bash ./tdesktop/Telegram/build/prepare/mac.sh silent
+        run: |
+          rm -rf Libraries ThirdParty
+          python3 tdesktop/.github/ci/build_diagnostics.py --log-file "$RUNNER_TEMP/macos-arm64-prepare.log" -- bash ./tdesktop/Telegram/build/prepare/mac.sh silent
 
       - name: Prune macOS Qt build sources
         id: mac-qt-prune
         continue-on-error: true
         run: python3 tdesktop/.github/ci/prune_macos_qt_sources.py --libraries Libraries --qt-version "$CI_QT_VERSION"
 
-      - name: Report compact dependency footprint
-        if: ${{ always() && steps.prepare.outcome == 'success' }}
-        continue-on-error: true
-        run: |
-          echo "Dependency cache footprint before save (uncompressed):"
-          du -sh Libraries ThirdParty
-
-      - name: Save macOS dependencies
-        if: steps.mac-cache.outputs.cache-hit != 'true' && steps.mac-qt-prune.outcome == 'success'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            Libraries
-            ThirdParty
-          key: macos-arm64-libraries-v2-${{ steps.cache-key.outputs.key }}
-
       - name: Free up library build intermediates
+        id: cleanup-libraries
         run: |
           find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path 'Libraries/local/src/wallet_engine/wallet_engine.cpp' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
@@ -351,13 +478,13 @@ jobs:
             -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
           python3 ../.github/ci/build_diagnostics.py \
             --log-file "$RUNNER_TEMP/macos-arm64-build.log" -- \
-            cmake --build ../out --config Release --parallel
+            cmake --build ../out --config Release --parallel 2
 
       - name: Upload failed build logs
-        if: ${{ failure() && (steps.prepare.outcome == 'failure' || steps.build.outcome == 'failure') }}
+        if: ${{ failure() && (steps.prepare-fallback.outcome == 'failure' || steps.mac-qt-prune.outcome == 'failure' || steps.cleanup-libraries.outcome == 'failure' || steps.build.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
-          name: diagnostics-macos-arm64
+          name: diagnostics-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/macos-arm64-prepare.log
             ${{ runner.temp }}/macos-arm64-configure.log
@@ -565,11 +692,11 @@ jobs:
       - name: Build
         id: build
         env:
-          _CL_: /MP2
+          _CL_: /MP1
         run: |
           python "$env:REPO_PATH\.github\ci\build_diagnostics.py" `
             --log-file "$env:RUNNER_TEMP\windows-x64-build.log" -- `
-            cmake --build "$env:REPO_PATH\out" --config Release --parallel 2
+            cmake --build "$env:REPO_PATH\out" --config Release --parallel 1 -- /p:PreferredToolArchitecture=x64
           exit $LASTEXITCODE
 
       - name: Upload failed build logs
@@ -680,6 +807,7 @@ jobs:
       - name: Download this run's artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: package-*
           path: release-assets
           merge-multiple: true
 

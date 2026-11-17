@@ -77,21 +77,82 @@ def qt_version(values: dict[str, str], requested: str | None) -> tuple[str, str]
 
 
 def submodule_revisions(repo_root: Path) -> list[dict[str, str | bool]]:
-    output = command_output(["git", "submodule", "status", "--recursive"], repo_root)
-    if not output:
-        raise RuntimeError("Could not read recursive submodule status.")
     revisions = []
-    for line in output.splitlines():
-        match = re.match(r"^([ +\-U])([0-9a-f]{40})\s+(\S+)", line)
-        if not match:
-            raise RuntimeError("Could not safely parse submodule status.")
-        marker, revision, path = match.groups()
-        if marker == "-":
-            raise RuntimeError(f"Submodule is not initialized: {path}")
-        if marker == "U":
-            raise RuntimeError(f"Submodule has an unresolved merge: {path}")
-        revisions.append({"path": path, "actual_sha": revision, "gitlink_match": marker != "+"})
+    _read_submodules(repo_root, b"", revisions)
     return revisions
+
+
+def _read_submodules(
+        directory: Path,
+        prefix: bytes,
+        revisions: list[dict[str, str | bool]]) -> None:
+    for path, expected in _parse_gitlinks(
+            _git_output(directory, "ls-files", "--stage", "-z")):
+        if (
+            not path
+            or path.startswith(b"/")
+            or any(part in (b"", b".", b"..") for part in path.split(b"/"))
+            or (os.name == "nt" and b"\\" in path)
+        ):
+            raise RuntimeError("Unsafe tracked submodule path.")
+        full_path = prefix + (b"/" if prefix else b"") + path
+        decoded_path = os.fsdecode(full_path)
+        child = directory / os.fsdecode(path)
+        if child.is_symlink() or not child.is_dir():
+            raise RuntimeError(f"Submodule is not initialized: {decoded_path}")
+
+        child_prefix = _git_output(child, "rev-parse", "--show-prefix").rstrip(b"\r\n")
+        if child_prefix:
+            raise RuntimeError(f"Submodule is not initialized: {decoded_path}")
+        actual = _git_output(child, "rev-parse", "--verify", "HEAD^{commit}").strip()
+        if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", actual):
+            raise RuntimeError(f"Could not read submodule revision: {decoded_path}")
+
+        revisions.append({
+            "path": decoded_path,
+            "actual_sha": actual.decode("ascii"),
+            "gitlink_match": actual == expected,
+        })
+        _read_submodules(child, full_path, revisions)
+
+
+def _parse_gitlinks(output: bytes) -> list[tuple[bytes, bytes]]:
+    if output and not output.endswith(b"\0"):
+        raise RuntimeError("Could not safely parse tracked submodule paths.")
+    entries = []
+    seen = set()
+    for record in output.split(b"\0"):
+        if not record:
+            continue
+        header, separator, path = record.partition(b"\t")
+        fields = header.split(b" ")
+        if not separator or len(fields) != 3:
+            raise RuntimeError("Could not safely parse tracked submodule path.")
+        mode, revision, stage = fields
+        if mode != b"160000":
+            continue
+        if not re.fullmatch(rb"[0-9a-f]{40}|[0-9a-f]{64}", revision):
+            raise RuntimeError("Could not safely parse tracked submodule revision.")
+        if stage != b"0":
+            raise RuntimeError(f"Submodule has an unresolved merge: {os.fsdecode(path)}")
+        if path in seen:
+            raise RuntimeError("Duplicate tracked submodule path.")
+        seen.add(path)
+        entries.append((path, revision))
+    return entries
+
+
+def _git_output(directory: Path, *arguments: str) -> bytes:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=directory,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError("Could not read git submodule metadata.")
+    return result.stdout
 
 
 def submodule_tree_fingerprint(repo_root: Path) -> str:
