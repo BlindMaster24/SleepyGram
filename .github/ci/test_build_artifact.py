@@ -62,6 +62,8 @@ class SubmoduleRevisionTests(unittest.TestCase):
             self.assertTrue(all(entry["gitlink_match"] for entry in clean))
 
             checked_out_outer = root / "modules/outer (source)"
+            _git(checked_out_outer, "config", "user.name", "CI Test")
+            _git(checked_out_outer, "config", "user.email", "ci-test@example.invalid")
             (checked_out_outer / "change.txt").write_text("advanced\n")
             _git(checked_out_outer, "add", "change.txt")
             _git(checked_out_outer, "commit", "-qm", "advance checked-out submodule")
@@ -99,11 +101,17 @@ class SubmoduleRevisionTests(unittest.TestCase):
 
 
 def _git(directory: Path, *arguments: str) -> str:
-    return subprocess.check_output(
+    result = subprocess.run(
         ["git", "-C", str(directory), *arguments],
         text=True,
+        stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        check=False,
     )
+    if result.returncode:
+        command = " ".join(arguments)
+        raise RuntimeError(f"git {command} failed: {result.stderr.strip()}")
+    return result.stdout
 
 
 def _init_repo(directory: Path, name: str) -> None:
