@@ -57,6 +57,8 @@ jobs:
         run: python3 .github/ci/test_build_artifact.py
       - name: Test macOS Qt cache pruning
         run: python3 .github/ci/test_prune_macos_qt_sources.py
+      - name: Test macOS Swift runtime packaging
+        run: python3 .github/ci/test_macos_swift_runtime.py
       - name: Check plural string forms
         run: python3 .github/ci/preflight_lang.py Telegram/Resources/langs/lang.strings
 
@@ -473,6 +475,7 @@ jobs:
             --log-file "$RUNNER_TEMP/macos-arm64-configure.log" -- ./configure.sh \
             -D CMAKE_CONFIGURATION_TYPES=Release \
             -D CMAKE_OSX_ARCHITECTURES=arm64 \
+            -D CMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
             -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
             -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
             -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
@@ -503,6 +506,7 @@ jobs:
           main="$app/Contents/MacOS/$executable"
           test -f "$main"
           test -f "$app/Contents/Resources/Telegram.rcc"
+          python3 tdesktop/.github/ci/prepare_macos_swift_runtime.py --bundle "$app" --minimum 11.0
           while IFS= read -r -d '' binary; do
             if file -b "$binary" | grep -q 'Mach-O'; then
               archs="$(lipo -archs "$binary")"
