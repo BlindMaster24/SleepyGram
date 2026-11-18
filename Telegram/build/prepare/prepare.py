@@ -1,4 +1,4 @@
-import os, sys, pprint, re, json, pathlib, hashlib, subprocess, glob, tempfile, plistlib
+import os, sys, pprint, re, json, pathlib, hashlib, subprocess, glob, tempfile, plistlib, platform
 
 executePath = os.getcwd()
 sys.dont_write_bytecode = True
@@ -22,6 +22,7 @@ def nativeToolsError():
 
 win = (sys.platform == 'win32')
 mac = (sys.platform == 'darwin')
+macRust27 = False
 sleepygramMacTgOwtArm64Release = (
     mac and os.environ.get('SLEEPYGRAM_MAC_TG_OWT_ARM64_RELEASE') == '1')
 
@@ -150,6 +151,9 @@ elif (mac):
         macCompiler = subprocess.check_output(['xcrun', '--find', 'clang'], text=True).strip()
     with open(os.path.join(macSdk, 'SDKSettings.plist'), 'rb') as file:
         macSdkSettings = plistlib.load(file)
+    macSdkMajor = int(macSdkSettings['Version'].split('.')[0])
+    macHostMajor = int(platform.mac_ver()[0].split('.')[0] or '0')
+    macRust27 = max(macSdkMajor, macHostMajor) >= 27
     macMinimum = macSdkSettings['SupportedTargets']['macosx']['MinimumDeploymentTarget']
     if not macRelease:
         macDeployment = os.environ.get('MACOSX_DEPLOYMENT_TARGET', macMinimum)
@@ -434,6 +438,19 @@ class _GetchWindows:
 
 getch = _Getch()
 
+def probeMacRust(stage):
+    if not macRust27 or stage['name'] != 'rust':
+        return True
+    rust = pathlib.Path(thirdPartyDir) / 'rust'
+    probeEnv = modifiedEnv | {
+        'RUSTUP_HOME': str(rust / 'rustup'),
+        'CARGO_HOME': str(rust / 'cargo'),
+    }
+    return subprocess.run([
+        sys.executable, os.path.join(scriptPath, 'check_macos_rust.py'),
+        str(rust / 'cargo/bin/rustup'), 'run', macRustToolchain, 'rustc',
+    ], env=probeEnv).returncode == 0
+
 def runStages():
     onlyStages = []
     rebuildStale = False
@@ -471,6 +488,8 @@ def runStages():
         checkResult = 'Forced' if len(onlyStages) > 0 else checkCacheKey(stage)
         if checkResult == 'Good':
             print('SKIPPING')
+            if not probeMacRust(stage):
+                error('The installed macOS Rust toolchain failed the proc-macro probe.')
             continue
         elif checkResult == 'NotFound':
             print('NOT FOUND, ', end='')
@@ -507,7 +526,7 @@ def runStages():
         clearCacheKey(stage)
         print('BUILDING:')
         os.chdir(stage['directory'])
-        if not run(commands, stageEnvironment):
+        if not run(commands, stageEnvironment) or not probeMacRust(stage):
             print(prefix + ': FAILED')
             finish(1)
         writeCacheKey(stage)
@@ -598,6 +617,8 @@ mac:
 """, 'ThirdParty')
 
 rustToolchain = '1.96.1'
+# macOS 27 rejects misaligned stripped proc-macro dylibs from older rustc.
+macRustToolchain = '1.99.1' if macRust27 else rustToolchain
 stage('rust', """
 win:
     powershell -Command "iwr -OutFile ./rustup-init.exe https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe"
@@ -612,7 +633,7 @@ mac:
     export RUSTUP_HOME=$THIRDPARTY_DIR/rust/rustup
     export CARGO_HOME=$THIRDPARTY_DIR/rust/cargo
     sh rustup-init.sh -y --no-modify-path --profile minimal \\
-        --default-toolchain """ + rustToolchain + """ \\
+        --default-toolchain """ + macRustToolchain + """ \\
         --target aarch64-apple-darwin \\
         --target x86_64-apple-darwin
     rm rustup-init.sh
@@ -2174,7 +2195,7 @@ win:
 mac:
     export RUSTUP_HOME=$THIRDPARTY_DIR/rust/rustup
     export CARGO_HOME=$THIRDPARTY_DIR/rust/cargo
-    export RUSTUP_TOOLCHAIN=""" + rustToolchain + """
+    export RUSTUP_TOOLCHAIN=""" + macRustToolchain + """
     export PATH=$CARGO_HOME/bin:$PATH
     cargo new --lib --vcs none tdesktop_rust
     cd tdesktop_rust
