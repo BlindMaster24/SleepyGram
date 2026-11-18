@@ -23,6 +23,7 @@ struct PreparedEmergencyRecoveryRecord final {
 
 struct EmergencyRecoveryRecord final {
 	EmergencyRecoveryPhase phase = EmergencyRecoveryPhase::Admission;
+	bool hasNamedWebviewProof = false;
 	std::string sourceGeneration;
 	std::string admissionGeneration;
 	std::string successorGeneration;
@@ -33,11 +34,15 @@ struct EmergencyRecoveryRecord final {
 	std::vector<uint8_t> installationDigest;
 };
 
+using ResolveScopedWebviewStores = std::function<std::optional<ScopedWebviewStoreIds>(
+	const EmergencyExecutionAccount &)>;
+
 [[nodiscard]] std::optional<PreparedEmergencyRecoveryRecord> PrepareEmergencyRecoveryRecord(
 	const EmergencyRuleTicket &ticket,
 	std::span<const uint8_t> sealedCapsule,
 	std::span<const uint8_t> emergencyDerivedKey,
-	std::string_view admissionGeneration);
+	std::string_view admissionGeneration,
+	const ResolveScopedWebviewStores &resolveWebviewStores = {});
 
 // The caller must supply bytes from an independently verified committed artifact.
 [[nodiscard]] std::optional<EmergencyRecoveryRecord> DecodeEmergencyRecoveryRecord(

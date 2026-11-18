@@ -238,6 +238,47 @@ void FailedRemovalIsRetriable() {
 		reopened.clear(kTarget) == EffectResult::ConfirmedSuccess && !Fs::exists(target));
 }
 
+void ConfirmNativeStoresBeforePurging() {
+	const auto fixture = Fixture();
+	const auto target = fixture.accountsRoot() / kTargetLocator;
+	const auto neighbor = fixture.accountsRoot() / kNeighborLocator;
+	if (!fixture.owned || !WriteFile(target / "auth") || !WriteFile(neighbor / "auth")) {
+		Check("scoped-native-clear-fixture-private", false);
+		return;
+	}
+	const auto stores = ScopedWebviewStoreIds{ ScopedWebviewStoreId{ 1 }, ScopedWebviewStoreId{ 2 } };
+	auto binding = fixture.binding();
+	binding.accounts.front().namedWebviewStores = stores;
+	auto noBackend = ScopedAccountClear(kInstallation, fixture.dataRoot(), binding);
+	Check("scoped-clear-with-named-stores-needs-the-authenticated-backend",
+		noBackend.clear(kTarget) == EffectResult::ConfirmedFailure && Fs::exists(target));
+	auto calls = 0;
+	const auto effect = [&](std::span<const ScopedWebviewStoreId> ids) {
+		++calls;
+		if (!std::ranges::equal(ids, stores) || !Fs::exists(target / "auth")) {
+			return EffectResult::ConfirmedFailure;
+		}
+		return (calls == 1) ? EffectResult::Unconfirmed : EffectResult::ConfirmedSuccess;
+	};
+	auto first = ScopedAccountClear(kInstallation, fixture.dataRoot(), binding, effect);
+	Check("scoped-native-timeout-keeps-the-account-for-durable-retry",
+		first.clear(kTarget) == EffectResult::Unconfirmed
+		&& Fs::exists(target / "auth") && calls == 1);
+	auto resumed = ScopedAccountClear(kInstallation, fixture.dataRoot(), binding, effect);
+	Check("scoped-native-retry-clears-only-proven-stores-before-the-account-tree",
+		resumed.clear(kTarget) == EffectResult::ConfirmedSuccess && !Fs::exists(target)
+		&& Fs::exists(neighbor) && calls == 2
+		&& resumed.clear(kTarget) == EffectResult::ConfirmedSuccess && calls == 2);
+	Check("scoped-clear-does-not-guess-old-native-identifiers",
+		resumed.clear(kNeighbor) == EffectResult::ConfirmedFailure
+		&& Fs::exists(neighbor) && calls == 2);
+	binding.accounts.back().namedWebviewStores = ScopedWebviewStoreIds();
+	auto knownEmpty = ScopedAccountClear(kInstallation, fixture.dataRoot(), binding, effect);
+	Check("scoped-clear-known-empty-native-inventory-uses-no-backend",
+		knownEmpty.clear(kNeighbor) == EffectResult::ConfirmedSuccess
+		&& !Fs::exists(neighbor) && calls == 2);
+}
+
 } // namespace
 
 int main() {
@@ -245,5 +286,6 @@ int main() {
 	InvalidBindingsAndUntrustedTargetTypesFailClosed();
 	RefusesSymlinksAtTargetOrWorkspaceAncestor();
 	FailedRemovalIsRetriable();
+	ConfirmNativeStoresBeforePurging();
 	return failures ? 1 : 0;
 }

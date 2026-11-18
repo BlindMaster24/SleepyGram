@@ -54,6 +54,7 @@ bool ValidDataDirectory(const Path &path) {
 bool ValidBindings(const std::vector<ScopedAccountLocator> &accounts) {
 	auto ids = std::set<AccountId>();
 	auto locators = std::set<std::string>();
+	auto namedStores = std::set<ScopedWebviewStoreId>();
 	for (const auto &account : accounts) {
 		if (!account.accountId.valid()
 			|| account.locator.size() != kLocatorLength
@@ -63,6 +64,12 @@ bool ValidBindings(const std::vector<ScopedAccountLocator> &accounts) {
 			})
 			|| !ids.insert(account.accountId).second
 			|| !locators.insert(account.locator).second) {
+			return false;
+		}
+		if (account.namedWebviewStores && (!ValidScopedWebviewStoreIds(*account.namedWebviewStores)
+			|| std::ranges::any_of(*account.namedWebviewStores, [&](const auto &id) {
+				return !namedStores.insert(id).second;
+			}))) {
 			return false;
 		}
 	}
@@ -376,9 +383,11 @@ bool ClearScopedDirectory(const Path &root, const std::string &locator) {
 ScopedAccountClear::ScopedAccountClear(
 		const InstallationId &installationId,
 		std::filesystem::path installationDataDirectory,
-		ScopedAccountCleanupBinding authenticatedBinding)
+		ScopedAccountCleanupBinding authenticatedBinding,
+		ClearScopedWebviewStores clearNamedStores)
 : _accountStorageRoot(NativePath(installationDataDirectory) / "profile-sets" / "accounts")
 , _accounts(std::move(authenticatedBinding.accounts))
+, _clearNamedStores(std::move(clearNamedStores))
 , _valid(installationId.valid()
 	&& installationId == authenticatedBinding.installationId
 	&& ValidDataDirectory(NativePath(std::move(installationDataDirectory)))
@@ -391,7 +400,20 @@ EffectResult ScopedAccountClear::clear(const AccountId &accountId) {
 		return EffectResult::ConfirmedFailure;
 	}
 	const auto target = std::ranges::find(_accounts, accountId, &ScopedAccountLocator::accountId);
-	return (target != _accounts.end() && ClearScopedDirectory(_accountStorageRoot, target->locator))
+	if (target == _accounts.end()) {
+		return EffectResult::ConfirmedFailure;
+	}
+	const auto &stores = target->namedWebviewStores;
+	if ((!stores && _clearNamedStores) || (stores && !stores->empty() && !_clearNamedStores)) {
+		return EffectResult::ConfirmedFailure;
+	} else if (stores && !stores->empty() && !_confirmedNamedClears.contains(accountId)) {
+		const auto result = _clearNamedStores(*stores);
+		if (result != EffectResult::ConfirmedSuccess) {
+			return result;
+		}
+		_confirmedNamedClears.insert(accountId);
+	}
+	return ClearScopedDirectory(_accountStorageRoot, target->locator)
 		? EffectResult::ConfirmedSuccess
 		: EffectResult::ConfirmedFailure;
 }

@@ -9,7 +9,9 @@
 namespace Ayu::EmergencyActions {
 namespace {
 
-constexpr auto kMagic = std::array<uint8_t, 8>{ 'S', 'G', 'R', 'C', 0, 0, 0, 1 };
+constexpr auto kMagic = std::array<uint8_t, 7>{ 'S', 'G', 'R', 'C', 0, 0, 0 };
+constexpr auto kOriginalVersion = uint8_t(1);
+constexpr auto kNamedWebviewVersion = uint8_t(2);
 constexpr auto kOpaqueIdBytes = size_t(32);
 constexpr auto kSizeBytes = size_t(4);
 
@@ -129,7 +131,8 @@ std::optional<std::vector<uint8_t>> EncodeRecoveryRecord(
 		std::span<const EmergencyExecutionAccount> accounts,
 		std::string_view source,
 		std::string_view admission,
-		const EmergencyExecutionSuccessor &successor) {
+		const EmergencyExecutionSuccessor &successor,
+		const ResolveScopedWebviewStores &resolveWebviewStores) {
 	const auto encodedJournal = EncodeJournal(journal);
 	if (!DistinctGenerations(source, admission, successor.transactionId)
 		|| encodedJournal.empty() || !InitialJournal(journal)
@@ -138,7 +141,7 @@ std::optional<std::vector<uint8_t>> EncodeRecoveryRecord(
 	}
 	const auto sealedVault = successor.sealedProfileVault;
 	const auto sealedKeyring = successor.sealedAccountKeyring;
-	const auto size = kMagic.size() + 3 * kOpaqueIdBytes + 3 * kSizeBytes + 2
+	auto size = kMagic.size() + 1 + 3 * kOpaqueIdBytes + 3 * kSizeBytes + 2
 		+ encodedJournal.size() + accounts.size() * kOpaqueIdBytes
 		+ sealedVault.size() + sealedKeyring.size() + successor.installationDigest.size();
 	if (size > kMaxEmergencyRecoveryRecordBytes || sealedVault.empty() || sealedKeyring.empty()
@@ -146,27 +149,50 @@ std::optional<std::vector<uint8_t>> EncodeRecoveryRecord(
 		|| sealedKeyring.size() > kMaxEmergencyExecutionSuccessorKeyringBytes) {
 		return std::nullopt;
 	}
-	auto locators = std::vector<std::string_view>();
+	auto bindings = std::vector<ScopedAccountLocator>();
 	auto seen = std::set<std::string_view>();
+	auto seenStores = std::set<ScopedWebviewStoreId>();
 	for (const auto &target : journal.accounts) {
 		const auto account = std::ranges::find(accounts, target.accountId, &EmergencyExecutionAccount::accountId);
 		if (account == accounts.end() || !CanonicalOpaqueId(account->locator)
 			|| !seen.insert(account->locator).second) {
 			return std::nullopt;
 		}
-		locators.push_back(account->locator);
+		auto namedStores = resolveWebviewStores
+			? resolveWebviewStores(*account)
+			: std::nullopt;
+		if (resolveWebviewStores) {
+			if (!namedStores || !ValidScopedWebviewStoreIds(*namedStores)
+				|| std::ranges::any_of(*namedStores, [&](const auto &id) {
+					return !seenStores.insert(id).second;
+				})) {
+				return std::nullopt;
+			}
+			size += 1 + namedStores->size() * ScopedWebviewStoreId().size();
+		}
+		bindings.push_back({ target.accountId, account->locator, std::move(namedStores) });
+	}
+	if (size > kMaxEmergencyRecoveryRecordBytes) {
+		return std::nullopt;
 	}
 	auto result = std::vector<uint8_t>();
 	result.reserve(size);
 	auto writer = Writer(result);
 	writer.bytes(kMagic);
+	writer.number(resolveWebviewStores ? kNamedWebviewVersion : kOriginalVersion, 1);
 	writer.string(source);
 	writer.string(admission);
 	writer.string(successor.transactionId);
 	writer.blob({ reinterpret_cast<const uint8_t*>(encodedJournal.data()), encodedJournal.size() });
-	writer.number(locators.size(), 2);
-	for (const auto locator : locators) {
-		writer.string(locator);
+	writer.number(bindings.size(), 2);
+	for (const auto &binding : bindings) {
+		writer.string(binding.locator);
+		if (binding.namedWebviewStores) {
+			writer.number(binding.namedWebviewStores->size(), 1);
+			for (const auto &id : *binding.namedWebviewStores) {
+				writer.bytes(id);
+			}
+		}
 	}
 	writer.blob(sealedVault);
 	writer.blob(sealedKeyring);
@@ -184,7 +210,8 @@ std::optional<PreparedEmergencyRecoveryRecord> PrepareEmergencyRecoveryRecord(
 		const EmergencyRuleTicket &ticket,
 		std::span<const uint8_t> sealedCapsule,
 		std::span<const uint8_t> emergencyDerivedKey,
-		std::string_view admissionGeneration) {
+		std::string_view admissionGeneration,
+		const ResolveScopedWebviewStores &resolveWebviewStores) {
 	const auto &details = ticket.details();
 	const auto &source = ticket.authority().generation.transactionId;
 	const auto live = ticket.reviewedLive();
@@ -205,7 +232,8 @@ std::optional<PreparedEmergencyRecoveryRecord> PrepareEmergencyRecoveryRecord(
 		capsule->accounts(),
 		source,
 		admissionGeneration,
-		capsule->successor());
+		capsule->successor(),
+		resolveWebviewStores);
 	if (!bytes) {
 		return std::nullopt;
 	}
@@ -224,7 +252,12 @@ std::optional<EmergencyRecoveryRecord> DecodeEmergencyRecoveryRecord(
 	if (!std::ranges::equal(reader.take(kMagic.size()), kMagic)) {
 		return std::nullopt;
 	}
+	const auto version = reader.number(1);
+	if (version != kOriginalVersion && version != kNamedWebviewVersion) {
+		return std::nullopt;
+	}
 	auto result = EmergencyRecoveryRecord{
+		.hasNamedWebviewProof = (version == kNamedWebviewVersion),
 		.sourceGeneration = reader.opaqueId(),
 		.admissionGeneration = reader.opaqueId(),
 		.successorGeneration = reader.opaqueId(),
@@ -250,12 +283,36 @@ std::optional<EmergencyRecoveryRecord> DecodeEmergencyRecoveryRecord(
 		return std::nullopt;
 	}
 	auto locators = std::set<std::string>();
+	auto seenStores = std::set<ScopedWebviewStoreId>();
 	for (const auto &target : journal->accounts) {
 		auto locator = reader.opaqueId();
 		if (!CanonicalOpaqueId(locator) || !locators.insert(locator).second) {
 			return std::nullopt;
 		}
-		result.accounts.push_back({ .accountId = target.accountId, .locator = std::move(locator) });
+		auto binding = ScopedAccountLocator{ .accountId = target.accountId, .locator = std::move(locator) };
+		if (result.hasNamedWebviewProof) {
+			const auto stores = reader.number(1);
+			if (!stores || *stores > 2) {
+				return std::nullopt;
+			}
+			auto &ids = binding.namedWebviewStores.emplace();
+			for (auto i = size_t(0); i != *stores; ++i) {
+				auto id = ScopedWebviewStoreId();
+				const auto raw = reader.take(id.size());
+				if (raw.empty()) {
+					return std::nullopt;
+				}
+				std::ranges::copy(raw, id.begin());
+				if (!seenStores.insert(id).second) {
+					return std::nullopt;
+				}
+				ids.push_back(id);
+			}
+			if (!ValidScopedWebviewStoreIds(ids)) {
+				return std::nullopt;
+			}
+		}
+		result.accounts.push_back(std::move(binding));
 	}
 	const auto vault = reader.blob(kMaxEmergencyExecutionSuccessorVaultBytes);
 	const auto keyring = reader.blob(kMaxEmergencyExecutionSuccessorKeyringBytes);

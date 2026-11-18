@@ -3013,7 +3013,11 @@ elseif (APPLE)
         target_link_libraries(Telegram PRIVATE desktop-app::external_iconv)
     endif()
 
-    target_link_frameworks(Telegram PRIVATE CoreBluetooth)
+    nice_target_sources(Telegram ${src_loc}
+    PRIVATE
+        ayu/features/emergency_actions/scoped_account_webview_mac.mm
+    )
+    target_link_frameworks(Telegram PRIVATE CoreBluetooth WebKit Security)
     target_link_frameworks_weak(Telegram PRIVATE UserNotifications)
 
     set(app_icon "${CMAKE_CURRENT_SOURCE_DIR}/Resources/art/SleepyGram.icns")

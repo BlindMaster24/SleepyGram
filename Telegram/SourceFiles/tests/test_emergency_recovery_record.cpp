@@ -209,6 +209,44 @@ void RunFixture() {
 		&& admission->accounts[0].locator == f.accounts[1].locator
 		&& admission->accounts[1].accountId == f.live.accounts[1].id
 		&& admission->accounts[1].locator == f.accounts[0].locator);
+	Check("older-durable-record-does-not-claim-native-cleanup-proof",
+		!admission->hasNamedWebviewProof && !admission->accounts[0].namedWebviewStores
+		&& !admission->accounts[1].namedWebviewStores);
+	const auto alphaStore = ScopedWebviewStoreId{ 1, 2, 3 };
+	const auto betaStore = ScopedWebviewStoreId{ 4, 5, 6 };
+	auto calls = 0;
+	const auto resolve = [&](const EmergencyExecutionAccount &account)
+	-> std::optional<ScopedWebviewStoreIds> {
+		++calls;
+		if (account.accountId == f.live.accounts[0].id
+			&& account.locator == f.accounts[1].locator
+			&& std::ranges::equal(account.scopedKey, f.alphaKey)) {
+			return ScopedWebviewStoreIds{ alphaStore, betaStore };
+		} else if (account.accountId == f.live.accounts[1].id
+			&& account.locator == f.accounts[0].locator
+			&& std::ranges::equal(account.scopedKey, f.betaKey)) {
+			return ScopedWebviewStoreIds();
+		}
+		return std::nullopt;
+	};
+	Check("unverified-capsule-cannot-request-native-store-targets",
+		!PrepareEmergencyRecoveryRecord(*ticket, seal->bytes, f.masterKey, f.admission, resolve)
+		&& calls == 0);
+	const auto namedPrepared = PrepareEmergencyRecoveryRecord(
+		*ticket, seal->bytes, f.emergencyKey, f.admission, resolve);
+	const auto named = namedPrepared ? DecodeEmergencyRecoveryRecord(
+		namedPrepared->bytes, f.source.installationId, f.successor.transactionId) : std::nullopt;
+	Check("new-record-contains-only-authenticated-opaque-stores-and-explicit-empty-set",
+		calls == 2 && named && named->hasNamedWebviewProof
+		&& named->accounts[0].namedWebviewStores == ScopedWebviewStoreIds{ alphaStore, betaStore }
+		&& named->accounts[1].namedWebviewStores == ScopedWebviewStoreIds()
+		&& std::ranges::search(namedPrepared->bytes, f.alphaKey).empty()
+		&& std::ranges::search(namedPrepared->bytes, f.betaKey).empty());
+	Check("partial-or-aliased-native-store-admission-is-refused",
+		!PrepareEmergencyRecoveryRecord(*ticket, seal->bytes, f.emergencyKey, f.admission,
+			[&](const EmergencyExecutionAccount&) { return std::optional<ScopedWebviewStoreIds>(); })
+		&& !PrepareEmergencyRecoveryRecord(*ticket, seal->bytes, f.emergencyKey, f.admission,
+			[&](const EmergencyExecutionAccount&) { return std::optional(ScopedWebviewStoreIds{ alphaStore }); }));
 	const auto another = f.sealCapsule();
 	Check("admission-rejects-capsules-authenticated-by-a-different-digest",
 		another && !PrepareEmergencyRecoveryRecord(
@@ -236,6 +274,14 @@ void RunFixture() {
 	const auto journalOffset = journalSizeOffset + 4;
 	const auto mappingCount = journalOffset + journalBytes;
 	const auto locatorOffset = mappingCount + 2;
+	if (namedPrepared) {
+		auto changed = namedPrepared->bytes;
+		changed[locatorOffset + 32] = 3;
+		Check("native-proof-rejects-store-count-beyond-the-two-account-slots", !decode(changed));
+		changed = namedPrepared->bytes;
+		std::fill_n(changed.begin() + locatorOffset + 33, 16, uint8_t(0));
+		Check("native-proof-cannot-select-null-or-default-identifier", !decode(changed));
+	}
 	damaged = storage;
 	damaged[mappingCount] = 1;
 	Check("partial-target-mapping-is-rejected", !decode(damaged));

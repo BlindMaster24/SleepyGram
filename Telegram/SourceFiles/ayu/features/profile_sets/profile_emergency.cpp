@@ -6,6 +6,14 @@
 #include "ayu/features/profile_sets/profile_emergency_bundle.h"
 #include "ayu/features/profile_sets/profile_installation_removal.h"
 
+#ifdef Q_OS_MAC
+#include "ayu/features/profile_sets/profile_account_storage.h"
+#include "storage/storage_account.h"
+
+#include <QtCore/QOperatingSystemVersion>
+#include <openssl/crypto.h>
+#endif // Q_OS_MAC
+
 #include <QtCore/QFileInfo>
 #include <QtCore/QtEndian>
 
@@ -38,6 +46,59 @@ Id StorageId(std::string_view value) {
 
 std::filesystem::path NativePath(const QString &path) {
 	return QFileInfo(path).filesystemFilePath();
+}
+
+std::filesystem::path DataRoot(const MigrationController &workspace) {
+	return NativePath(QFileInfo(workspace.workspacePath()).path());
+}
+
+#ifdef Q_OS_MAC
+std::optional<EA::ScopedWebviewStoreIds> ReadNamedWebviewStores(
+		const MigrationController &workspace,
+		const EA::EmergencyExecutionAccount &account) {
+	const auto paths = Storage::ScopedAccountPaths(workspace.accountStorageRoot(),
+		QString::fromStdString(account.locator));
+	const auto id = StorageId<AccountId>(account.accountId.value);
+	if (!paths || !id || !account.remoteIdentity) {
+		return std::nullopt;
+	}
+	auto key = AccountKey{ id, ByteArrayOf(account.scopedKey) };
+	const auto wipe = gsl::finally([&] {
+		OPENSSL_cleanse(key.key.data(), size_t(key.key.size()));
+	});
+	const auto localKey = ProfileAccountStorageKey(key);
+	const auto read = localKey ? Storage::ReadScopedWebviewTokens(*paths, localKey,
+		UserId(account.remoteIdentity->userId)) : std::nullopt;
+	if (!read) {
+		return std::nullopt;
+	}
+	auto result = EA::ScopedWebviewStoreIds();
+	result.reserve(read->size());
+	for (const auto &value : *read) {
+		auto token = EA::ScopedWebviewStoreId();
+		if (size_t(value.size()) != token.size()) {
+			return std::nullopt;
+		}
+		std::ranges::copy(BytesOf(value), token.begin());
+		result.push_back(token);
+	}
+	return result;
+}
+#endif // Q_OS_MAC
+
+bool VerifyRecoveryReceipt(
+		const MigrationController &workspace,
+		const EA::EmergencyRecoveryRecord &record,
+		const QByteArray &receipt) {
+	if (!record.hasNamedWebviewProof) {
+		return true;
+	}
+#ifdef Q_OS_MAC
+	return EA::VerifyMacScopedWebviewRecoveryReceipt(record.journal.installationId,
+		record.journal.operationId, record.admissionGeneration, DataRoot(workspace), BytesOf(receipt));
+#else
+	return false;
+#endif // Q_OS_MAC
 }
 
 std::vector<MigrationInput> BaseArtifacts(const CommittedMigration &current) {
@@ -93,11 +154,16 @@ LocalReset::LocalReset(
 : _workspace(workspace)
 , _record(record)
 , _receipt(receipt)
-, _clear(record.journal.installationId, NativePath(QFileInfo(workspace.workspacePath()).path()), {
+, _clear(record.journal.installationId, DataRoot(workspace), {
 	.installationId = record.journal.installationId,
 	.accountStorageRoot = NativePath(workspace.accountStorageRoot()),
 	.accounts = record.accounts,
-}) {
+}
+#ifdef Q_OS_MAC
+, record.hasNamedWebviewProof ? EA::ClearScopedWebviewStores(EA::ClearMacScopedWebviewStores)
+	: EA::ClearScopedWebviewStores()
+#endif // Q_OS_MAC
+) {
 }
 
 bool LocalReset::retireGrants() {
@@ -107,7 +173,8 @@ bool LocalReset::retireGrants() {
 	const auto current = _workspace.LoadCommitted();
 	const auto checkpoint = current && current->emergencyRecovery == _receipt
 		? OpenRecovery(*current) : std::nullopt;
-	if (!checkpoint || checkpoint->journal.operationId != _record.journal.operationId) {
+	if (!checkpoint || checkpoint->journal.operationId != _record.journal.operationId
+		|| !VerifyRecoveryReceipt(_workspace, *checkpoint, _receipt)) {
 		return false;
 	}
 	const auto successor = TransactionId(_record.successorGeneration);
@@ -167,8 +234,17 @@ std::optional<QByteArray> LocalReset::finish() {
 				&& candidate.accountKeyring == current->accountKeyring
 				&& candidate.emergencyRecovery.isEmpty();
 		});
-	return (finished && _workspace.RetireInactiveGenerations(finished->transactionId))
-		? std::optional(finished->transactionId) : std::nullopt;
+	if (!finished || !_workspace.RetireInactiveGenerations(finished->transactionId)) {
+		return std::nullopt;
+	}
+#ifdef Q_OS_MAC
+	if (_record.hasNamedWebviewProof && !EA::RetireMacScopedWebviewRecoveryReceipt(
+			_record.journal.installationId, _record.journal.operationId,
+			_record.admissionGeneration, DataRoot(_workspace), BytesOf(_receipt))) {
+		LOG(("Could not retire the completed Mini App cleanup receipt."));
+	}
+#endif // Q_OS_MAC
+	return finished->transactionId;
 }
 
 class ProtectedDestination final : public EA::SafeDestinationEffect {
@@ -208,7 +284,7 @@ std::optional<QByteArray> RunRecovery(
 		const QByteArray &receipt,
 		EA::RemoteSessionEffect *remote) {
 	const auto directory = workspace.emergencyJournalDirectory();
-	if (directory.isEmpty()) {
+	if (directory.isEmpty() || !VerifyRecoveryReceipt(workspace, record, receipt)) {
 		return std::nullopt;
 	}
 	auto store = EA::FileJournalStore(NativePath(directory));
@@ -236,7 +312,7 @@ std::optional<EA::EmergencyActionJournal> PrepareRemovalJournal(
 		const QByteArray &receipt,
 		EA::RemoteSessionEffect *remote) {
 	const auto directory = workspace.emergencyJournalDirectory();
-	if (directory.isEmpty()) {
+	if (directory.isEmpty() || !VerifyRecoveryReceipt(workspace, record, receipt)) {
 		return std::nullopt;
 	}
 	auto store = EA::FileJournalStore(NativePath(directory));
@@ -298,8 +374,17 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 	}
 	const auto capsule = bundle->capsules.find(ByteArrayOf(*ticket->details().executionCapsuleDigest));
 	const auto admission = MigrationController::NewTransactionId();
+	auto resolveWebviewStores = EA::ResolveScopedWebviewStores();
+#ifdef Q_OS_MAC
+	if (QOperatingSystemVersion::current().majorVersion() >= 14) {
+		resolveWebviewStores = [&](const EA::EmergencyExecutionAccount &account) {
+			return ReadNamedWebviewStores(workspace, account);
+		};
+	}
+#endif // Q_OS_MAC
 	const auto prepared = capsule != end(bundle->capsules) ? EA::PrepareEmergencyRecoveryRecord(
-		*ticket, BytesOf(capsule->second), BytesOf(credential.key), admission.toHex().toStdString()) : std::nullopt;
+		*ticket, BytesOf(capsule->second), BytesOf(credential.key),
+		admission.toHex().toStdString(), resolveWebviewStores) : std::nullopt;
 	if (!prepared) {
 		error = Error::InvalidVault;
 		return std::nullopt;
@@ -317,6 +402,14 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 		error = Error::InvalidPlan;
 		return std::nullopt;
 	}
+#ifdef Q_OS_MAC
+	if (record->hasNamedWebviewProof && !EA::BindMacScopedWebviewRecoveryReceipt(
+			record->journal.installationId, record->journal.operationId, record->admissionGeneration,
+			DataRoot(workspace), BytesOf(receipt))) {
+		error = Error::InvalidPlan;
+		return std::nullopt;
+	}
+#endif // Q_OS_MAC
 	auto inputs = BaseArtifacts(committed);
 	inputs.push_back({ MigrationArtifact::EmergencyRecovery, receipt });
 	const auto accepted = workspace.ReplaceCommitted(committed.transactionId, inputs,
