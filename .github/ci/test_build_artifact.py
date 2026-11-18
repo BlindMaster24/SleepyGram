@@ -26,6 +26,7 @@ class ReleaseInstallerTests(unittest.TestCase):
                 package.writestr("SleepyGram.app/Contents/Info.plist", b"plist")
                 package.writestr("SleepyGram.app/Contents/MacOS/SleepyGram", b"binary")
                 package.writestr("SleepyGram.app/Contents/Resources/Telegram.rcc", b"resources")
+                package.writestr("SleepyGram.app/Contents/Resources/LICENSE-SQLCipher.txt", b"license")
                 package.writestr(
                     "SleepyGram.app/Contents/Resources/BuildManifest.json",
                     json.dumps({"schema_version": 1, "platform": "macos-arm64"}),

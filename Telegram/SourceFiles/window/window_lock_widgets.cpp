@@ -42,7 +42,9 @@ constexpr auto kSystemUnlockDelay = crl::time(1000);
 PasscodeAttempt TryPasscode(
 		const QString &passcode,
 		Fn<void(bool correct)> done) {
-	if (passcode.isEmpty()) {
+	if (!Core::App().legacyProfileAccessAllowed()) {
+		return PasscodeAttempt::Unavailable;
+	} else if (passcode.isEmpty()) {
 		return PasscodeAttempt::Empty;
 	} else if (!passcodeCanTry()) {
 		return PasscodeAttempt::Flood;
@@ -136,11 +138,17 @@ PasscodeLockWidget::PasscodeLockWidget(
 	connect(_passcode, &Ui::MaskedInputField::submitted, [=] { submit(); });
 	_submit->setClickedCallback([=] { submit(); });
 	_logout->setClickedCallback([=] {
-		window->showLogoutConfirmation();
+		if (Core::App().legacyProfileAccessAllowed()) {
+			window->showLogoutConfirmation();
+		}
 	});
+	const auto legacy = Core::App().legacyProfileAccessAllowed();
+	if (!legacy) {
+		_logout->hide();
+	}
 
 	using namespace rpl::mappers;
-	if (Core::App().settings().systemUnlockEnabled()) {
+	if (legacy && Core::App().settings().systemUnlockEnabled()) {
 		_systemUnlockAvailable = base::SystemUnlockStatus(
 			true
 		) | rpl::map([](base::SystemUnlockAvailability status) {
@@ -261,7 +269,9 @@ void PasscodeLockWidget::suggestSystemUnlock() {
 }
 
 void PasscodeLockWidget::systemUnlockDone(base::SystemUnlockResult result) {
-	if (result == base::SystemUnlockResult::Success) {
+	if (!Core::App().legacyProfileAccessAllowed()) {
+		return;
+	} else if (result == base::SystemUnlockResult::Success) {
 		Core::App().unlockPasscode();
 		return;
 	}
@@ -298,6 +308,10 @@ void PasscodeLockWidget::submit() {
 		}
 	});
 	switch (TryLockScreenPasscode(_passcode->text(), std::move(done))) {
+	case PasscodeAttempt::Unavailable:
+		_error = tr::lng_cant_do_this(tr::now);
+		update();
+		return;
 	case PasscodeAttempt::Empty:
 		_passcode->showError();
 		return;

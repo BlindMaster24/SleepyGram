@@ -60,6 +60,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mainwidget.h"
 #include "tray.h"
 #include "core/click_handler_types.h" // ClickHandlerContext.
+#include "core/crash_report_window.h"
 #include "core/crash_reports.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
@@ -114,17 +115,50 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QMimeDatabase>
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
+#include <QtWidgets/QVBoxLayout>
 
 #include <ksandbox.h>
 
 // AyuGram includes
 #include "ayu/ayu_infra.h"
 #include "ayu/ayu_settings.h"
+#include "ayu/features/profile_sets/profile_migration.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
 namespace Core {
 namespace {
+
+using Ayu::ProfileSets::MigrationController;
+using Ayu::ProfileSets::ProfileStartupMode;
+
+class BlockedProfileWindow final : public PreLaunchWindow {
+public:
+	explicit BlockedProfileWindow(ProfileStartupMode mode);
+
+protected:
+	void closeEvent(QCloseEvent *e) override;
+
+};
+
+BlockedProfileWindow::BlockedProfileWindow(ProfileStartupMode mode) {
+	const auto layout = new QVBoxLayout(this);
+	const auto label = new PreLaunchLabel(this);
+	label->setWordWrap(true);
+	label->setText(mode == ProfileStartupMode::RecoveryRequired
+		? u"Local data needs recovery before it can be opened."_q
+		: u"Local data is locked. This version of SleepyGram cannot open it."_q);
+	const auto button = new PreLaunchButton(this);
+	button->setText(u"Close"_q);
+	connect(button, &QPushButton::clicked, this, [this] { close(); });
+	layout->addWidget(label);
+	layout->addWidget(button, 0, Qt::AlignRight);
+}
+
+void BlockedProfileWindow::closeEvent(QCloseEvent *e) {
+	PreLaunchWindow::closeEvent(e);
+	Quit();
+}
 
 constexpr auto kQuitPreventTimeoutMs = crl::time(1500);
 constexpr auto kAutoLockTimeoutLateMs = crl::time(3000);
@@ -174,6 +208,8 @@ struct Application::Private {
 
 Application::Application()
 : QObject()
+, _profileStartupMode(MigrationController::ProbeProfileStartup(
+	cWorkingDir() + u"tdata"_q))
 , _private(std::make_unique<Private>())
 , _platformIntegration(Platform::Integration::Create())
 , _batterySaving(std::make_unique<base::BatterySaving>())
@@ -197,6 +233,9 @@ Application::Application()
 , _tray(std::make_unique<Tray>())
 , _setupEmailLock(false)
 , _autoLockTimer([=] { checkAutoLock(); }) {
+	if (!legacyProfileAccessAllowed()) {
+		return;
+	}
 	Ui::Integration::Set(&_private->uiIntegration);
 	_private->proxyRotation = std::make_unique<ProxyRotationManager>();
 
@@ -272,6 +311,11 @@ void Application::closeAdditionalWindows() {
 }
 
 Application::~Application() {
+	if (!legacyProfileAccessAllowed()) {
+		_blockedProfileWindow.reset();
+		Instance = nullptr;
+		return;
+	}
 	if (_savedWindows) {
 		_savedWindows->writeNow();
 	}
@@ -320,6 +364,13 @@ Application::~Application() {
 }
 
 void Application::run() {
+	if (!legacyProfileAccessAllowed()) {
+		cRefStartUrls().clear();
+		_blockedProfileWindow = std::make_unique<BlockedProfileWindow>(
+			_profileStartupMode);
+		_blockedProfileWindow->show();
+		return;
+	}
 	// Depends on OpenSSL on macOS, so on ThirdParty::start().
 	// Depends on notifications settings.
 	_notifications = std::make_unique<Window::Notifications::System>();
@@ -881,7 +932,9 @@ void Application::saveSettingsDelayed(crl::time delay) {
 }
 
 void Application::saveSettings() {
-	Local::writeSettings();
+	if (legacyProfileAccessAllowed()) {
+		Local::writeSettings();
+	}
 }
 
 bool Application::canReadDefaultDownloadPath() const {
@@ -1058,7 +1111,9 @@ rpl::producer<FullMsgId> Application::floatPlayerClosed() const {
 }
 
 void Application::logout(Main::Account *account) {
-	if (account) {
+	if (!legacyProfileAccessAllowed()) {
+		return;
+	} else if (account) {
 		account->logOut();
 	} else {
 		_domain->resetWithForgottenPasscode();
@@ -1264,7 +1319,10 @@ bool Application::canApplyLangPackWithoutRestart() const {
 }
 
 void Application::checkStartUrls() {
-	if (_setupEmailLock.current()) {
+	if (!legacyProfileAccessAllowed()) {
+		cRefStartUrls().clear();
+		return;
+	} else if (_setupEmailLock.current()) {
 		return;
 	}
 	if (!Core::App().passcodeLocked()) {
@@ -1418,6 +1476,9 @@ void Application::updateWindowTitles() {
 }
 
 void Application::lockByPasscode() {
+	if (!legacyProfileAccessAllowed()) {
+		return;
+	}
 	_passcodeLock = true;
 	enumerateWindows([&](not_null<Window::Controller*> w) {
 		w->setupPasscodeLock();
@@ -1435,6 +1496,9 @@ void Application::maybeLockByPasscode() {
 }
 
 void Application::unlockPasscode() {
+	if (!legacyProfileAccessAllowed()) {
+		return;
+	}
 	clearPasscodeLock();
 	enumerateWindows([&](not_null<Window::Controller*> w) {
 		w->clearPasscodeLock();
@@ -1446,8 +1510,13 @@ void Application::clearPasscodeLock() {
 	_passcodeLock = false;
 }
 
+bool Application::legacyProfileAccessAllowed() const {
+	return _profileStartupMode == ProfileStartupMode::Legacy
+		|| _profileStartupMode == ProfileStartupMode::Preparing;
+}
+
 bool Application::passcodeLocked() const {
-	return _passcodeLock.current();
+	return !legacyProfileAccessAllowed() || _passcodeLock.current();
 }
 
 void Application::updateNonIdle() {
@@ -1472,6 +1541,9 @@ rpl::producer<bool> Application::passcodeLockChanges() const {
 }
 
 rpl::producer<bool> Application::passcodeLockValue() const {
+	if (!legacyProfileAccessAllowed()) {
+		return rpl::single(true);
+	}
 	return _passcodeLock.value();
 }
 
@@ -2285,7 +2357,8 @@ void Application::RegisterUrlScheme() {
 }
 
 bool IsAppLaunched() {
-	return (Application::Instance != nullptr);
+	return Application::Instance
+		&& Application::Instance->legacyProfileAccessAllowed();
 }
 
 Application &App() {

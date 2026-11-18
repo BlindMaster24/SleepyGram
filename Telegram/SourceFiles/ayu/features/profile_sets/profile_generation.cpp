@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/profile_generation.h"
 
+#include "base/assertion.h"
+
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -197,35 +199,55 @@ bool OpenedProfileGeneration::Start(
 		const MigrationController &sidecar,
 		StartProfileAccount startAccount,
 		ProfileGenerationError *error) {
+	return Start(sidecar, {}, std::move(startAccount), error);
+}
+
+bool OpenedProfileGeneration::Start(
+		const MigrationController &sidecar,
+		ValidateProfileAccount validateAccount,
+		StartProfileAccount startAccount,
+		ProfileGenerationError *error) {
 	if (_closed || _started) {
 		SetError(error, ProfileGenerationError::InvalidPlan);
 		return false;
 	}
-	const auto committed = sidecar.LoadCommitted();
-	if (!committed || committed->transactionId != _transactionId) {
-		SetError(error, ProfileGenerationError::StaleGeneration);
+	const auto fail = [&](ProfileGenerationError code) {
+		SetError(error, code);
 		Close();
 		return false;
-	}
-	if (!startAccount && !_plan.targets().empty()) {
-		SetError(error, ProfileGenerationError::MissingAdapter);
-		Close();
-		return false;
-	}
-	for (const auto &target : _plan.targets()) {
-		const auto key = _plan.keyFor(target.id);
-		if (!key) {
-			SetError(error, ProfileGenerationError::InvalidPlan);
-			Close();
+	};
+	const auto start = [&] {
+		const auto &targets = _plan.targets();
+		if (!startAccount && !targets.empty()) {
+			return fail(ProfileGenerationError::MissingAdapter);
+		}
+		for (const auto &target : targets) {
+			const auto key = _plan.keyFor(target.id);
+			if (!key) {
+				return fail(ProfileGenerationError::InvalidPlan);
+			} else if (validateAccount && !validateAccount(target, *key)) {
+				return fail(ProfileGenerationError::ValidationFailed);
+			}
+		}
+		for (const auto &target : targets) {
+			const auto key = _plan.keyFor(target.id);
+			Assert(key != nullptr);
+			auto close = startAccount(target, *key);
+			if (!close || !*close) {
+				return fail(ProfileGenerationError::StartFailed);
+			}
+			_closeAdapters.push_back(std::move(*close));
+		}
+		return true;
+	};
+	auto migrationError = MigrationError::None;
+	if (!sidecar.WithCurrentGeneration(_transactionId, start, &migrationError)) {
+		if (migrationError == MigrationError::CallbackFailed) {
 			return false;
 		}
-		auto close = startAccount(target, *key);
-		if (!close || !*close) {
-			SetError(error, ProfileGenerationError::StartFailed);
-			Close();
-			return false;
-		}
-		_closeAdapters.push_back(std::move(*close));
+		return fail(migrationError == MigrationError::StaleGeneration
+			? ProfileGenerationError::StaleGeneration
+			: ProfileGenerationError::InvalidSidecar);
 	}
 	_started = true;
 	SetError(error, ProfileGenerationError::None);

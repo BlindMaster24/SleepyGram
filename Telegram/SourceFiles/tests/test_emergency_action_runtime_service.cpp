@@ -174,6 +174,18 @@ struct FakeRemote final : RemoteSessionEffect {
 			});
 		return EffectResult::ConfirmedSuccess;
 	}
+
+	EffectResult logoutCurrent(
+			const AccountId &accountId,
+			CoordinatorClock::TimePoint) override {
+		const auto saved = LoadJournal(*store, OperationId("operation-reviewed"));
+		return (saved && std::ranges::any_of(
+			saved->accounts,
+			[&](const JournalAccount &account) {
+				return account.accountId == accountId
+					&& account.currentSessionLogout.state == EffectState::InProgress;
+			})) ? EffectResult::ConfirmedSuccess : EffectResult::Unconfirmed;
+	}
 };
 
 struct FakeLocal final : LocalAccountEffect {

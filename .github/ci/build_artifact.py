@@ -286,10 +286,10 @@ def verify_package(archive: Path, platform_name: str) -> dict[str, object]:
         raise RuntimeError(f"Expected artifact name {PLATFORMS[platform_name][0]}.")
     names, manifest_bytes = archive_members(archive, platform_name)
     if platform_name == "linux-x64":
-        required = {"SleepyGram", MANIFEST}
+        required = {"SleepyGram", MANIFEST, "LICENSE-SQLCipher.txt"}
         allowed = required | {"Updater"}
     elif platform_name == "windows-x64":
-        required = {"SleepyGram.exe", MANIFEST}
+        required = {"SleepyGram.exe", MANIFEST, "LICENSE-SQLCipher.txt"}
         allowed = required | {"Updater.exe", "modules/x64/d3d/d3dcompiler_47.dll"}
     else:
         required = {
@@ -297,6 +297,7 @@ def verify_package(archive: Path, platform_name: str) -> dict[str, object]:
             "SleepyGram.app/Contents/Resources/Telegram.rcc",
             "SleepyGram.app/Contents/Resources/SleepyGram.icns",
             "SleepyGram.app/Contents/Resources/BuildManifest.json",
+            "SleepyGram.app/Contents/Resources/LICENSE-SQLCipher.txt",
         }
         if not any(name.startswith("SleepyGram.app/Contents/MacOS/") for name in names):
             raise RuntimeError("macOS archive is missing the app executable.")

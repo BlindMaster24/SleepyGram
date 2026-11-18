@@ -25,7 +25,8 @@ bool IsSeedJournal(const EmergencyActionJournal &journal) {
 	return unstarted(journal.safeDestinationActivation)
 		&& std::ranges::all_of(journal.accounts, [&](const JournalAccount &account) {
 			return unstarted(account.localDataClear)
-				&& unstarted(account.remoteSessionRevoke);
+				&& unstarted(account.remoteSessionRevoke)
+				&& unstarted(account.currentSessionLogout);
 		});
 }
 
@@ -84,46 +85,46 @@ bool RunRemotePhase(
 		const CoordinatorClock &clock,
 		CoordinatorReport &report) {
 	const auto deadline = clock.now() + kRemotePhaseBudget;
-	for (auto i = size_t(0); i != journal.accounts.size(); ++i) {
-		const auto accountId = journal.accounts[i].accountId;
-		const auto target = journal.accounts[i].remoteSessionTarget;
-		const auto sessionIds = journal.accounts[i].sessionIdsForRevoke;
-		const auto state = journal.accounts[i].remoteSessionRevoke;
+	const auto execute = [&](JournalEffect effect, const AccountId &accountId,
+			JournalEffectState state, auto &&apply) {
 		if (state.state != EffectState::Pending) {
-			continue;
+			return true;
 		}
 		if (clock.now() >= deadline) {
 			report.remoteDeadlineReached = true;
-			break;
+			return true;
 		}
-		if (!Claim(
-				journal,
-				store,
-				JournalEffect::RemoteSessionRevoke,
-				accountId)) {
+		if (!Claim(journal, store, effect, accountId)) {
 			return false;
 		}
 		++report.remoteAttempts;
 		auto outcome = EffectResult::Unconfirmed;
 		try {
-			outcome = remote.revoke(
-				accountId,
-				target,
-				sessionIds,
-				deadline);
+			outcome = apply();
 		} catch (...) {
 			outcome = EffectResult::Unconfirmed;
 		}
-		if (!SaveOutcome(
-				journal,
-				store,
+		report.remoteDeadlineReached = clock.now() >= deadline;
+		return SaveOutcome(journal, store, effect, outcome, accountId);
+	};
+	for (auto i = size_t(0); i != journal.accounts.size(); ++i) {
+		const auto accountId = journal.accounts[i].accountId;
+		const auto target = journal.accounts[i].remoteSessionTarget;
+		const auto sessionIds = journal.accounts[i].sessionIdsForRevoke;
+		if (!execute(
 				JournalEffect::RemoteSessionRevoke,
-				outcome,
-				accountId)) {
+				accountId,
+				journal.accounts[i].remoteSessionRevoke,
+				[&] { return remote.revoke(accountId, target, sessionIds, deadline); })
+			|| !execute(
+				JournalEffect::CurrentSessionLogout,
+				accountId,
+				journal.accounts[i].currentSessionLogout,
+				[&] { return remote.logoutCurrent(accountId, deadline); })) {
 			return false;
 		}
-		if (clock.now() >= deadline) {
-			report.remoteDeadlineReached = true;
+		if (report.remoteDeadlineReached) {
+			break;
 		}
 	}
 	return true;

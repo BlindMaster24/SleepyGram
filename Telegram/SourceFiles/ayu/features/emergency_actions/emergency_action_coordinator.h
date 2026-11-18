@@ -44,6 +44,9 @@ public:
 		RemoteSessionTargetKind target,
 		std::span<const SessionId> sessionIds,
 		CoordinatorClock::TimePoint deadline) = 0;
+	[[nodiscard]] virtual EffectResult logoutCurrent(
+		const AccountId &accountId,
+		CoordinatorClock::TimePoint deadline) = 0;
 };
 
 class LocalAccountEffect {

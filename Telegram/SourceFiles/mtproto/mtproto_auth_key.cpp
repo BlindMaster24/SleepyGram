@@ -12,6 +12,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QDataStream>
 #include <QtCore/QtEndian>
 
+#include <openssl/crypto.h>
+
 namespace MTP {
 
 AuthKey::AuthKey(Type type, DcId dcId, const Data &data)
@@ -26,6 +28,10 @@ AuthKey::AuthKey(Type type, DcId dcId, const Data &data)
 
 AuthKey::AuthKey(const Data &data) : _type(Type::Local), _key(data) {
 	countKeyId();
+}
+
+AuthKey::~AuthKey() {
+	OPENSSL_cleanse(_key.data(), _key.size());
 }
 
 AuthKey::Type AuthKey::type() const {

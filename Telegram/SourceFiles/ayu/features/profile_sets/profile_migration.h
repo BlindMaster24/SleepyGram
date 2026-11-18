@@ -43,6 +43,13 @@ enum class MigrationState : uchar {
 	Invalid,
 };
 
+enum class ProfileStartupMode : uchar {
+	Legacy,
+	Preparing,
+	Committed,
+	RecoveryRequired,
+};
+
 enum class MigrationError : uchar {
 	None,
 	UnsafeWorkspace,
@@ -60,6 +67,7 @@ enum class MigrationError : uchar {
 	StaleGeneration,
 	PublicationUncertain, // Reopen the committed generation before retrying.
 	RetirementFailed,
+	CallbackFailed,
 };
 
 class MigrationController final {
@@ -74,6 +82,10 @@ public:
 		const QString &dataDirectory,
 		MigrationError *error = nullptr);
 	[[nodiscard]] static MigrationState ProbeProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error = nullptr);
+	// Preparing reserves the profile for the migration workflow.
+	[[nodiscard]] static ProfileStartupMode ProbeProfileStartup(
 		const QString &dataDirectory,
 		MigrationError *error = nullptr);
 
@@ -106,6 +118,11 @@ public:
 	[[nodiscard]] MigrationState Recover(
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> LoadCommitted(
+		MigrationError *error = nullptr) const;
+	// The synchronous lease callback must not acquire the workspace lock.
+	[[nodiscard]] bool WithCurrentGeneration(
+		const QByteArray &expectedTransactionId,
+		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
 
 	[[nodiscard]] QString workspacePath() const;

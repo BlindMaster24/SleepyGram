@@ -28,7 +28,7 @@ namespace Ayu::EmergencyActions {
 namespace {
 
 constexpr auto kMagic = std::array<uint8_t, 4>{ 'A', 'E', 'J', '1' };
-constexpr auto kVersion = uint16_t(3);
+constexpr auto kVersion = uint16_t(4);
 constexpr auto kMaxIdBytes = size_t(128);
 constexpr auto kMaxAccounts = size_t(64);
 constexpr auto kMaxSessionsPerAccount = size_t(128);
@@ -83,6 +83,16 @@ bool LocalPhaseStarted(const EmergencyActionJournal &journal) {
 	});
 }
 
+bool RemoteInProgress(const JournalAccount &account) {
+	return account.remoteSessionRevoke.state == EffectState::InProgress
+		|| account.currentSessionLogout.state == EffectState::InProgress;
+}
+
+bool RevokeOutstanding(const JournalAccount &account) {
+	return account.remoteSessionRevoke.state == EffectState::Pending
+		|| account.remoteSessionRevoke.state == EffectState::InProgress;
+}
+
 bool ValidJournal(const EmergencyActionJournal &journal) {
 	if (!ValidId(journal.operationId.value)
 		|| !ValidId(journal.ruleId.value)
@@ -113,6 +123,10 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 			|| uint8_t(target) > uint8_t(RemoteSessionTargetKind::AllOtherSessions)
 			|| !ValidState(account.localDataClear, false)
 			|| !ValidState(account.remoteSessionRevoke, true)
+			|| !ValidState(account.currentSessionLogout, true)
+			|| (RevokeOutstanding(account)
+				&& account.currentSessionLogout.state != EffectState::Pending
+				&& account.currentSessionLogout.state != EffectState::NotRequested)
 			|| (target == RemoteSessionTargetKind::None
 				&& (targetState != EffectState::NotRequested
 					|| !account.sessionIdsForRevoke.empty()))
@@ -154,9 +168,7 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 		return false;
 	}
 	return !LocalPhaseStarted(journal)
-		|| std::ranges::none_of(journal.accounts, [](const JournalAccount &account) {
-			return account.remoteSessionRevoke.state == EffectState::InProgress;
-		});
+		|| std::ranges::none_of(journal.accounts, RemoteInProgress);
 }
 
 JournalEffectState *FindEffect(
@@ -164,7 +176,8 @@ JournalEffectState *FindEffect(
 		JournalEffect effect,
 		const std::optional<AccountId> &accountId) {
 	if (effect == JournalEffect::LocalDataClear
-		|| effect == JournalEffect::RemoteSessionRevoke) {
+		|| effect == JournalEffect::RemoteSessionRevoke
+		|| effect == JournalEffect::CurrentSessionLogout) {
 		if (!accountId) {
 			return nullptr;
 		}
@@ -175,9 +188,12 @@ JournalEffectState *FindEffect(
 		if (i == journal.accounts.end()) {
 			return nullptr;
 		}
-		return (effect == JournalEffect::LocalDataClear)
-			? &i->localDataClear
-			: &i->remoteSessionRevoke;
+		if (effect == JournalEffect::LocalDataClear) {
+			return &i->localDataClear;
+		}
+		return (effect == JournalEffect::RemoteSessionRevoke)
+			? &i->remoteSessionRevoke
+			: &i->currentSessionLogout;
 	}
 	if (accountId) {
 		return nullptr;
@@ -192,7 +208,8 @@ JournalEffectState *FindEffect(
 }
 
 bool IsNetworkEffect(JournalEffect effect) {
-	return effect == JournalEffect::RemoteSessionRevoke;
+	return effect == JournalEffect::RemoteSessionRevoke
+		|| effect == JournalEffect::CurrentSessionLogout;
 }
 
 bool IsIdempotentEffect(JournalEffect effect) {
@@ -598,6 +615,9 @@ std::optional<EmergencyActionJournal> MakeJournal(const DryRunPlan &plan) {
 				? EffectState::Pending
 				: EffectState::NotRequested },
 			.sessionIdsForRevoke = std::move(sessionTargets),
+			.currentSessionLogout = { .state = account.wouldClearLocalData
+				? EffectState::Pending
+				: EffectState::NotRequested },
 		};
 		std::ranges::sort(entry.sessionIdsForRevoke);
 		result.accounts.push_back(std::move(entry));
@@ -622,6 +642,7 @@ JournalStatus Status(const EmergencyActionJournal &journal) {
 	for (const auto &account : journal.accounts) {
 		states.push_back(account.localDataClear.state);
 		states.push_back(account.remoteSessionRevoke.state);
+		states.push_back(account.currentSessionLogout.state);
 	}
 	states.push_back(journal.installationRemoval.state);
 	states.push_back(journal.safeDestinationActivation.state);
@@ -667,6 +688,9 @@ std::vector<PendingEffect> ResumeEffects(
 		add(account.localDataClear, JournalEffect::LocalDataClear, account.accountId);
 		if (!localStarted) {
 			add(account.remoteSessionRevoke, JournalEffect::RemoteSessionRevoke, account.accountId);
+			if (!RevokeOutstanding(account)) {
+				add(account.currentSessionLogout, JournalEffect::CurrentSessionLogout, account.accountId);
+			}
 		}
 	}
 	add(journal.installationRemoval, JournalEffect::InstallationRemoval);
@@ -693,6 +717,7 @@ size_t RecoverInterruptedEffects(EmergencyActionJournal &journal) {
 	for (auto &account : journal.accounts) {
 		recover(account.localDataClear, JournalEffect::LocalDataClear);
 		recover(account.remoteSessionRevoke, JournalEffect::RemoteSessionRevoke);
+		recover(account.currentSessionLogout, JournalEffect::CurrentSessionLogout);
 	}
 	recover(journal.installationRemoval, JournalEffect::InstallationRemoval);
 	recover(journal.safeDestinationActivation, JournalEffect::SafeDestinationActivation);
@@ -700,13 +725,17 @@ size_t RecoverInterruptedEffects(EmergencyActionJournal &journal) {
 }
 
 bool FinishRemotePhase(EmergencyActionJournal &journal) {
-	if (!ValidJournal(journal)) {
+	if (!ValidJournal(journal) || std::ranges::any_of(journal.accounts, RemoteInProgress)) {
 		return false;
 	}
 	auto changed = false;
 	for (auto &account : journal.accounts) {
 		if (account.remoteSessionRevoke.state == EffectState::Pending) {
 			account.remoteSessionRevoke.state = EffectState::Skipped;
+			changed = true;
+		}
+		if (account.currentSessionLogout.state == EffectState::Pending) {
+			account.currentSessionLogout.state = EffectState::Skipped;
 			changed = true;
 		}
 	}
@@ -731,14 +760,19 @@ TransitionResult BeginEffect(
 	if (!state) {
 		return TransitionResult::Rejected;
 	}
-	if ((effect == JournalEffect::RemoteSessionRevoke && LocalPhaseStarted(journal))
+	if ((IsNetworkEffect(effect) && LocalPhaseStarted(journal))
 		|| (effect == JournalEffect::LocalDataClear
-			&& std::ranges::any_of(journal.accounts, [](const JournalAccount &account) {
-				return account.remoteSessionRevoke.state == EffectState::InProgress;
-			}))
+			&& std::ranges::any_of(journal.accounts, RemoteInProgress))
 		|| (effect == JournalEffect::SafeDestinationActivation
 			&& !LocalCleanupComplete(journal))) {
 		return TransitionResult::Rejected;
+	}
+	if (effect == JournalEffect::CurrentSessionLogout) {
+		const auto revoke = FindEffect(journal, JournalEffect::RemoteSessionRevoke, accountId);
+		if (revoke->state == EffectState::Pending
+			|| revoke->state == EffectState::InProgress) {
+			return TransitionResult::Rejected;
+		}
 	}
 	if (state->state == EffectState::InProgress
 		|| state->state == EffectState::Succeeded) {
@@ -821,6 +855,7 @@ std::vector<std::byte> EncodeJournal(const EmergencyActionJournal &journal) {
 		writer.byte(uint8_t(account.remoteSessionTarget));
 		WriteState(writer, account.localDataClear);
 		WriteState(writer, account.remoteSessionRevoke);
+		WriteState(writer, account.currentSessionLogout);
 		writer.u16(uint16_t(account.sessionIdsForRevoke.size()));
 		for (const auto &sessionId : account.sessionIdsForRevoke) {
 			writer.string(sessionId.value);
@@ -889,7 +924,9 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 			account.remoteSessionTarget = RemoteSessionTargetKind(value);
 		}
 		if (!ReadState(reader, &account.localDataClear, version)
-			|| !ReadState(reader, &account.remoteSessionRevoke, version)) {
+			|| !ReadState(reader, &account.remoteSessionRevoke, version)
+			|| (version >= 4
+				&& !ReadState(reader, &account.currentSessionLogout, version))) {
 			return std::nullopt;
 		}
 		uint16_t sessionCount = 0;

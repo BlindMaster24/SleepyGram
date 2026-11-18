@@ -47,10 +47,15 @@ enum class ProfileGenerationError : uchar {
 	MissingAdapter,
 	StartFailed,
 	StaleGeneration,
+	DerivationFailed,
+	ValidationFailed,
 };
 
 // A failed start must leave no live account; success returns its close action.
 using StartProfileAccount = Fn<std::optional<Fn<void()>>(
+	const AccountStorageTarget&,
+	const AccountKey&)>;
+using ValidateProfileAccount = Fn<bool(
 	const AccountStorageTarget&,
 	const AccountKey&)>;
 using GetAdminKeyringWrappingKey = Fn<std::optional<QByteArray>()>;
@@ -74,6 +79,11 @@ public:
 	}
 	[[nodiscard]] bool Start(
 		const MigrationController &sidecar,
+		StartProfileAccount startAccount,
+		ProfileGenerationError *error = nullptr);
+	[[nodiscard]] bool Start(
+		const MigrationController &sidecar,
+		ValidateProfileAccount validateAccount,
 		StartProfileAccount startAccount,
 		ProfileGenerationError *error = nullptr);
 	void Close();
@@ -118,6 +128,15 @@ AuthenticateCommittedProfileGeneration(
 	QString globalTdataPath,
 	const QByteArray &expectedTransactionId,
 	ProfileGenerationError *error = nullptr);
+
+using ProfilePasswordDone = Fn<void(
+	std::optional<OpenedProfileGeneration>,
+	ProfileGenerationError)>;
+
+void AuthenticateScopedProfilePasscode(
+	MigrationController sidecar,
+	QString passcode,
+	ProfilePasswordDone done);
 
 [[nodiscard]] std::optional<OpenedProfileGeneration>
 OpenCommittedProfileGeneration(

@@ -43,6 +43,7 @@ enum class JournalEffect : uint8_t {
 	RemoteSessionRevoke,
 	InstallationRemoval,
 	SafeDestinationActivation,
+	CurrentSessionLogout,
 };
 
 enum class EffectResult : uint8_t {
@@ -75,6 +76,7 @@ struct JournalAccount final {
 	RemoteSessionTargetKind remoteSessionTarget = RemoteSessionTargetKind::None;
 	JournalEffectState remoteSessionRevoke;
 	std::vector<SessionId> sessionIdsForRevoke;
+	JournalEffectState currentSessionLogout;
 };
 
 struct EmergencyActionJournal final {

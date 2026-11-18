@@ -27,6 +27,7 @@ public:
 	};
 	AuthKey(Type type, DcId dcId, const Data &data);
 	explicit AuthKey(const Data &data);
+	~AuthKey();
 
 	AuthKey(const AuthKey &other) = delete;
 	AuthKey &operator=(const AuthKey &other) = delete;

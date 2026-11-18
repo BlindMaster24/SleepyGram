@@ -22,6 +22,7 @@ on:
         options:
           - macos-15
           - macos-26
+          - xcode-27
       publish_release:
         description: Publish a release after all three platforms pass
         required: false
@@ -199,7 +200,8 @@ jobs:
           package="$RUNNER_TEMP/sleepygram-linux-x64"
           mkdir -p "$package"
           cp "$app" "$package/SleepyGram"
-          files=(SleepyGram)
+          cp Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$package/"
+          files=(SleepyGram LICENSE-SQLCipher.txt)
           if [ -f out/Release/Updater ]; then
             readelf -h out/Release/Updater | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || {
               echo "::error::Updater is not an x86_64 ELF executable"
@@ -539,6 +541,7 @@ jobs:
             --build-dir tdesktop/out/Release \
             --output "$app/Contents/Resources/BuildManifest.json" \
             --qt-version "$CI_QT_VERSION"
+          cp tdesktop/Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$app/Contents/Resources/"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
@@ -750,6 +753,7 @@ jobs:
           Assert-X64 "$out\SleepyGram.exe"
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item "$out\SleepyGram.exe" $package
+          Copy-Item "$env:REPO_PATH\Telegram\SourceFiles\ayu\libs\sqlite\LICENSE-SQLCipher.txt" $package
           if (Test-Path "$out\Updater.exe") {
             Assert-X64 "$out\Updater.exe"
             Copy-Item "$out\Updater.exe" $package

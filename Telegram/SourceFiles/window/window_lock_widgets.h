@@ -34,6 +34,7 @@ class Controller;
 class SlideAnimation;
 
 enum class PasscodeAttempt : uchar {
+	Unavailable,
 	Empty,
 	Flood,
 	Busy,
@@ -50,8 +51,7 @@ enum class PasscodeAttempt : uchar {
 	const QString &passcode,
 	Fn<void(bool correct)> done);
 
-// Lock-screen-only routing boundary. No emergency vault is installed yet, so
-// production submissions currently fall through to the legacy verifier.
+// Lock-screen-only routing boundary for passcode submission.
 [[nodiscard]] PasscodeAttempt TryLockScreenPasscode(
 	const QString &passcode,
 	Fn<void(bool correct)> done);

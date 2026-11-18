@@ -212,7 +212,7 @@ void CodecRejectsMalformedAndFutureData() {
 	truncated.pop_back();
 	Check("truncated-journal-rejected", !DecodeJournal(truncated));
 	auto future = bytes;
-	future[4] = std::byte(4);
+	future[4] = std::byte(255);
 	Check("unknown-version-rejected", !DecodeJournal(future));
 	Check("oversized-journal-rejected",
 		!DecodeJournal(std::vector<std::byte>(kMaxJournalBytes + 1)));

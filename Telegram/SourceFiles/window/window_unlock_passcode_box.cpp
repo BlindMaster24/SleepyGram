@@ -67,6 +67,9 @@ void Submit(
 		fail(tr::lng_passcode_wrong(tr::now));
 	});
 	switch (TryPasscode(field->text(), std::move(done))) {
+	case PasscodeAttempt::Unavailable:
+		fail(tr::lng_cant_do_this(tr::now));
+		return;
 	case PasscodeAttempt::Empty:
 		field->showError();
 		return;

@@ -17,6 +17,7 @@ namespace Ayu::ProfileSets {
 
 inline constexpr auto kAccountKeySize = 32;
 inline constexpr auto kAccountLocalStorageKeySize = 256;
+inline constexpr auto kAccountArchiveKeySize = 32;
 inline constexpr auto kAccountKeyringWrappingKeySize = 32;
 inline constexpr auto kAccountKeyringVersion = quint32(1);
 
@@ -45,6 +46,9 @@ enum class KeyringError : uchar {
 	AccountId id,
 	KeyringError *error = nullptr);
 [[nodiscard]] bool DeriveAccountLocalStorageKey(
+	const AccountKey &account,
+	bytes::span output);
+[[nodiscard]] bool DeriveAccountArchiveKey(
 	const AccountKey &account,
 	bytes::span output);
 [[nodiscard]] KeyringError ValidateAccountKeys(

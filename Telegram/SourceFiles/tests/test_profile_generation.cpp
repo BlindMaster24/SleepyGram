@@ -315,6 +315,22 @@ int RunChecks() {
 		&& startOrder == std::vector<AccountId>{ { 4, 1 }, { 4, 2 } }
 		&& partialCloseOrder == std::vector<AccountId>{ { 4, 1 } });
 
+	auto corrupt = AuthenticateCommittedProfileGeneration(
+		*sidecar, {}, Credential(3), {}, {}, {}, {}, committed->transactionId);
+	auto validated = std::vector<AccountId>();
+	check("offline-validation-checks-every-account-before-any-start",
+		corrupt && !corrupt->Start(
+			*sidecar,
+			[&](const AccountStorageTarget &target, const AccountKey &) {
+				validated.push_back(target.id);
+				return target.id != AccountId{ 4, 2 };
+			},
+			adapter,
+			&error)
+		&& error == ProfileGenerationError::ValidationFailed
+		&& adapterCalls.size() == 2
+		&& validated == std::vector<AccountId>{ { 4, 1 }, { 4, 2 } });
+
 	const auto authenticate = [&](const QByteArray &transactionId) {
 		return AuthenticateCommittedProfileGeneration(
 			*sidecar, {}, Credential(1), {}, {}, {}, {}, transactionId, &error);

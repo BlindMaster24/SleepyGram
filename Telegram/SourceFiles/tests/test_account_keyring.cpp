@@ -57,6 +57,11 @@ int RunChecks() {
 		DeriveAccountLocalStorageKey(
 			{ { 1, 8 }, fixtureKey.key }, bytes::make_span(otherLocal))
 		&& local != otherLocal);
+	auto archive = std::array<char, kAccountArchiveKeySize>();
+	check("archive-and-local-storage-use-independent-key-material",
+		DeriveAccountArchiveKey(fixtureKey, bytes::make_span(archive))
+		&& !std::equal(archive.begin(), archive.end(), local.begin())
+		&& !DeriveAccountArchiveKey(fixtureKey, bytes::make_span(local)));
 	check("invalid-local-storage-keys-rejected",
 		!DeriveAccountLocalStorageKey(
 			{ {}, fixtureKey.key }, bytes::make_span(otherLocal))

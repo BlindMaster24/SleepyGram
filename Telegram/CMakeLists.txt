@@ -37,6 +37,7 @@ include(cmake/lib_fido2.cmake)
 include(cmake/lib_zxcvbn.cmake)
 include(cmake/lib_litehtml.cmake)
 include(cmake/lib_quickjs.cmake)
+include(cmake/lib_sqlcipher.cmake)
 include(cmake/lib_widget_renderer.cmake)
 include(cmake/lib_widget_sandbox.cmake)
 include(cmake/td_export.cmake)
@@ -96,6 +97,7 @@ PRIVATE
     tdesktop::lib_fido2
     tdesktop::lib_litehtml
     tdesktop::lib_quickjs
+    tdesktop::lib_sqlcipher
     tdesktop::lib_widget_renderer
     tdesktop::lib_widget_sandbox
     tdesktop::lib_tgcalls
@@ -231,8 +233,6 @@ set(ayugram_files
         ayu/ui/components/saved_music.h
         ayu/libs/json.hpp
         ayu/libs/json_ext.hpp
-        ayu/libs/sqlite/sqlite3.c
-        ayu/libs/sqlite/sqlite3.h
         ayu/libs/sqlite/sqlite_orm.h
         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.cpp
         ayu/features/streamer_mode/platform/linux/streamer_mode_linux.h
@@ -312,6 +312,10 @@ set(ayugram_files
         ayu/data/messages_storage.cpp
         ayu/data/messages_storage.h
         ayu/data/entities.h
+        ayu/data/archive_partition.cpp
+        ayu/data/archive_partition.h
+        ayu/data/archive_sqlcipher.cpp
+        ayu/data/archive_sqlcipher.h
         ayu/data/ayu_database.cpp
         ayu/data/archive_backup.cpp
         ayu/data/archive_backup.h

@@ -127,6 +127,7 @@ struct FakeRemote final : RemoteSessionEffect {
 	std::map<std::string, EffectResult> results;
 	std::vector<std::string> calledAccountIds;
 	std::vector<CoordinatorClock::TimePoint> deadlines;
+	std::vector<CoordinatorClock::TimePoint> logoutDeadlines;
 	std::vector<RemoteSessionTargetKind> remoteTargets;
 	std::vector<std::vector<SessionId>> targets;
 	std::chrono::seconds advanceAfterFirstCall = std::chrono::seconds(0);
@@ -162,6 +163,21 @@ struct FakeRemote final : RemoteSessionEffect {
 		return (i == results.end())
 			? EffectResult::ConfirmedSuccess
 			: i->second;
+	}
+
+	EffectResult logoutCurrent(
+			const AccountId &accountId,
+			CoordinatorClock::TimePoint deadline) override {
+		const auto persisted = LoadJournal(*store, OperationId("op-coordinator"));
+		claimsObserved = claimsObserved && persisted && std::ranges::any_of(
+			persisted->accounts,
+			[&](const JournalAccount &account) {
+				return account.accountId == accountId
+					&& account.currentSessionLogout.state == EffectState::InProgress;
+			});
+		logoutDeadlines.push_back(deadline);
+		events->push_back("logout:" + accountId.value);
+		return EffectResult::ConfirmedSuccess;
 	}
 };
 
@@ -256,19 +272,40 @@ void RemoteClaimsAndSharedDeadlinePrecedeLocalEffects() {
 			RemoteSessionTargetKind::SelectedSessions,
 			RemoteSessionTargetKind::SelectedSessions }
 		&& f.remote.deadlines == std::vector<CoordinatorClock::TimePoint>{
+			deadline, deadline }
+		&& f.remote.logoutDeadlines == std::vector<CoordinatorClock::TimePoint>{
 			deadline, deadline });
 	Check("order-is-remote-then-local-then-safe-destination",
 		f.events == std::vector<std::string>{
 			"remote:account-a",
+			"logout:account-a",
 			"remote:account-b",
+			"logout:account-b",
 			"local:account-a",
 			"local:account-b",
 			"destination" });
 	Check("full-success-is-recorded-as-complete",
 		report.result == CoordinatorResult::Complete
 		&& report.journalStatus == JournalStatus::Complete
-		&& report.remoteAttempts == 2
+		&& report.remoteAttempts == 4
 		&& report.localAttempts == 2);
+}
+
+void CurrentLogoutRunsWithNoOtherDevicePolicy() {
+	auto f = Fixtures();
+	auto plan = Plan(1);
+	plan.accounts.front().remoteTarget = RemoteSessionTargetKind::None;
+	plan.accounts.front().sessionIdsForRevokeRequest.clear();
+	f.journal = MakeJournal(plan).value();
+	const auto report = f.start();
+	Check("policy-none-still-logs-out-current-session",
+		report.result == CoordinatorResult::Complete
+		&& report.remoteAttempts == 1
+		&& f.remote.calls == 0
+		&& f.journal.accounts.front().currentSessionLogout.state
+			== EffectState::Succeeded
+		&& f.events == std::vector<std::string>{
+			"logout:account-a", "local:account-a", "destination" });
 }
 
 void AllOtherSessionsRemainsAServerScope() {
@@ -426,7 +463,7 @@ void LostOutcomeCheckpointRecoversAsUnconfirmed() {
 void LostLocalOutcomeCanBeRetriedOffline() {
 	auto f = Fixtures();
 	f.journal = MakeJournal(Plan(1)).value();
-	f.store.failWrite = 4;
+	f.store.failWrite = 6;
 	const auto first = f.start();
 	Check("uncheckpointed-local-success-is-not-reported-as-complete",
 		first.result == CoordinatorResult::CheckpointFailed
@@ -448,6 +485,7 @@ void LostLocalOutcomeCanBeRetriedOffline() {
 
 int main() {
 	RemoteClaimsAndSharedDeadlinePrecedeLocalEffects();
+	CurrentLogoutRunsWithNoOtherDevicePolicy();
 	AllOtherSessionsRemainsAServerScope();
 	OneFiveSecondBudgetIsSharedAcrossAccounts();
 	UnconfirmedRemoteResultDoesNotBlockLocalCleanup();

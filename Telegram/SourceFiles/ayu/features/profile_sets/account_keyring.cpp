@@ -252,13 +252,15 @@ KeyringError ValidateAccountKeys(const std::vector<AccountKey> &accounts) {
 	return KeyringError::None;
 }
 
-bool DeriveAccountLocalStorageKey(
+namespace {
+
+bool DeriveScopedKey(
 		const AccountKey &account,
+		std::string_view purpose,
+		size_t size,
 		bytes::span output) {
-	constexpr auto kInfo = std::string_view(
-		"SleepyGram profile account local storage v1");
 	if (!account.id || account.key.size() != kAccountKeySize
-		|| AllZero(account.key) || output.size() != kAccountLocalStorageKeySize) {
+		|| AllZero(account.key) || output.size() != size) {
 		return false;
 	}
 	auto salt = QByteArray();
@@ -268,7 +270,27 @@ bool DeriveAccountLocalStorageKey(
 	return Storage::HkdfSha256(
 		bytes::make_span(account.key.constData(), account.key.size()),
 		bytes::make_span(salt.constData(), salt.size()),
-		bytes::make_span(kInfo.data(), kInfo.size()),
+		bytes::make_span(purpose.data(), purpose.size()),
+		output);
+}
+
+} // namespace
+
+bool DeriveAccountLocalStorageKey(
+		const AccountKey &account,
+		bytes::span output) {
+	return DeriveScopedKey(
+		account,
+		"SleepyGram profile account local storage v1",
+		kAccountLocalStorageKeySize,
+		output);
+}
+
+bool DeriveAccountArchiveKey(const AccountKey &account, bytes::span output) {
+	return DeriveScopedKey(
+		account,
+		"SleepyGram profile account archive v1",
+		kAccountArchiveKeySize,
 		output);
 }
 

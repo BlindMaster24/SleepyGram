@@ -29,6 +29,8 @@ using namespace Ayu::ProfileSets;
 
 constexpr auto kCrashCode = 41;
 constexpr auto kProfileFixturePrefix = "sleepygram-migration-cas-fixture-";
+constexpr auto kLegacyProfileMarker
+	= "sleepygram-profile-migration-workspace-v1\n";
 
 std::filesystem::path NewWorkspacePath(const char *label) {
 	const auto suffix = std::chrono::steady_clock::now()
@@ -88,11 +90,15 @@ std::filesystem::path GenerationDirectory(
 	return root / "generations" / id.toHex().toStdString();
 }
 
-int EndDuringReplace(const QString &dataDirectory, const QByteArray &id) {
+bool IsSubprocessFixturePath(const QString &dataDirectory) {
 	const auto container = QFileInfo(dataDirectory).dir();
-	if (!container.dirName().startsWith(QLatin1StringView(kProfileFixturePrefix))
-		|| QFileInfo(container.path()).dir().canonicalPath()
-			!= QDir(QDir::tempPath()).canonicalPath()) {
+	return container.dirName().startsWith(QLatin1StringView(kProfileFixturePrefix))
+		&& QFileInfo(container.path()).dir().canonicalPath()
+			== QDir(QDir::tempPath()).canonicalPath();
+}
+
+int EndDuringReplace(const QString &dataDirectory, const QByteArray &id) {
+	if (!IsSubprocessFixturePath(dataDirectory)) {
 		return 1;
 	}
 	const auto workspace = MigrationController::OpenProfileWorkspace(dataDirectory);
@@ -104,6 +110,29 @@ int EndDuringReplace(const QString &dataDirectory, const QByteArray &id) {
 		ReplacementInputs(),
 		[](const CommittedMigration&) -> bool { std::_Exit(kCrashCode); });
 	return interrupted ? 2 : 3;
+}
+
+int EndDuringFirstCutover(const QString &dataDirectory) {
+	if (!IsSubprocessFixturePath(dataDirectory)) {
+		return 1;
+	}
+	const auto workspace = MigrationController::OpenProfileWorkspace(dataDirectory);
+	if (!workspace) {
+		return 1;
+	}
+	auto error = MigrationError::None;
+	const auto blocked = QDir(workspace->workspacePath()).filePath(
+		QStringLiteral(".cutover/active"));
+	const auto inputs = Inputs();
+	const auto interrupted = workspace->CommitVerified(
+		[&](const CommittedMigration &candidate) {
+			return Matches(candidate, inputs) && QDir().mkpath(blocked);
+		},
+		&error);
+	if (!interrupted && error == MigrationError::WorkspaceIo) {
+		std::_Exit(kCrashCode);
+	}
+	return 2;
 }
 
 int RunChecks() {
@@ -233,10 +262,14 @@ int RunChecks() {
 		return 1;
 	}
 	check("probing-an-existing-legacy-profile-is-read-only",
-		MigrationController::ProbeProfileWorkspace(dataDirectory, &error)
-			== MigrationState::Empty
+		MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::Legacy
 		&& error == MigrationError::None
 		&& QDir(dataDirectory).isEmpty());
+	check("relative-profile-path-cannot-authorize-legacy-or-preparing",
+		MigrationController::ProbeProfileStartup(QStringLiteral("tdata"), &error)
+			== ProfileStartupMode::RecoveryRequired
+		&& error == MigrationError::UnsafeWorkspace);
 	const auto live = MigrationController::CreateProfileWorkspace(
 		dataDirectory,
 		&error);
@@ -247,6 +280,18 @@ int RunChecks() {
 	if (!live) {
 		return 1;
 	}
+	const auto root = std::filesystem::path(live->workspacePath().toStdString());
+	const auto phasePath = root / ".migration-workspace";
+	const auto pendingPath = root / "migration.manifest.pending";
+	const auto activePath = root / "migration.manifest.committed";
+	const auto preparingMarker = ReadFixture(phasePath);
+	check("new-untouched-workspace-is-preparing-without-a-probe-write",
+		MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::Preparing
+		&& error == MigrationError::None
+		&& !std::filesystem::exists(root / "migration.lock")
+		&& !std::filesystem::exists(root / ".cutover")
+		&& ReadFixture(phasePath) == preparingMarker);
 	{
 		auto lock = QLockFile(QDir(live->workspacePath()).filePath(
 			QStringLiteral("migration.lock")));
@@ -257,8 +302,35 @@ int RunChecks() {
 			&& !live->CommitVerified([](const auto &) { return true; }, &error)
 			&& error == MigrationError::WorkspaceBusy);
 	}
+	const auto legacyWitness = std::filesystem::path(dataDirectory.toStdString())
+		/ "legacy-source-fixture";
+	if (!WriteFixture(legacyWitness, "legacy-data")) {
+		return 1;
+	}
 	check("workspace-can-stage-after-owner-releases-lock",
 		live->Stage(inputs, &error) && error == MigrationError::None);
+	const auto untouchedPending = ReadFixture(pendingPath);
+	check("valid-staging-remains-preparing-and-preserves-legacy-source",
+		MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::Preparing
+		&& error == MigrationError::None
+		&& ReadFixture(legacyWitness) == "legacy-data"
+		&& ReadFixture(pendingPath) == untouchedPending
+		&& !std::filesystem::exists(root / "migration.lock"));
+	const auto alias = std::filesystem::path(profile.path().toStdString())
+		/ "tdata-alias";
+	auto aliasError = std::error_code();
+	std::filesystem::create_directory_symlink(
+		std::filesystem::path(dataDirectory.toStdString()),
+		alias,
+		aliasError);
+	if (!aliasError) {
+		const auto dottedAlias = QString::fromStdString((alias / ".").string());
+		check("directory-alias-cannot-present-a-preparing-marker",
+			MigrationController::ProbeProfileStartup(dottedAlias, &error)
+				== ProfileStartupMode::RecoveryRequired
+			&& error == MigrationError::UnsafeWorkspace);
+	}
 	check("production-commit-requires-explicit-verification",
 		!live->Commit(&error) && error == MigrationError::VerificationRequired
 		&& !live->LoadCommitted());
@@ -275,7 +347,63 @@ int RunChecks() {
 		}, &error)
 		&& error == MigrationError::ReadbackFailed
 		&& !live->LoadCommitted());
+	check("preparing-marker-cannot-authorize-a-tampered-staged-pair",
+		MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::RecoveryRequired
+		&& error == MigrationError::ReadbackFailed);
 	if (!WriteFixture(liveVault, originalVault)) {
+		return 1;
+	}
+	auto cutoverCrash = QProcess();
+	cutoverCrash.start(QCoreApplication::applicationFilePath(), {
+		QStringLiteral("--end-during-first-cutover"),
+		dataDirectory,
+	});
+	const auto cutoverInterrupted = cutoverCrash.waitForFinished()
+		&& cutoverCrash.exitStatus() == QProcess::NormalExit
+		&& cutoverCrash.exitCode() == kCrashCode;
+	const auto cutoverMarker = ReadFixture(phasePath);
+	const auto blockedPublication = root / ".cutover" / "active";
+	check("abrupt-exit-after-durable-cutover-cannot-reactivate-legacy",
+		cutoverInterrupted
+		&& cutoverMarker.find("cutover-started ") != std::string::npos
+		&& !std::filesystem::exists(activePath)
+		&& MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::RecoveryRequired
+		&& error == MigrationError::InvalidManifest
+		&& ReadFixture(legacyWitness) == "legacy-data"
+		&& ReadFixture(pendingPath) == untouchedPending);
+	if (!cutoverInterrupted || cutoverMarker.size() < 33
+		|| !std::filesystem::remove(blockedPublication)) {
+		return 1;
+	}
+	check("replacing-preparing-text-cannot-downgrade-a-started-cutover",
+		WriteFixture(phasePath, preparingMarker)
+		&& MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::RecoveryRequired
+		&& error == MigrationError::InvalidManifest
+		&& ReadFixture(phasePath) == preparingMarker);
+	if (!WriteFixture(phasePath, cutoverMarker)) {
+		return 1;
+	}
+	auto wrongPending = untouchedPending;
+	const auto oldId = cutoverMarker.substr(cutoverMarker.size() - 33, 32);
+	const auto idOffset = wrongPending.find(oldId);
+	if (idOffset == std::string::npos) {
+		return 1;
+	}
+	wrongPending[idOffset] = (wrongPending[idOffset] == 'a') ? 'b' : 'a';
+	auto wrongPendingVerified = false;
+	check("cutover-resume-requires-the-original-staged-transaction",
+		WriteFixture(pendingPath, wrongPending)
+		&& !live->CommitVerified([&](const auto &) {
+			wrongPendingVerified = true;
+			return true;
+		}, &error)
+		&& error == MigrationError::InvalidManifest
+		&& !wrongPendingVerified
+		&& !std::filesystem::exists(activePath));
+	if (!WriteFixture(pendingPath, untouchedPending)) {
 		return 1;
 	}
 	const auto initial = live->CommitVerified(
@@ -283,12 +411,13 @@ int RunChecks() {
 		&error);
 	check("verified-profile-commit-is-visible-to-startup",
 		initial
-		&& MigrationController::ProbeProfileWorkspace(dataDirectory)
-			== MigrationState::Committed);
+		&& MigrationController::ProbeProfileStartup(dataDirectory, &error)
+			== ProfileStartupMode::Committed
+		&& error == MigrationError::None
+		&& ReadFixture(phasePath) == cutoverMarker);
 	if (!initial) {
 		return 1;
 	}
-	const auto root = std::filesystem::path(live->workspacePath().toStdString());
 	const auto accountRoot = live->accountStorageRoot();
 	const auto accountWitness = std::filesystem::path(accountRoot.toStdString())
 		/ "unrelated-account-fixture";
@@ -393,6 +522,25 @@ int RunChecks() {
 		&& !reopened->RetireInactiveGenerations(initial->transactionId, &error)
 		&& error == MigrationError::StaleGeneration
 		&& std::filesystem::exists(root / "stage" / "profile-vault.bin"));
+	auto leaseCalled = false;
+	const auto lease = [&] {
+		leaseCalled = true;
+		auto competing = QLockFile(QDir(reopened->workspacePath()).filePath(
+			QStringLiteral("migration.lock")));
+		return !competing.tryLock(0) && isActive(second->transactionId);
+	};
+	check("generation-lease-rejects-stale-id-without-callback",
+		!reopened->WithCurrentGeneration(initial->transactionId, lease, &error)
+		&& error == MigrationError::StaleGeneration
+		&& !leaseCalled);
+	check("generation-lease-holds-the-writer-lock-through-its-callback",
+		reopened->WithCurrentGeneration(second->transactionId, lease, &error)
+		&& error == MigrationError::None && leaseCalled);
+	check("generation-lease-propagates-callback-failure",
+		!reopened->WithCurrentGeneration(
+			second->transactionId, [] { return false; }, &error)
+		&& error == MigrationError::CallbackFailed
+		&& isActive(second->transactionId));
 
 	const auto third = reopened->ReplaceCommitted(
 		second->transactionId,
@@ -455,6 +603,37 @@ int RunChecks() {
 		&& !reopened->Stage(inputs, &error)
 		&& error == MigrationError::InvalidManifest);
 
+	const auto oldLayout = QTemporaryDir();
+	if (!oldLayout.isValid()
+		|| !QDir(oldLayout.path()).mkdir(QStringLiteral("tdata"))) {
+		return 1;
+	}
+	const auto oldData = QDir(oldLayout.path()).filePath(QStringLiteral("tdata"));
+	const auto oldWorkspace = MigrationController::CreateProfileWorkspace(oldData);
+	if (!oldWorkspace || !oldWorkspace->Stage(inputs)
+		|| !oldWorkspace->CommitVerified(
+			[&](const auto &candidate) { return Matches(candidate, inputs); })) {
+		return 1;
+	}
+	const auto oldRoot = std::filesystem::path(
+		oldWorkspace->workspacePath().toStdString());
+	const auto oldActive = oldRoot / "migration.manifest.committed";
+	check("validated-active-manifest-in-an-old-layout-is-readable",
+		WriteFixture(oldRoot / ".migration-workspace", kLegacyProfileMarker)
+		&& std::filesystem::remove(oldRoot / ".cutover")
+		&& MigrationController::ProbeProfileStartup(oldData, &error)
+			== ProfileStartupMode::Committed
+		&& error == MigrationError::None);
+	check("old-pending-pair-without-active-is-ambiguous-and-cannot-publish",
+		std::filesystem::remove(oldActive)
+		&& MigrationController::ProbeProfileStartup(oldData, &error)
+			== ProfileStartupMode::RecoveryRequired
+		&& error == MigrationError::InvalidManifest
+		&& !oldWorkspace->CommitVerified(
+			[&](const auto &candidate) { return Matches(candidate, inputs); },
+			&error)
+		&& error == MigrationError::InvalidManifest);
+
 	std::printf("%d of %d checks passed.\n", passed, total);
 	return (passed == total) ? 0 : 1;
 }
@@ -468,6 +647,9 @@ int main(int argc, char *argv[]) {
 		return EndDuringReplace(
 			arguments[2],
 			QByteArray::fromHex(arguments[3].toLatin1()));
+	}
+	if (arguments.size() == 3 && arguments[1] == u"--end-during-first-cutover") {
+		return EndDuringFirstCutover(arguments[2]);
 	}
 	return RunChecks();
 }

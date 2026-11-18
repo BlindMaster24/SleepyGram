@@ -544,6 +544,9 @@ MTP::AuthKeyPtr CreatePasscodeKey(
 	}
 	auto key = MTP::AuthKey::Data{ { gsl::byte{} } };
 	const auto to = reinterpret_cast<unsigned char*>(key.data());
+	const auto wipe = gsl::finally([&] {
+		OPENSSL_cleanse(key.data(), key.size());
+	});
 	if (kdf.kind == kPasscodeKdfArgon2id) {
 #if OPENSSL_VERSION_NUMBER >= 0x30200000L
 		const auto algorithm = EVP_KDF_fetch(

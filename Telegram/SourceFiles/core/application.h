@@ -12,6 +12,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_separate_id.h"
 
 class History;
+class PreLaunchWindow;
+
+namespace Ayu::ProfileSets {
+enum class ProfileStartupMode : uchar;
+} // namespace Ayu::ProfileSets
 
 namespace base {
 class BatterySaving;
@@ -321,6 +326,7 @@ public:
 	void lockByPasscode();
 	void maybeLockByPasscode();
 	void unlockPasscode();
+	[[nodiscard]] bool legacyProfileAccessAllowed() const;
 	[[nodiscard]] bool passcodeLocked() const;
 	rpl::producer<bool> passcodeLockChanges() const;
 	rpl::producer<bool> passcodeLockValue() const;
@@ -414,6 +420,7 @@ private:
 		const QVariant &context);
 
 	static Application *Instance;
+	const Ayu::ProfileSets::ProfileStartupMode _profileStartupMode;
 	struct InstanceSetter {
 		InstanceSetter(not_null<Application*> instance) {
 			Expects(Instance == nullptr);
@@ -461,6 +468,7 @@ private:
 	Window::Controller *_lastActivePrimaryWindow = nullptr;
 	Window::Controller *_windowInSettings = nullptr;
 	std::unique_ptr<Window::SavedWindows> _savedWindows;
+	std::unique_ptr<PreLaunchWindow> _blockedProfileWindow;
 	bool _lastMouseIgnored = false;
 	bool _lastTouchProcessed = false;
 
