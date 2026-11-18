@@ -299,9 +299,11 @@ void MainWindow::setupIntro(
 
 	clearWidgets();
 	_intro = std::move(created);
-	DragArea::SetupProxyDropArea(_intro.data(), [](const QString &localUrl) {
-		Core::App().openLocalUrl(localUrl, {});
-	});
+	if (!account().isProvisionalScopedLogin()) {
+		DragArea::SetupProxyDropArea(_intro.data(), [](const QString &localUrl) {
+			Core::App().openLocalUrl(localUrl, {});
+		});
+	}
 	if (_passcodeLock || _setupEmailLock) {
 		_intro->hide();
 	} else {
@@ -363,7 +365,8 @@ void MainWindow::setupMain(
 }
 
 void MainWindow::showSettings() {
-	if (_passcodeLock || _setupEmailLock) {
+	if (_passcodeLock || _setupEmailLock
+		|| Core::App().domain().provisionalEnrollmentActive()) {
 		return;
 	}
 

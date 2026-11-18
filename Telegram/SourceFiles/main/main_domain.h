@@ -36,6 +36,8 @@ class VaultRuntime;
 
 namespace Main {
 
+class ProvisionalAccountAuthorization;
+
 class Account;
 class Session;
 
@@ -63,6 +65,10 @@ public:
 	[[nodiscard]] bool startPreparedScopedProfile(
 		const Ayu::ProfileSets::MigrationController &sidecar,
 		Ayu::ProfileSets::ProfileGenerationError *error = nullptr);
+	[[nodiscard]] bool startPreparedScopedEnrollment(
+		const Ayu::ProfileSets::MigrationController &sidecar,
+		Fn<void(ProvisionalAccountAuthorization)> done);
+	[[nodiscard]] bool provisionalEnrollmentActive() const;
 	void clearPreparedScopedProfile();
 	[[nodiscard]] auto preparedScopedProfileAccess() const
 		-> const Ayu::ProfileSets::ProfileGenerationAccess*;

@@ -1395,7 +1395,7 @@ void SessionPrivate::handleReceived() {
 		auto res = HandleResult::Success; // if no need to handle, then succeed
 		auto from = decryptedInts + kEncryptedHeaderIntsCount;
 		auto end = from + (messageLength / kIntSize);
-		if (!_instance->isEmergencySessionEffect()) {
+		if (_instance->allowsPayloadDebugLogging()) {
 			auto sfrom = decryptedInts + 4U; // msg_id + seq_no + length + message
 			MTP_LOG(_shiftedDcId, ("Recv: ")
 				+ DumpToText(sfrom, end)
@@ -2735,7 +2735,7 @@ bool SessionPrivate::sendSecureRequest(
 	memcpy(request->data() + 0, &_sessionSalt, 2 * sizeof(mtpPrime));
 	memcpy(request->data() + 2, &_sessionId, 2 * sizeof(mtpPrime));
 
-	if (!_instance->isEmergencySessionEffect()) {
+	if (_instance->allowsPayloadDebugLogging()) {
 		auto from = request->constData() + 4;
 		MTP_LOG(_shiftedDcId, ("Send: ")
 			+ DumpToText(from, from + messageSize)

@@ -172,6 +172,10 @@ void Step::finish(const MTPauth_Authorization &auth, QImage &&photo) {
 		}
 		finish(data.vuser(), std::move(photo));
 	}, [&](const MTPDauth_authorizationSignUpRequired &data) {
+		if (_account->isProvisionalScopedLogin()) {
+			showError(rpl::single(u"Sign in with an existing Telegram account."_q));
+			return;
+		}
 		if (const auto terms = data.vterms_of_service()) {
 			terms->match([&](const MTPDhelp_termsOfService &data) {
 				getData()->termsLock = Window::TermsLock::FromMTP(
@@ -186,6 +190,12 @@ void Step::finish(const MTPauth_Authorization &auth, QImage &&photo) {
 }
 
 void Step::finish(const MTPUser &user, QImage &&photo) {
+	if (_account->isProvisionalScopedLogin()) {
+		if (!_account->completeProvisionalScopedLogin(user)) {
+			showError(rpl::single(Lang::Hard::ServerError()));
+		}
+		return;
+	}
 	if (user.type() != mtpc_user
 		|| !user.c_user().is_self()
 		|| !user.c_user().vid().v) {

@@ -230,12 +230,14 @@ QrWidget::QrWidget(
 		refreshCode();
 	}, lifetime());
 
-	account->appConfig().value(
-	) | rpl::filter([=] {
-		return !_passkey;
-	}) | rpl::on_next([=] {
-		setupPasskeyLink();
-	}, lifetime());
+	if (!account->isProvisionalScopedLogin()) {
+		account->appConfig().value(
+		) | rpl::filter([=] {
+			return !_passkey;
+		}) | rpl::on_next([=] {
+			setupPasskeyLink();
+		}, lifetime());
+	}
 }
 
 QString QrWidget::accessibilityName() {
@@ -294,7 +296,8 @@ rpl::producer<QString> QrWidget::nextButtonText() const {
 }
 
 bool QrWidget::hasBack() const {
-	return Core::App().domain().maybeLastOrSomeAuthedAccount();
+	return !account().isProvisionalScopedLogin()
+		&& Core::App().domain().maybeLastOrSomeAuthedAccount();
 }
 
 void QrWidget::setupControls() {

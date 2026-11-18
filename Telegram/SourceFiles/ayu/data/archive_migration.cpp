@@ -371,10 +371,13 @@ Result Partition(sqlite3 &legacy, const std::vector<StagedArchive> &archives) {
 
 } // namespace
 
-ArchivePartitionResult StageLegacyArchiveFiles(
+namespace {
+
+ArchivePartitionResult StageArchiveFiles(
 		const std::filesystem::path &dataDirectory,
 		std::span<const LegacyArchiveFileTarget> targets,
-		const std::string &schemaSql) {
+		const std::string &schemaSql,
+		bool emptySource) {
 	const auto data = dataDirectory.has_filename()
 		? dataDirectory
 		: dataDirectory.parent_path();
@@ -382,7 +385,17 @@ ArchivePartitionResult StageLegacyArchiveFiles(
 	if (!data.has_filename() || !RealDirectory(root) || !ValidTargets(targets)) {
 		return Result::InvalidTarget;
 	}
-	auto source = OpenLegacy(data / "ayudata.db");
+	auto source = Connection();
+	if (emptySource) {
+		auto raw = static_cast<sqlite3*>(nullptr);
+		const auto opened = sqlite3_open(":memory:", &raw);
+		source = Connection(raw);
+		if (opened != SQLITE_OK || !Execute(*source, schemaSql.c_str())) {
+			return Result::InvalidSource;
+		}
+	} else {
+		source = OpenLegacy(data / "ayudata.db");
+	}
 	if (!source) {
 		return Result::InvalidSource;
 	}
@@ -446,6 +459,22 @@ ArchivePartitionResult StageLegacyArchiveFiles(
 		}
 	}
 	return Result::Success;
+}
+
+} // namespace
+
+ArchivePartitionResult StageLegacyArchiveFiles(
+		const std::filesystem::path &dataDirectory,
+		std::span<const LegacyArchiveFileTarget> targets,
+		const std::string &schemaSql) {
+	return StageArchiveFiles(dataDirectory, targets, schemaSql, false);
+}
+
+ArchivePartitionResult StageEmptyScopedArchiveFiles(
+		const std::filesystem::path &dataDirectory,
+		std::span<const LegacyArchiveFileTarget> targets,
+		const std::string &schemaSql) {
+	return StageArchiveFiles(dataDirectory, targets, schemaSql, true);
 }
 
 ArchiveSqlCipher::Connection OpenVerifiedScopedArchive(

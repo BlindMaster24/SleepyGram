@@ -57,6 +57,11 @@ struct Paths {
 	uint64 accountId,
 	PeerId peerId,
 	Snapshot *snapshot);
+[[nodiscard]] bool DecodeSnapshot(
+	const QByteArray &bytes,
+	uint64 accountId,
+	PeerId peerId,
+	Snapshot *snapshot);
 [[nodiscard]] qint64 UsageBytes(
 	const QString &root,
 	const QStringList &excluded = {});
@@ -68,6 +73,11 @@ struct Paths {
 	const QStringList &excluded = {});
 [[nodiscard]] bool ReadAttachments(
 	const Paths &paths,
+	uint64 accountId,
+	PeerId peerId,
+	std::vector<Attachment> *attachments);
+[[nodiscard]] bool DecodeAttachments(
+	const QByteArray &bytes,
 	uint64 accountId,
 	PeerId peerId,
 	std::vector<Attachment> *attachments);

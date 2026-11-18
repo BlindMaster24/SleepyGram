@@ -286,15 +286,16 @@ def verify_package(archive: Path, platform_name: str) -> dict[str, object]:
         raise RuntimeError(f"Expected artifact name {PLATFORMS[platform_name][0]}.")
     names, manifest_bytes = archive_members(archive, platform_name)
     if platform_name == "linux-x64":
-        required = {"SleepyGram", MANIFEST, "LICENSE-SQLCipher.txt"}
+        required = {"SleepyGram", "SleepyGramRemovalHelper", MANIFEST, "LICENSE-SQLCipher.txt"}
         allowed = required | {"Updater"}
     elif platform_name == "windows-x64":
-        required = {"SleepyGram.exe", MANIFEST, "LICENSE-SQLCipher.txt"}
+        required = {"SleepyGram.exe", "SleepyGramRemovalHelper.exe", MANIFEST, "LICENSE-SQLCipher.txt"}
         allowed = required | {"Updater.exe", "modules/x64/d3d/d3dcompiler_47.dll"}
     else:
         required = {
             "SleepyGram.app/Contents/Info.plist",
             "SleepyGram.app/Contents/Resources/Telegram.rcc",
+            "SleepyGram.app/Contents/Helpers/SleepyGramRemovalHelper",
             "SleepyGram.app/Contents/Resources/SleepyGram.icns",
             "SleepyGram.app/Contents/Resources/BuildManifest.json",
             "SleepyGram.app/Contents/Resources/LICENSE-SQLCipher.txt",

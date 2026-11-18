@@ -20,6 +20,11 @@ struct LegacyArchiveFileTarget final {
 	std::span<const LegacyArchiveFileTarget> targets,
 	const std::string &schemaSql);
 
+[[nodiscard]] ArchivePartitionResult StageEmptyScopedArchiveFiles(
+	const std::filesystem::path &dataDirectory,
+	std::span<const LegacyArchiveFileTarget> targets,
+	const std::string &schemaSql);
+
 [[nodiscard]] ArchiveSqlCipher::Connection OpenVerifiedScopedArchive(
 	const std::filesystem::path &path,
 	int64_t userId,

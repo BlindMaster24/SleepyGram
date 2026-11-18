@@ -103,6 +103,10 @@ void CloseScopedArchives();
 	const std::filesystem::path &dataDirectory,
 	std::span<const Ayu::LegacyArchiveFileTarget> targets);
 
+[[nodiscard]] Ayu::ArchivePartitionResult StageEmptyScopedArchivePartitions(
+	const std::filesystem::path &dataDirectory,
+	std::span<const Ayu::LegacyArchiveFileTarget> targets);
+
 void addEditedMessage(const EditedMessage &message);
 std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit);
 std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery);

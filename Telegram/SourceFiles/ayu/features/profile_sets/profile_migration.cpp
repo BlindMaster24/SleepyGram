@@ -1562,6 +1562,20 @@ QString MigrationController::accountStorageRoot() const {
 		: QString();
 }
 
+bool MigrationController::SyncScopedAccount(QStringView locator) const {
+	const auto accounts = accountStorageRoot();
+	if (accounts.isEmpty() || !ValidGenerationName(locator)) {
+		return false;
+	}
+	const auto account = QDir(accounts).filePath(locator.toString());
+	const auto data = QDir(account).filePath(u"data"_q);
+	const auto user = QDir(account).filePath(u"user"_q);
+	return CanonicalDirectory(account) == account
+		&& CanonicalDirectory(data) == data && CanonicalDirectory(user) == user
+		&& SyncDirectory(data) && SyncDirectory(user)
+		&& SyncDirectory(account) && SyncDirectory(accounts);
+}
+
 QString MigrationController::emergencyJournalDirectory() const {
 	return (!_profileDataDirectory.isEmpty() && validateWorkspace())
 		? ManifestPath(_root, kEmergencyJournalName)

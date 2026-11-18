@@ -156,6 +156,7 @@ public:
 
 	[[nodiscard]] QString workspacePath() const;
 	[[nodiscard]] QString accountStorageRoot() const;
+	[[nodiscard]] bool SyncScopedAccount(QStringView locator) const;
 	[[nodiscard]] QString emergencyJournalDirectory() const;
 	[[nodiscard]] bool isIsolatedFixture() const;
 

@@ -356,6 +356,74 @@ void CheckLinks() {
 #endif
 }
 
+void CheckLegacyOfflineHistory() {
+	auto fixture = Fixture();
+	if (!fixture.setup()) {
+		Check(false, "offline-history fixture setup");
+		return;
+	}
+	const auto root = u"offline-history"_q;
+	const auto account = root + u"/901"_q;
+	const auto peer = account + u"/77"_q;
+	const auto attachments = peer + u"/attachments"_q;
+	const auto snapshot = peer + u"/history.json"_q;
+	const auto body = attachments + u"/m-8-d-123.txt"_q;
+	const auto raw = QByteArray("verified synthetic offline history");
+	const auto digest = QCryptographicHash::hash(raw, QCryptographicHash::Sha256);
+	const auto full = [&](const QString &relative) { return fixture.path + '/' + relative; };
+	const auto backup = fixture.path + u"/offline-history-backup"_q;
+	const auto oldPlan = fixture.capture();
+	if (!oldPlan || !QDir().mkpath(full(attachments)) || !QDir().mkpath(backup)
+		|| !Write(full(snapshot), raw) || !Write(full(body), raw)
+		|| !Write(backup + u"/unrelated.bin"_q, raw)) {
+		Check(false, "create synthetic offline snapshot and independent backup");
+		return;
+	}
+	using OfflineEntry = Ayu::OfflineHistory::LegacyOfflineEntry;
+	const auto receipt = std::array{
+		OfflineEntry{ root },
+		OfflineEntry{ account },
+		OfflineEntry{ peer },
+		OfflineEntry{ attachments },
+		OfflineEntry{ snapshot, digest },
+		OfflineEntry{ body, digest },
+	};
+	const auto capture = [&](std::span<const OfflineEntry> entries) {
+		return CaptureLegacyRetirementPlan(
+			fixture.path, fixture.name, fixture.transaction, fixture.slotIndices,
+			fixture.accounts, LegacyArchiveRetirement::ExpectedAbsent, {}, entries);
+	};
+	const auto keys = fixture.path + u"/key_datas"_q;
+	Check(!capture({}) && !capture(std::span(receipt).subspan(1))
+		&& RetireLegacyProfileFiles(fixture.path, fixture.transaction, *oldPlan)
+			== Result::UnexpectedSource
+		&& QFileInfo::exists(keys),
+		"offline root requires exact authenticated staging receipt even on resume");
+	const auto prepared = capture(receipt);
+	const auto plan = prepared
+		? ParseLegacyRetirementPlan(SerializeLegacyRetirementPlan(*prepared))
+		: std::nullopt;
+	if (!plan) {
+		Check(false, "persist and reopen offline retirement proof");
+		return;
+	}
+	const auto run = [&] {
+		return RetireLegacyProfileFiles(fixture.path, fixture.transaction, *plan);
+	};
+	const auto extra = full(peer + u"/history.partial.json"_q);
+	Check(Write(extra, "unexplained snapshot") && !capture(receipt)
+		&& run() == Result::UnexpectedSource && QFileInfo::exists(keys)
+		&& QFile::remove(extra), "extra recognized offline file blocks all deletion");
+	Check(Write(full(body), raw + ' ') && !capture(receipt)
+		&& run() == Result::UnexpectedSource && QFileInfo::exists(keys)
+		&& Write(full(body), raw), "changed offline attachment blocks all deletion");
+	Check(QFile::remove(full(body)) && run() == Result::Complete
+		&& !QFileInfo::exists(full(root))
+		&& QFileInfo::exists(backup + u"/unrelated.bin"_q)
+		&& run() == Result::Complete,
+		"offline retirement resumes and preserves unrelated backup directory");
+}
+
 } // namespace
 
 int main(int argc, char *argv[]) {
@@ -366,5 +434,6 @@ int main(int argc, char *argv[]) {
 	CheckLegacyCache();
 	CheckLegacyPreferences();
 	CheckLinks();
+	CheckLegacyOfflineHistory();
 	return Failed ? 1 : 0;
 }

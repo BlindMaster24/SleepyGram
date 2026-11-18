@@ -182,17 +182,18 @@ void PhoneWidget::submit() {
 
 	cancelNearestDcRequest();
 
-	// Check if such account is authorized already.
-	const auto phoneDigits = DigitsOnly(phone);
-	for (const auto &[index, existing] : Core::App().domain().accounts()) {
-		const auto raw = existing.get();
-		if (const auto session = raw->maybeSession()) {
-			if (raw->mtp().environment() == account().mtp().environment()
-				&& DigitsOnly(session->user()->phone()) == phoneDigits) {
-				crl::on_main(raw, [=] {
-					Core::App().domain().activate(raw);
-				});
-				return;
+	if (!account().isProvisionalScopedLogin()) {
+		const auto phoneDigits = DigitsOnly(phone);
+		for (const auto &[index, existing] : Core::App().domain().accounts()) {
+			const auto raw = existing.get();
+			if (const auto session = raw->maybeSession()) {
+				if (raw->mtp().environment() == account().mtp().environment()
+					&& DigitsOnly(session->user()->phone()) == phoneDigits) {
+					crl::on_main(raw, [=] {
+						Core::App().domain().activate(raw);
+					});
+					return;
+				}
 			}
 		}
 	}

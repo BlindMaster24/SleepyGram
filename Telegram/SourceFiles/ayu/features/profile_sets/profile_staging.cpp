@@ -4,6 +4,7 @@
 #include "ayu/ayu_preferences_migration.h"
 #include "ayu/data/archive_migration.h"
 #include "ayu/data/ayu_database.h"
+#include "ayu/features/offline_history/offline_history_scoped.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "storage/storage_domain.h"
 
@@ -72,6 +73,7 @@ ProfileStagingResult StageWhilePreparing(
 		});
 	}
 	auto verifiedAccounts = std::vector<VerifiedLegacyRetirementAccount>();
+	auto offlineAccounts = std::vector<OfflineHistory::ScopedOfflineAccount>();
 	for (const auto &account : accounts) {
 		const auto source = Storage::AccountPathsForDataName(root,
 			Storage::AccountDataName(dataName, account.slot));
@@ -84,15 +86,20 @@ ProfileStagingResult StageWhilePreparing(
 				? Result::UnsupportedAccountData
 				: Result::AccountStageFailed;
 		}
-		if (preferences) {
+		if (preferences || retirement) {
 			const auto user = account.userId.bare;
-			const auto payload = preferences->accounts.find(user);
 			const auto directory = QDir(workspace.accountStorageRoot()).filePath(
 				AccountVaultDataName(account.locator));
-			if (payload == end(preferences->accounts)
-				|| !Preferences::StageScopedAccountPreferences(
-					directory, user, ProfileAccountStorageKey(account.key), payload->second)) {
-				return Result::AccountStageFailed;
+			const auto key = ProfileAccountStorageKey(account.key);
+			if (preferences) {
+				const auto payload = preferences->accounts.find(user);
+				if (payload == end(preferences->accounts)
+					|| !Preferences::StageScopedAccountPreferences(directory, user, key, payload->second)) {
+					return Result::AccountStageFailed;
+				}
+			}
+			if (retirement) {
+				offlineAccounts.push_back({ .userId = user, .accountRoot = directory, .key = key });
 			}
 		}
 		if (retirement) {
@@ -109,18 +116,27 @@ ProfileStagingResult StageWhilePreparing(
 	const auto utf8 = root.toUtf8();
 	const auto path = std::filesystem::path(std::u8string(
 		reinterpret_cast<const char8_t*>(utf8.constData()), utf8.size()));
-	if (AyuDatabase::StageLegacyArchivePartitions(path, archives)
-		!= ArchivePartitionResult::Success) {
+	const auto legacyArchive = QFileInfo(root + u"/ayudata.db"_q);
+	const auto hasArchive = legacyArchive.exists()
+		|| legacyArchive.isSymLink() || legacyArchive.isJunction();
+	const auto archiveResult = hasArchive
+		? AyuDatabase::StageLegacyArchivePartitions(path, archives)
+		: AyuDatabase::StageEmptyScopedArchivePartitions(path, archives);
+	if (archiveResult != ArchivePartitionResult::Success) {
 		return Result::ArchiveStageFailed;
 	}
 	if (retirement) {
-		const auto archive = QFileInfo::exists(root + u"/ayudata.db"_q)
+		const auto offline = OfflineHistory::StageLegacyOfflineHistory(root, offlineAccounts);
+		if (!offline) {
+			return Result::UnsupportedAccountData;
+		}
+		const auto archive = hasArchive
 			? LegacyArchiveRetirement::VerifiedPartitioned
 			: LegacyArchiveRetirement::ExpectedAbsent;
 		auto captured = CaptureLegacyRetirementPlan(
 			root, dataName, transactionId, legacy->accountIndices,
 			verifiedAccounts, archive,
-			preferences ? preferences->sourceSha256 : QByteArray());
+			preferences ? preferences->sourceSha256 : QByteArray(), *offline);
 		if (!captured) {
 			return Result::RetirementVerificationFailed;
 		}

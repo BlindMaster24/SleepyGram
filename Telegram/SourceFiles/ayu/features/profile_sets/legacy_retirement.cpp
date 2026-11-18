@@ -51,16 +51,20 @@ const auto kLegacyArchiveFiles = std::array{
 };
 const auto kLegacyArchiveJournal = u"ayudata.db-journal"_q;
 const auto kLegacyAyuPreferences = u"ayu_settings.json"_q;
+const auto kLegacyOffline = u"offline-history"_q;
 
 using Entry = LegacyRetirementEntry;
 using Plan = LegacyRetirementPlan;
 using CachePathKind = Storage::details::CacheMigrationPathKind;
 using Storage::details::ClassifyCacheMigrationPath;
+using OfflineKind = OfflineHistory::LegacyOfflinePathKind;
+using OfflineHistory::ClassifyLegacyOfflinePath;
 
 enum class DirectoryKind : uchar {
 	Account,
 	Tgw,
 	Database,
+	Offline,
 	Empty,
 };
 
@@ -105,6 +109,14 @@ qint64 MaximumFileBytes(const QString &relative) {
 	if (relative == kLegacyAyuPreferences) {
 		return 16 * 1024 * 1024;
 	}
+	if (relative.startsWith(kLegacyOffline + '/')) {
+		switch (ClassifyLegacyOfflinePath(relative)) {
+		case OfflineKind::Snapshot: return 64 * 1024 * 1024;
+		case OfflineKind::Manifest: return 8 * 1024 * 1024;
+		case OfflineKind::Attachment: return 25 * 1024 * 1024;
+		default: return 0;
+		}
+	}
 	const auto slash = relative.indexOf('/');
 	return (LegacyArchiveFile(relative)
 		|| (slash >= 0 && relative.startsWith(u"user_"_q)
@@ -147,6 +159,7 @@ std::optional<Layout> BuildLayout(const Plan &plan) {
 		return std::nullopt;
 	}
 	auto result = Layout();
+	result.directories.emplace(kLegacyOffline, DirectoryKind::Offline);
 	result.rootStems.emplace(u"key_"_q + plan.dataName);
 	auto current = -1;
 	for (const auto index : plan.accountIndices) {
@@ -203,9 +216,11 @@ bool ValidEntries(const Plan &plan, const Layout &layout) {
 			return false;
 		}
 		const auto database = DatabaseEntryKind(layout, path);
+		const auto offline = ClassifyLegacyOfflinePath(path);
 		if (entry.sha256.isEmpty()) {
 			if (!layout.directories.contains(path)
-				&& database != CachePathKind::Directory) {
+				&& database != CachePathKind::Directory
+				&& offline != OfflineKind::Directory) {
 				return false;
 			}
 			directories.emplace(path);
@@ -214,7 +229,10 @@ bool ValidEntries(const Plan &plan, const Layout &layout) {
 			return false;
 		}
 		if (database == CachePathKind::Version
-			|| database == CachePathKind::Encrypted) {
+			|| database == CachePathKind::Encrypted
+			|| offline == OfflineKind::Snapshot
+			|| offline == OfflineKind::Manifest
+			|| offline == OfflineKind::Attachment) {
 			continue;
 		}
 		if (slash < 0) {
@@ -414,6 +432,61 @@ bool AppendAyuPreferences(Plan &plan, const QByteArray &verified) {
 	return verified.size() == 32
 		&& AppendFile(plan, kLegacyAyuPreferences)
 		&& plan.entries.back().sha256 == verified;
+}
+
+bool AppendOffline(
+		Plan &plan,
+		std::span<const OfflineHistory::LegacyOfflineEntry> verified) {
+	const auto root = plan.dataDirectory + '/' + kLegacyOffline;
+	if (verified.empty()) {
+		return !Present(QFileInfo(root));
+	}
+	if (verified.size() > kMaximumEntries - plan.entries.size()) {
+		return false;
+	}
+	auto entries = std::set<QString>();
+	auto directories = std::map<QString, QStringList>();
+	for (const auto &entry : verified) {
+		const auto kind = ClassifyLegacyOfflinePath(entry.relativePath);
+		const auto isDirectory = (kind == OfflineKind::Directory);
+		if (kind == OfflineKind::Invalid
+			|| (entry.sha256.size() != (isDirectory ? 0 : 32))
+			|| !entries.emplace(entry.relativePath).second) {
+			return false;
+		}
+		if (isDirectory) {
+			directories.emplace(entry.relativePath, QStringList());
+		}
+	}
+	if (!directories.contains(kLegacyOffline)) {
+		return false;
+	}
+	for (const auto &entry : verified) {
+		const auto &path = entry.relativePath;
+		if (path == kLegacyOffline) {
+			continue;
+		}
+		const auto slash = path.lastIndexOf('/');
+		const auto parent = directories.find(path.left(slash));
+		if (parent == end(directories)) {
+			return false;
+		}
+		parent->second.push_back(path.mid(slash + 1));
+	}
+	for (auto &[path, children] : directories) {
+		if (!CanonicalDirectory(plan.dataDirectory + '/' + path)
+			|| !AppendDirectory(plan, path, std::move(children))) {
+			return false;
+		}
+	}
+	for (const auto &entry : verified) {
+		if (!entry.sha256.isEmpty()
+			&& (!AppendFile(plan, entry.relativePath)
+				|| plan.entries.back().sha256 != entry.sha256)) {
+			return false;
+		}
+	}
+	return true;
 }
 
 bool MatchesCurrentSource(const Plan &plan, const Layout &layout) {
@@ -741,7 +814,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		std::span<const int> legacyAccountIndices,
 		std::span<const VerifiedLegacyRetirementAccount> verifiedAccounts,
 		LegacyArchiveRetirement archive,
-		const QByteArray &verifiedAyuSettingsSha256) {
+		const QByteArray &verifiedAyuSettingsSha256,
+		std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline) {
 	if (legacyAccountIndices.size() != verifiedAccounts.size()
 		|| legacyAccountIndices.size() > kMaximumAccounts
 		|| !CanonicalDirectory(dataDirectory)) {
@@ -758,7 +832,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 	if (!layout
 		|| !AppendSuffixedFiles(plan, u"key_"_q + dataName)
 		|| !AppendLegacyArchive(plan, archive)
-		|| !AppendAyuPreferences(plan, verifiedAyuSettingsSha256)) {
+		|| !AppendAyuPreferences(plan, verifiedAyuSettingsSha256)
+		|| !AppendOffline(plan, verifiedOffline)) {
 		return std::nullopt;
 	}
 	auto verified = std::set<int>();

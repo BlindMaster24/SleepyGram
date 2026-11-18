@@ -287,6 +287,14 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 			&& opened->access().setId == StorageId<SetId>(safe->profileId.value)) {
 			return opened;
 		}
+	} else if (record->journal.safeDestination == EA::SafeDestinationKind::AddAccount) {
+		auto opened = AuthenticateCommittedProfileGeneration(workspace, {}, credential,
+			{}, {}, {}, {}, *installed, &error);
+		if (opened && opened->access().role == ProfileGenerationRole::Set
+			&& opened->plan().targets().empty()) {
+			error = Error::EmergencyResetComplete;
+			return opened;
+		}
 	}
 	error = Error::EmergencyResetComplete;
 	return std::nullopt;

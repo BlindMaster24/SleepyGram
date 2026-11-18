@@ -200,8 +200,10 @@ jobs:
           package="$RUNNER_TEMP/sleepygram-linux-x64"
           mkdir -p "$package"
           cp "$app" "$package/SleepyGram"
+          readelf -h out/Release/SleepyGramRemovalHelper | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'
+          cp out/Release/SleepyGramRemovalHelper "$package/"
           cp Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$package/"
-          files=(SleepyGram LICENSE-SQLCipher.txt)
+          files=(SleepyGram SleepyGramRemovalHelper LICENSE-SQLCipher.txt)
           if [ -f out/Release/Updater ]; then
             readelf -h out/Release/Updater | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || {
               echo "::error::Updater is not an x86_64 ELF executable"
@@ -520,6 +522,8 @@ jobs:
           icon=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")
           test "$icon" = SleepyGram.icns
           cmp "tdesktop/Telegram/Resources/art/$icon" "$app/Contents/Resources/$icon"
+          mkdir -p "$app/Contents/Helpers"
+          cp tdesktop/out/Release/SleepyGramRemovalHelper "$app/Contents/Helpers/"
           python3 tdesktop/.github/ci/prepare_macos_swift_runtime.py --bundle "$app" --minimum 11.0
           while IFS= read -r -d '' binary; do
             if file -b "$binary" | grep -q 'Mach-O'; then
@@ -751,8 +755,10 @@ jobs:
             }
           }
           Assert-X64 "$out\SleepyGram.exe"
+          Assert-X64 "$out\SleepyGramRemovalHelper.exe"
           New-Item -ItemType Directory -Force $package | Out-Null
           Copy-Item "$out\SleepyGram.exe" $package
+          Copy-Item "$out\SleepyGramRemovalHelper.exe" $package
           Copy-Item "$env:REPO_PATH\Telegram\SourceFiles\ayu\libs\sqlite\LICENSE-SQLCipher.txt" $package
           if (Test-Path "$out\Updater.exe") {
             Assert-X64 "$out\Updater.exe"

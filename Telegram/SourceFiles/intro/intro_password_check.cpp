@@ -134,7 +134,7 @@ void PasswordCheckWidget::pwdSubmitDone(
 		bool recover,
 		const MTPauth_Authorization &result) {
 	_sentRequest = 0;
-	if (recover) {
+	if (recover && !account().isProvisionalScopedLogin()) {
 		cSetPasswordRecovered(true);
 	}
 	finish(result);

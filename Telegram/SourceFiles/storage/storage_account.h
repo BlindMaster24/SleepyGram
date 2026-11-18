@@ -91,6 +91,13 @@ struct VerifiedLegacyAccountFiles final {
 	const AccountPaths &source,
 	const MTP::AuthKeyPtr &key);
 
+[[nodiscard]] AccountMigrationResult StageNewScopedAuthorization(
+	const AccountPaths &target,
+	const MTP::AuthKeyPtr &key,
+	UserId expectedUser,
+	const QByteArray &authorization,
+	const QByteArray &config);
+
 struct ScopedAccountStartupInfo final {
 	UserId userId;
 	MTP::Environment environment = {};

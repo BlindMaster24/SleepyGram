@@ -2,6 +2,7 @@
 #include "ayu/features/profile_sets/profile_emergency_settings.h"
 
 #include "ayu/features/emergency_actions/emergency_execution_capsule.h"
+#include "ayu/features/emergency_actions/mtproto_session_effect_transport.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_emergency_bundle.h"
 #include "crl/crl_async.h"
@@ -117,6 +118,7 @@ struct VerifiedAccount final {
 	const AccountVaultLocator *locator = nullptr;
 	EA::EmergencyScopedRemoteIdentity identity;
 	bool canEndOtherSessions = false;
+	std::vector<Window::EmergencyDeviceChoice> devices;
 };
 
 struct InstallationInventory final {
@@ -126,8 +128,10 @@ struct InstallationInventory final {
 
 std::optional<InstallationInventory> ReadInstallationInventory(
 		const MigrationController &workspace,
-		const MasterAccess &master) {
+		const MasterAccess &master,
+		const std::set<EA::AccountId> *selectedAccounts = nullptr) {
 	const auto root = workspace.accountStorageRoot();
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
 	auto result = InstallationInventory();
 	result.live.id = EA::InstallationId(master.vault.id.toHex().toStdString());
 	auto locators = std::map<AccountId, const AccountVaultLocator*>();
@@ -148,8 +152,7 @@ std::optional<InstallationInventory> ReadInstallationInventory(
 		}
 		const auto id = EA::AccountId(Identifier(key.id));
 		const auto current = EA::SessionId("current");
-		result.live.accounts.push_back({ id, current, { current } });
-		result.accounts.emplace(id, VerifiedAccount{
+		auto verified = VerifiedAccount{
 			.key = &key,
 			.locator = locator->second,
 			.identity = {
@@ -158,7 +161,23 @@ std::optional<InstallationInventory> ReadInstallationInventory(
 					? EA::EmergencyScopedEnvironment::Test : EA::EmergencyScopedEnvironment::Production,
 			},
 			.canEndOtherSessions = bool(config),
-		});
+		};
+		auto live = EA::LiveAccount{ id, current, { current } };
+		if (config && (!selectedAccounts || selectedAccounts->contains(id))) {
+			const auto devices = EA::ReadMtprotoDeviceInventory(workspace, master.admin, key.id,
+				verified.identity.userId, verified.identity.environment == EA::EmergencyScopedEnvironment::Test,
+				deadline);
+			if (devices) {
+				for (const auto &device : *devices) {
+					if (!device.current) {
+						live.sessionIds.push_back(device.id);
+						verified.devices.push_back({ device.id, device.label });
+					}
+				}
+			}
+		}
+		result.live.accounts.push_back(std::move(live));
+		result.accounts.emplace(id, std::move(verified));
 	}
 	for (const auto &set : master.admin.metadata.sets) {
 		auto profile = EA::LiveProfile{ .id = EA::ProfileId(Identifier(set.id)) };
@@ -192,6 +211,7 @@ std::optional<Window::EmergencyRulesSnapshot> LoadSettings(
 			.id = id,
 			.label = u"Account %1"_q.arg(qulonglong(account.identity.userId)),
 			.canEndOtherSessions = account.canEndOtherSessions,
+			.devices = account.devices,
 		});
 	}
 	for (auto i = size_t(0); i != access->admin.metadata.sets.size(); ++i) {
@@ -219,6 +239,30 @@ EA::RuleConfiguration RuleConfiguration(
 	return config;
 }
 
+std::optional<ProfileVault> AddFallbackEnrollmentSet(
+		const ProfileVault &pruned,
+		const DerivedCredential &admin,
+		const DerivedCredential &emergency) {
+	auto access = OpenProfileVault(pruned, admin);
+	const auto master = std::get_if<AdminVaultAccess>(&access);
+	if (!master) {
+		return std::nullopt;
+	}
+	const auto wipe = gsl::finally([&] { for (auto &account : master->accounts) Wipe(account.key); });
+	const auto id = NewSetId();
+	if (!id) {
+		return std::nullopt;
+	}
+	master->metadata.sets.push_back({
+		.id = id,
+		.name = u"New account"_q,
+		.verifier = emergency.verifier,
+	});
+	auto replacement = std::vector<SetGrantCredential>{ { id, emergency } };
+	const auto wipeReplacement = gsl::finally([&] { Wipe(replacement.front().credential); });
+	return UpdateProfileVault(pruned, admin, master->metadata, replacement);
+}
+
 Result SaveSettings(
 		const MigrationController &workspace,
 		Window::EmergencyRulesSaveRequest &request) {
@@ -231,7 +275,15 @@ Result SaveSettings(
 	if (!access) {
 		return error;
 	}
-	const auto inventory = ReadInstallationInventory(workspace, *access);
+	auto selectedAccounts = std::set<EA::AccountId>();
+	for (const auto &entry : request.entries) {
+		for (const auto &policy : entry.rule.remoteSessionPolicies) {
+			if (policy.kind == EA::RemoteSessionTargetKind::SelectedSessions) {
+				selectedAccounts.insert(policy.accountId);
+			}
+		}
+	}
+	const auto inventory = ReadInstallationInventory(workspace, *access, &selectedAccounts);
 	if (!inventory) {
 		return Result::Unavailable;
 	}
@@ -291,7 +343,8 @@ Result SaveSettings(
 		for (const auto &target : plan.accounts) {
 			const auto account = inventory->accounts.find(target.accountId);
 			if (account == end(inventory->accounts)
-				|| target.remoteTarget == EA::RemoteSessionTargetKind::SelectedSessions
+				|| (target.remoteTarget == EA::RemoteSessionTargetKind::SelectedSessions
+					&& (target.sessionIdsForRevokeRequest.empty() || !target.selectedSessionIdsNotLive.empty()))
 				|| (target.remoteTarget == EA::RemoteSessionTargetKind::AllOtherSessions
 					&& !account->second.canEndOtherSessions)) {
 				return Result::Unavailable;
@@ -305,7 +358,10 @@ Result SaveSettings(
 				.remoteIdentity = grant.identity,
 			});
 		}
-		const auto pruned = PruneProfileVaultAccounts(access->vault, access->credential, removed);
+		auto pruned = PruneProfileVaultAccounts(access->vault, access->credential, removed);
+		if (pruned && plan.safeDestination == EA::SafeDestinationKind::AddAccount) {
+			pruned = AddFallbackEnrollmentSet(*pruned, access->credential, credential);
+		}
 		if (!pruned) {
 			return Result::Failed;
 		}

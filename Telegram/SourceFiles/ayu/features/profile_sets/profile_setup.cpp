@@ -76,8 +76,6 @@ DerivedCredential Derive(
 }
 
 bool UnsupportedLegacyData(const QString &root, const QString &dataName) {
-	const auto offlinePath = QDir(root).filePath(u"offline-history"_q);
-	const auto offline = QFileInfo(offlinePath);
 	const auto rotatedArchive = QDir(root).entryList(
 		{ u"ayudata_*.db"_q, u"ayudata_*.db-wal"_q, u"ayudata_*.db-shm"_q },
 		QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
@@ -88,9 +86,7 @@ bool UnsupportedLegacyData(const QString &root, const QString &dataName) {
 			return true;
 		}
 	}
-	return offline.isSymLink() || offline.isJunction()
-		|| (offline.exists() && (!offline.isDir() || !QDir(offlinePath).isEmpty()))
-		|| !rotatedArchive.isEmpty();
+	return !rotatedArchive.isEmpty();
 }
 
 QByteArray DirectoryDigest(const QString &root) {
@@ -395,7 +391,8 @@ bool FinishProfileRetirement(const QString &dataDirectory) {
 	if (!committed) {
 		return false;
 	} else if (committed->legacyRetirement.isEmpty()) {
-		return true;
+		return committed->emergencyRecovery.isEmpty()
+			&& workspace->RetireInactiveGenerations(committed->transactionId);
 	} else if (!committed->emergencyRules.isEmpty()) {
 		return false;
 	}

@@ -18,6 +18,8 @@ TESTS = (
     "emergency_action_runtime_service",
     "emergency_execution_capsule",
     "emergency_recovery_record",
+    "installation_removal",
+    "installation_removal_handoff",
     "lock_screen_submission",
     "mtproto_session_effect",
     "scoped_account_clear",
@@ -34,7 +36,7 @@ def main() -> None:
     crypto_libs = shlex.split(subprocess.check_output(
         [*pkg_config, "--libs", "libcrypto"], text=True,
     ))
-    flags = ["-std=c++20", "-I", str(ROOT), *crypto_flags]
+    flags = ["-std=c++20", "-pthread", "-I", str(ROOT), *crypto_flags]
     with tempfile.TemporaryDirectory(prefix="sleepygram-emergency-tests-") as temporary:
         directory = Path(temporary)
         objects = []

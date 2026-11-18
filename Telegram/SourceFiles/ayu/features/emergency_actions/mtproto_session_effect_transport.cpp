@@ -1,6 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/emergency_actions/mtproto_session_effect_transport.h"
 
+#include "ayu/features/emergency_actions/mtproto_device_inventory_response.h"
 #include "ayu/features/profile_sets/account_storage_plan.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_migration.h"
@@ -35,32 +36,39 @@ struct GrantedAccount final {
 	bool testEnvironment = false;
 };
 
-class SessionBatchState final {
+template <typename Result>
+class SessionOperationState final {
 public:
-	explicit SessionBatchState(TimePoint deadline);
+	SessionOperationState(TimePoint deadline, Result unavailable);
 
 	[[nodiscard]] bool setConnection(
 		std::unique_ptr<Storage::ScopedAccountConnection> connection);
 	[[nodiscard]] auto takeConnection()
 	-> std::unique_ptr<Storage::ScopedAccountConnection>;
-	[[nodiscard]] EffectResult wait();
-	void finish(EffectResult result);
+	[[nodiscard]] Result wait();
+	void finish(Result result);
 
 	const TimePoint deadline;
+	const Result unavailable;
 
 private:
 	std::mutex _mutex;
 	std::condition_variable _done;
 	std::unique_ptr<Storage::ScopedAccountConnection> _connection;
-	std::optional<EffectResult> _result;
+	std::optional<Result> _result;
 
 };
 
-SessionBatchState::SessionBatchState(TimePoint deadline)
-: deadline(deadline) {
+template <typename Result>
+SessionOperationState<Result>::SessionOperationState(
+		TimePoint deadline,
+		Result unavailable)
+: deadline(deadline)
+, unavailable(std::move(unavailable)) {
 }
 
-bool SessionBatchState::setConnection(
+template <typename Result>
+bool SessionOperationState<Result>::setConnection(
 		std::unique_ptr<Storage::ScopedAccountConnection> connection) {
 	const auto lock = std::lock_guard(_mutex);
 	if (_result || std::chrono::steady_clock::now() >= deadline) {
@@ -70,7 +78,8 @@ bool SessionBatchState::setConnection(
 	return true;
 }
 
-auto SessionBatchState::takeConnection()
+template <typename Result>
+auto SessionOperationState<Result>::takeConnection()
 -> std::unique_ptr<Storage::ScopedAccountConnection> {
 	const auto lock = std::lock_guard(_mutex);
 	return !_result && std::chrono::steady_clock::now() < deadline
@@ -78,23 +87,77 @@ auto SessionBatchState::takeConnection()
 		: nullptr;
 }
 
-EffectResult SessionBatchState::wait() {
+template <typename Result>
+Result SessionOperationState<Result>::wait() {
 	auto lock = std::unique_lock(_mutex);
 	if (!_done.wait_until(lock, deadline, [&] { return _result.has_value(); })) {
 		_connection.reset();
-		_result = EffectResult::Unconfirmed;
+		_result.emplace(unavailable);
 	}
-	return *_result;
+	return std::move(*_result);
 }
 
-void SessionBatchState::finish(EffectResult result) {
+template <typename Result>
+void SessionOperationState<Result>::finish(Result result) {
 	const auto lock = std::lock_guard(_mutex);
 	if (!_result) {
-		_result = (std::chrono::steady_clock::now() < deadline)
-			? result
-			: EffectResult::Unconfirmed;
+		if (std::chrono::steady_clock::now() < deadline) {
+			_result.emplace(std::move(result));
+		} else {
+			_result.emplace(unavailable);
+		}
 		_done.notify_one();
 	}
+}
+
+using SessionBatchState = SessionOperationState<EffectResult>;
+using DeviceInventory = std::optional<std::vector<MtprotoDeviceInventoryEntry>>;
+using DeviceInventoryState = SessionOperationState<DeviceInventory>;
+
+bool IsWorkerThread() {
+	const auto app = QCoreApplication::instance();
+	return app && !QCoreApplication::closingDown()
+		&& QThread::currentThread() != app->thread();
+}
+
+template <typename State, typename OnReady>
+void StartVerifiedSessionOperation(
+		std::shared_ptr<State> state,
+		GrantedAccount account,
+		OnReady ready) {
+	crl::async([state, account = std::move(account), ready = std::move(ready)]() mutable {
+		if (std::chrono::steady_clock::now() >= state->deadline) {
+			return;
+		}
+		auto data = Storage::ReadScopedAccountConnection(account.paths, account.key);
+		if (!data || !data->config || data->userId.bare != account.expectedUserId
+			|| data->config->isTestMode() != account.testEnvironment) {
+			state->finish(state->unavailable);
+			return;
+		}
+		if (!state->setConnection(std::move(data))) {
+			return;
+		}
+		crl::on_main([state, ready = std::move(ready)]() mutable {
+			const auto app = QCoreApplication::instance();
+			if (!app || QCoreApplication::closingDown()) {
+				state->finish(state->unavailable);
+				return;
+			}
+			ready(app, std::move(state));
+		});
+	});
+}
+
+MTP::Instance::Fields InstanceFields(
+		Storage::ScopedAccountConnection &data,
+		TimePoint deadline) {
+	auto fields = MTP::Instance::Fields();
+	fields.config = std::move(data.config);
+	fields.mainDcId = data.mainDcId;
+	fields.keys.push_back(std::move(data.mainKey));
+	fields.emergencyDeadline = deadline;
+	return fields;
 }
 
 class SessionBatch final : public QObject {
@@ -151,14 +214,9 @@ void SessionBatch::start() {
 		return;
 	}
 	_timer.start(std::chrono::ceil<std::chrono::milliseconds>(remaining));
-	auto fields = MTP::Instance::Fields();
-	fields.config = std::move(data->config);
-	fields.mainDcId = data->mainDcId;
-	fields.keys.push_back(std::move(data->mainKey));
-	fields.emergencyDeadline = _state->deadline;
 	_instance = std::make_unique<MTP::Instance>(
 		MTP::Instance::Mode::EmergencySessionEffect,
-		std::move(fields));
+		InstanceFields(*data, _state->deadline));
 	for (const auto &request : _requests) {
 		if (_instance->emergencySessionEffectExpired()) {
 			close(EffectResult::Unconfirmed);
@@ -249,6 +307,92 @@ void SessionBatch::close(EffectResult result) {
 	deleteLater();
 }
 
+class DeviceInventoryOperation final : public QObject {
+public:
+	DeviceInventoryOperation(
+		QObject *parent,
+		std::shared_ptr<DeviceInventoryState> state);
+
+	void start();
+
+private:
+	void received(DeviceInventory result);
+	void close(DeviceInventory result);
+
+	const std::shared_ptr<DeviceInventoryState> _state;
+	std::unique_ptr<MTP::Instance> _instance;
+	QTimer _timer;
+	mtpRequestId _requestId = 0;
+	bool _closed = false;
+
+};
+
+DeviceInventoryOperation::DeviceInventoryOperation(
+		QObject *parent,
+		std::shared_ptr<DeviceInventoryState> state)
+: QObject(parent)
+, _state(std::move(state)) {
+	_timer.setSingleShot(true);
+	_timer.setTimerType(Qt::PreciseTimer);
+	connect(&_timer, &QTimer::timeout, this, [this] { close(std::nullopt); });
+}
+
+void DeviceInventoryOperation::start() {
+	auto connection = _state->takeConnection();
+	const auto remaining = _state->deadline - std::chrono::steady_clock::now();
+	if (!connection || remaining <= std::chrono::steady_clock::duration::zero()) {
+		close(std::nullopt);
+		return;
+	}
+	_timer.start(std::chrono::ceil<std::chrono::milliseconds>(remaining));
+	_instance = std::make_unique<MTP::Instance>(
+		MTP::Instance::Mode::EmergencyDeviceInventory,
+		InstanceFields(*connection, _state->deadline));
+	if (_instance->emergencySessionEffectExpired()) {
+		close(std::nullopt);
+		return;
+	}
+	const auto weak = QPointer<DeviceInventoryOperation>(this);
+	_requestId = _instance->send(
+		MTPInvokeWithoutUpdates<MTPaccount_GetAuthorizations>(
+			MTPaccount_GetAuthorizations()),
+		[weak](const MTP::Response &response) {
+			if (weak && std::chrono::steady_clock::now() < weak->_state->deadline) {
+				weak->received(details::ParseMtprotoDeviceInventory(std::span(
+					response.reply.constData(), response.reply.size())));
+			}
+			return true;
+		},
+		[weak](const MTP::Error &, const MTP::Response &) {
+			if (weak) {
+				weak->received(std::nullopt);
+			}
+			return true;
+		});
+}
+
+void DeviceInventoryOperation::received(DeviceInventory result) {
+	QMetaObject::invokeMethod(this, [this, result = std::move(result)]() mutable {
+		close(std::move(result));
+	}, Qt::QueuedConnection);
+}
+
+void DeviceInventoryOperation::close(DeviceInventory result) {
+	if (_closed) {
+		return;
+	}
+	_closed = true;
+	_timer.stop();
+	if (_instance) {
+		if (_requestId) {
+			_instance->cancel(_requestId);
+		}
+		_instance.reset();
+	}
+	_state->finish(std::move(result));
+	deleteLater();
+}
+
 class TelegramSessionTransport final : public details::SessionRequestTransport {
 public:
 	explicit TelegramSessionTransport(
@@ -273,45 +417,72 @@ EffectResult TelegramSessionTransport::send(
 		const AccountId &accountId,
 		std::span<const SessionRequest> requests,
 		TimePoint deadline) {
-	const auto app = QCoreApplication::instance();
 	const auto granted = _accounts.find(accountId);
-	if (!app || QCoreApplication::closingDown()
-		|| QThread::currentThread() == app->thread()
+	if (!IsWorkerThread()
 		|| granted == _accounts.end()
 		|| requests.empty()
 		|| std::chrono::steady_clock::now() >= deadline) {
 		return EffectResult::Unconfirmed;
 	}
-	const auto &account = granted->second;
-	const auto state = std::make_shared<SessionBatchState>(deadline);
-	crl::async([state, account, batch = std::vector<SessionRequest>(
-			requests.begin(), requests.end())]() mutable {
-		if (std::chrono::steady_clock::now() >= state->deadline) {
-			return;
-		}
-		auto data = Storage::ReadScopedAccountConnection(account.paths, account.key);
-		if (!data || data->userId.bare != account.expectedUserId
-			|| data->config->isTestMode() != account.testEnvironment) {
-			state->finish(EffectResult::Unconfirmed);
-			return;
-		}
-		if (!state->setConnection(std::move(data))) {
-			return;
-		}
-		crl::on_main([state, batch = std::move(batch)]() mutable {
-			const auto app = QCoreApplication::instance();
-			if (!app || QCoreApplication::closingDown()) {
-				state->finish(EffectResult::Unconfirmed);
-				return;
-			}
-			const auto operation = new SessionBatch(app, state, std::move(batch));
+	const auto state = std::make_shared<SessionBatchState>(
+		deadline, EffectResult::Unconfirmed);
+	StartVerifiedSessionOperation(
+		state,
+		granted->second,
+		[batch = std::vector<SessionRequest>(requests.begin(), requests.end())](
+				QObject *app,
+				std::shared_ptr<SessionBatchState> state) mutable {
+			const auto operation = new SessionBatch(app, std::move(state), std::move(batch));
 			operation->start();
 		});
-	});
 	return state->wait();
 }
 
 } // namespace
+
+std::optional<std::vector<MtprotoDeviceInventoryEntry>> ReadMtprotoDeviceInventory(
+		const ProfileSets::MigrationController &workspace,
+		const ProfileSets::AdminVaultAccess &authenticatedMaster,
+		ProfileSets::AccountId accountId,
+		uint64_t expectedUserId,
+		bool testEnvironment,
+		CoordinatorClock::TimePoint deadline) {
+	const auto now = std::chrono::steady_clock::now();
+	if (!IsWorkerThread() || deadline <= now || deadline - now > std::chrono::seconds(15)
+		|| !accountId || !expectedUserId || workspace.isIsolatedFixture()
+		|| authenticatedMaster.version != ProfileSets::kProfileVaultVersion) {
+		return std::nullopt;
+	}
+	using ProfileSets::AccountKey;
+	using ProfileSets::AccountVaultLocator;
+	if (std::ranges::count(authenticatedMaster.accounts, accountId, &AccountKey::id) != 1
+		|| std::ranges::count(authenticatedMaster.locators, accountId, &AccountVaultLocator::id) != 1) {
+		return std::nullopt;
+	}
+	const auto key = std::ranges::find(authenticatedMaster.accounts, accountId, &AccountKey::id);
+	const auto locator = std::ranges::find(
+		authenticatedMaster.locators, accountId, &AccountVaultLocator::id);
+	const auto root = workspace.accountStorageRoot();
+	auto paths = Storage::ScopedAccountPaths(root, ProfileSets::AccountVaultDataName(*locator));
+	auto localKey = ProfileSets::ProfileAccountStorageKey(*key);
+	if (!paths || !localKey) {
+		return std::nullopt;
+	}
+	const auto state = std::make_shared<DeviceInventoryState>(deadline, std::nullopt);
+	StartVerifiedSessionOperation(
+		state,
+		GrantedAccount{
+			.paths = std::move(*paths),
+			.key = std::move(localKey),
+			.expectedUserId = expectedUserId,
+			.testEnvironment = testEnvironment,
+		},
+		[](QObject *app, std::shared_ptr<DeviceInventoryState> state) {
+			const auto operation = new DeviceInventoryOperation(app, std::move(state));
+			operation->start();
+		});
+	return state->wait();
+}
 
 std::unique_ptr<RemoteSessionEffect> MakeMtprotoSessionEffect(
 		const InstallationId &currentInstallation,

@@ -361,6 +361,40 @@ bool Domain::launchScopedAccounts(
 	return true;
 }
 
+bool Domain::startPreparedScopedEnrollment(
+		const ProfileSets::MigrationController &sidecar,
+		Fn<void(ProvisionalAccountAuthorization)> done) {
+	if (!done || Core::Quitting() || !scopedProfileReserved() || started()
+		|| !_scopedProfile || !_scopedProfile->access.setId
+		|| _scopedProfile->access.role != ProfileSets::ProfileGenerationRole::Set
+		|| !_scopedProfile->accounts.empty()
+		|| !Local::matchesScopedSettings(preparedScopedSettingsKey())) {
+		return false;
+	}
+	const auto started = sidecar.WithCurrentGeneration(
+		_scopedProfile->generation.transactionId(), [&] {
+			auto account = Account::CreateProvisionalScopedLogin(this,
+				std::make_unique<MTP::Config>(MTP::Environment::Production), std::move(done));
+			if (!account) {
+				return false;
+			}
+			_accounts.push_back({ .index = 0, .account = std::move(account) });
+			return true;
+		});
+	if (started) {
+		activate(_accounts.front().account.get());
+		_accountsChanges.fire({});
+	}
+	return started;
+}
+
+bool Domain::provisionalEnrollmentActive() const {
+	return scopedProfileReserved() && _scopedProfile && _scopedProfile->access.setId
+		&& _scopedProfile->accounts.empty() && _accounts.size() == 1
+		&& _active.current() == _accounts.front().account.get()
+		&& _accounts.front().account->isProvisionalScopedLogin();
+}
+
 void Domain::clearPreparedScopedProfile() {
 	if (!started() && !_changingScopedProfile) {
 		_scopedProfile.reset();
@@ -927,8 +961,10 @@ void Domain::activate(not_null<Main::Account*> account) {
 			const AccountWithIndex &value) {
 		return value.account.get();
 	};
+	const auto provisional = _scopedProfile && _scopedProfile->accounts.empty()
+		&& _accounts.size() == 1 && account->isProvisionalScopedLogin();
 	if (scopedProfileReserved()
-		&& (!_scopedProfile || !_scopedProfile->archives
+		&& (!_scopedProfile || (!_scopedProfile->archives && !provisional)
 			|| !ranges::contains(_accounts, account.get(), pointer))) {
 		return;
 	}

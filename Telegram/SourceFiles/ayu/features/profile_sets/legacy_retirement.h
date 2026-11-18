@@ -1,6 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #pragma once
 
+#include "ayu/features/offline_history/offline_history_paths.h"
 #include "storage/storage_account_paths.h"
 
 #include <QtCore/QByteArray>
@@ -53,7 +54,8 @@ enum class LegacyArchiveRetirement : uchar {
 	std::span<const int> legacyAccountIndices,
 	std::span<const VerifiedLegacyRetirementAccount> verifiedAccounts,
 	LegacyArchiveRetirement archive,
-	const QByteArray &verifiedAyuSettingsSha256 = {});
+	const QByteArray &verifiedAyuSettingsSha256 = {},
+	std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline = {});
 
 [[nodiscard]] QByteArray SerializeLegacyRetirementPlan(
 	const LegacyRetirementPlan &plan);

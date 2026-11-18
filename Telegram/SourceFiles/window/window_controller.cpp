@@ -186,7 +186,8 @@ void Controller::showAccount(
 
 	_id.account->sessionValue(
 	) | rpl::on_next([=](Main::Session *session) {
-		if (!session && !Core::App().legacyProfileAccessAllowed()) {
+		if (!session && !Core::App().legacyProfileAccessAllowed()
+			&& !account->isProvisionalScopedLogin()) {
 			Core::App().lockByPasscode();
 			return;
 		}

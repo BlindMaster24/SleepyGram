@@ -30,12 +30,98 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "tgw/tgw_storage.h"
 
+#include <openssl/crypto.h>
+
+// AyuGram includes
+#include "ayu/features/profile_sets/profile_generation.h"
+
+
 namespace Main {
 namespace {
 
 constexpr auto kWideIdsTag = ~uint64(0);
 
+QByteArray SerializeAuthorization(
+		UserId userId,
+		MTP::DcId mainDcId,
+		const MTP::AuthKeysList &keys,
+		const MTP::AuthKeysList &keysToDestroy) {
+	const auto writeKeys = [](QDataStream &stream, const MTP::AuthKeysList &keys) {
+		stream << qint32(keys.size());
+		for (const auto &key : keys) {
+			stream << qint32(key->dcId());
+			key->write(stream);
+		}
+	};
+	auto result = QByteArray();
+	const auto headerSize = 2 * sizeof(quint64) + 3 * sizeof(qint32);
+	const auto keySize = sizeof(qint32) + MTP::AuthKey::kSize;
+	result.reserve(headerSize + (keys.size() + keysToDestroy.size()) * keySize);
+	auto stream = QDataStream(&result, QIODevice::WriteOnly);
+	stream.setVersion(QDataStream::Qt_5_1);
+	stream << quint64(kWideIdsTag) << quint64(userId.bare) << qint32(mainDcId);
+	writeKeys(stream, keys);
+	writeKeys(stream, keysToDestroy);
+	return result;
+}
+
+bool HasValidProvisionalKeys(MTP::DcId mainDcId, const MTP::AuthKeysList &keys) {
+	auto previous = MTP::DcId();
+	auto hasMain = false;
+	for (const auto &key : keys) {
+		if (!key || key->dcId() <= previous
+			|| MTP::BareDcId(key->dcId()) != key->dcId()
+			|| ranges::all_of(key->data(), [](gsl::byte byte) {
+				return byte == gsl::byte();
+			})) {
+			return false;
+		}
+		previous = key->dcId();
+		hasMain = hasMain || (previous == mainDcId);
+	}
+	return hasMain;
+}
+
 } // namespace
+
+ProvisionalAccountAuthorization::ProvisionalAccountAuthorization(
+	UserId userId,
+	MTP::Environment environment,
+	QByteArray authorization,
+	QByteArray config)
+: _userId(userId)
+, _environment(environment)
+, _authorization(std::move(authorization))
+, _config(std::move(config)) {
+}
+
+ProvisionalAccountAuthorization::ProvisionalAccountAuthorization(
+	ProvisionalAccountAuthorization &&other) noexcept = default;
+
+ProvisionalAccountAuthorization::~ProvisionalAccountAuthorization() {
+	if (!_authorization.isEmpty()) {
+		OPENSSL_cleanse(_authorization.data(), _authorization.size());
+	}
+	if (!_config.isEmpty()) {
+		OPENSSL_cleanse(_config.data(), _config.size());
+	}
+}
+
+UserId ProvisionalAccountAuthorization::userId() const {
+	return _userId;
+}
+
+MTP::Environment ProvisionalAccountAuthorization::environment() const {
+	return _environment;
+}
+
+const QByteArray &ProvisionalAccountAuthorization::authorization() const {
+	return _authorization;
+}
+
+const QByteArray &ProvisionalAccountAuthorization::config() const {
+	return _config;
+}
 
 Account::Account(not_null<Domain*> domain, const QString &dataName, int index)
 : _domain(domain)
@@ -49,6 +135,87 @@ Account::Account(not_null<Domain*> domain, Storage::AccountPaths paths)
 , _local(std::make_unique<Storage::Account>(this, std::move(paths))) {
 }
 
+Account::Account(not_null<Domain*> domain) : _domain(domain) {
+}
+
+std::unique_ptr<Account> Account::CreateProvisionalScopedLogin(
+		not_null<Domain*> domain,
+		std::unique_ptr<MTP::Config> config,
+		Fn<void(ProvisionalAccountAuthorization)> done) {
+	const auto access = domain->preparedScopedProfileAccess();
+	const auto transaction = domain->preparedScopedProfileTransactionId();
+	if (!config || !done || Core::Quitting() || !domain->scopedProfileReserved()
+		|| domain->started() || !access
+		|| access->role != Ayu::ProfileSets::ProfileGenerationRole::Set
+		|| !access->setId || domain->preparedScopedAccountCount()
+		|| transaction.isEmpty()) {
+		return nullptr;
+	}
+	auto account = std::unique_ptr<Account>(new Account(domain));
+	const auto raw = account.get();
+	raw->_provisionalLoginDone = [
+		weak = base::make_weak(domain),
+		setId = *access->setId,
+		transaction,
+		raw,
+		done = std::move(done)
+	](ProvisionalAccountAuthorization result) {
+		const auto domain = weak.get();
+		if (!domain || Core::Quitting() || !domain->provisionalEnrollmentActive()
+			|| domain->accounts().front().account.get() != raw
+			|| domain->preparedScopedProfileTransactionId() != transaction) {
+			return;
+		}
+		const auto access = domain->preparedScopedProfileAccess();
+		if (access && access->setId == setId) {
+			done(std::move(result));
+		}
+	};
+	raw->createMtp(MTP::Instance::Mode::ProvisionalLogin, std::move(config));
+	raw->_mtp->setUpdatesHandler([=](const MTP::Response &message) {
+		if (!raw->_provisionalLoginCompleted) {
+			raw->checkForUpdates(message);
+		}
+	});
+	raw->_mtpValue = raw->_mtp.get();
+	return account;
+}
+
+bool Account::isProvisionalScopedLogin() const {
+	return !_local;
+}
+
+bool Account::completeProvisionalScopedLogin(const MTPUser &user) {
+	if (!isProvisionalScopedLogin() || !_mtp) {
+		return false;
+	}
+	if (_provisionalLoginCompleted) {
+		return true;
+	}
+	if (Core::Quitting() || user.type() != mtpc_user) {
+		return false;
+	}
+	const auto &data = user.c_user();
+	const auto userId = UserId(data.vid());
+	const auto mainDc = _mtp->mainDcId();
+	const auto keys = _mtp->getKeysForWrite();
+	if (!data.is_self() || !userId || (userId.bare & ~PeerId::kChatTypeMask)
+		|| !HasValidProvisionalKeys(mainDc, keys)) {
+		return false;
+	}
+	auto result = ProvisionalAccountAuthorization(
+		userId,
+		_mtp->environment(),
+		SerializeAuthorization(userId, mainDc, keys, {}),
+		_mtp->config().serialize());
+	_provisionalLoginCompleted = true;
+	crl::on_main(this, [this, result = std::move(result)]() mutable {
+		auto done = base::take(_provisionalLoginDone);
+		done(std::move(result));
+	});
+	return true;
+}
+
 Account::~Account() {
 	if (const auto session = maybeSession()) {
 		session->saveSettingsNowIfNeeded();
@@ -58,6 +225,8 @@ Account::~Account() {
 }
 
 Storage::Domain &Account::domainLocal() const {
+	Expects(_local != nullptr);
+
 	return _domain->local();
 }
 
@@ -65,18 +234,18 @@ Storage::Domain &Account::domainLocal() const {
 		const QByteArray &passcode) {
 	Expects(!_appConfig);
 
-	return _local->legacyStart(passcode);
+	return local().legacyStart(passcode);
 }
 
 std::unique_ptr<MTP::Config> Account::prepareToStart(
 		std::shared_ptr<MTP::AuthKey> localKey) {
-	return _local->start(std::move(localKey));
+	return local().start(std::move(localKey));
 }
 
 bool Account::prepareScopedToStart(
 		const std::shared_ptr<MTP::AuthKey> &localKey,
 		UserId expectedUser) {
-	if (_mtp || _appConfig || !expectedUser
+	if (!_local || _mtp || _appConfig || !expectedUser
 		|| !_local->prepareScopedStart(localKey)
 		|| _sessionUserId != expectedUser) {
 		return false;
@@ -93,7 +262,7 @@ bool Account::prepareScopedToStart(
 }
 
 void Account::start(std::unique_ptr<MTP::Config> config) {
-	Expects(!_local->usesScopedStorage() || (config && _sessionUserId));
+	Expects(!local().usesScopedStorage() || (config && _sessionUserId));
 
 	_appConfig = std::make_unique<AppConfig>(this);
 	startMtp(config
@@ -107,7 +276,7 @@ void Account::start(std::unique_ptr<MTP::Config> config) {
 
 void Account::prepareToStartAdded(
 		std::shared_ptr<MTP::AuthKey> localKey) {
-	_local->startAdded(std::move(localKey));
+	local().startAdded(std::move(localKey));
 }
 
 void Account::watchProxyChanges() {
@@ -207,6 +376,7 @@ void Account::createSession(
 		QByteArray serialized,
 		int streamVersion,
 		std::unique_ptr<SessionSettings> settings) {
+	Expects(_local != nullptr);
 	Expects(_mtp != nullptr);
 	Expects(_session == nullptr);
 	Expects(_sessionValue.current() == nullptr);
@@ -301,60 +471,25 @@ void Account::setLegacyMtpKey(std::shared_ptr<MTP::AuthKey> key) {
 }
 
 QByteArray Account::serializeMtpAuthorization() const {
-	const auto serialize = [&](
-			MTP::DcId mainDcId,
-			const MTP::AuthKeysList &keys,
-			const MTP::AuthKeysList &keysToDestroy) {
-		const auto keysSize = [](auto &list) {
-			const auto keyDataSize = MTP::AuthKey::Data().size();
-			return sizeof(qint32)
-				+ list.size() * (sizeof(qint32) + keyDataSize);
-		};
-		const auto writeKeys = [](
-				QDataStream &stream,
-				const MTP::AuthKeysList &keys) {
-			stream << qint32(keys.size());
-			for (const auto &key : keys) {
-				stream << qint32(key->dcId());
-				key->write(stream);
-			}
-		};
+	Expects(_local != nullptr);
 
-		auto result = QByteArray();
-		// wide tag + userId + mainDcId
-		auto size = 2 * sizeof(quint64) + sizeof(qint32);
-		size += keysSize(keys) + keysSize(keysToDestroy);
-		result.reserve(size);
-		{
-			QDataStream stream(&result, QIODevice::WriteOnly);
-			stream.setVersion(QDataStream::Qt_5_1);
-
-			const auto currentUserId = sessionExists()
-				? session().userId()
-				: UserId();
-			stream
-				<< quint64(kWideIdsTag)
-				<< quint64(currentUserId.bare)
-				<< qint32(mainDcId);
-			writeKeys(stream, keys);
-			writeKeys(stream, keysToDestroy);
-
-			DEBUG_LOG(("MTP Info: Keys written, userId: %1, dcId: %2"
-				).arg(currentUserId.bare
-				).arg(mainDcId));
-		}
-		return result;
-	};
+	const auto userId = sessionExists() ? session().userId() : UserId();
+	const auto mainDc = _mtp ? _mtp->mainDcId() : _mtpFields.mainDcId;
+	DEBUG_LOG(("MTP Info: Keys written, userId: %1, dcId: %2"
+		).arg(userId.bare
+		).arg(mainDc));
 	if (_mtp) {
 		const auto keys = _mtp->getKeysForWrite();
 		const auto keysToDestroy = _mtpForKeysDestroy
 			? _mtpForKeysDestroy->getKeysForWrite()
 			: MTP::AuthKeysList();
-		return serialize(_mtp->mainDcId(), keys, keysToDestroy);
+		return SerializeAuthorization(userId, mainDc, keys, keysToDestroy);
 	}
-	const auto &keys = _mtpFields.keys;
-	const auto &keysToDestroy = _mtpKeysToDestroy;
-	return serialize(_mtpFields.mainDcId, keys, keysToDestroy);
+	return SerializeAuthorization(
+		userId,
+		mainDc,
+		_mtpFields.keys,
+		_mtpKeysToDestroy);
 }
 
 void Account::setSessionUserId(UserId userId) {
@@ -442,16 +577,22 @@ void Account::setMtpAuthorization(const QByteArray &serialized) {
 		).arg(_mtpKeysToDestroy.size()));
 }
 
-void Account::startMtp(std::unique_ptr<MTP::Config> config) {
+void Account::createMtp(
+		MTP::Instance::Mode mode,
+		std::unique_ptr<MTP::Config> config) {
 	Expects(!_mtp);
 
 	auto fields = base::take(_mtpFields);
 	fields.config = std::move(config);
 	fields.deviceModel = Platform::DeviceModelPretty();
 	fields.systemVersion = Platform::SystemVersionPretty();
-	_mtp = std::make_unique<MTP::Instance>(
-		MTP::Instance::Mode::Normal,
-		std::move(fields));
+	_mtp = std::make_unique<MTP::Instance>(mode, std::move(fields));
+}
+
+void Account::startMtp(std::unique_ptr<MTP::Config> config) {
+	Expects(_local != nullptr);
+
+	createMtp(MTP::Instance::Mode::Normal, std::move(config));
 
 	const auto writingKeys = _mtp->lifetime().make_state<bool>(false);
 	_mtp->writeKeysRequests(
@@ -547,7 +688,7 @@ bool Account::checkForNewSession(const MTP::Response &message) {
 }
 
 void Account::logOut() {
-	if (_loggingOut) {
+	if (_loggingOut || isProvisionalScopedLogin()) {
 		return;
 	}
 	_loggingOut = true;
@@ -624,6 +765,9 @@ void Account::suggestMainDcId(MTP::DcId mainDcId) {
 }
 
 void Account::destroyStaleAuthorizationKeys() {
+	if (isProvisionalScopedLogin()) {
+		return;
+	}
 	Expects(_mtp != nullptr);
 
 	for (const auto &key : _mtp->getKeysForWrite()) {

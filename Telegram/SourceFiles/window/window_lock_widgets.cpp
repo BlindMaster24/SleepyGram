@@ -88,6 +88,7 @@ private:
 		std::optional<ProfileSets::OpenedProfileGeneration> generation,
 		ProfileSets::ProfileGenerationError error);
 	void showPreparedProfile();
+	void openPreparedSet();
 	void showSetList();
 	void beginSetChange(SetChangeKind kind);
 	void submitSetChange();
@@ -115,6 +116,7 @@ private:
 	const not_null<PreLaunchInput*> _confirmPasscode;
 	const not_null<PreLaunchButton*> _cancel;
 	const not_null<PreLaunchButton*> _unlock;
+	const not_null<PreLaunchButton*> _addAccount;
 	const not_null<PreLaunchButton*> _lock;
 	QWidget *_emergencyRules = nullptr;
 	std::optional<SetChangeKind> _setChange;
@@ -144,6 +146,7 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 , _confirmPasscode(new PreLaunchInput(this, true))
 , _cancel(new PreLaunchButton(this, false))
 , _unlock(new PreLaunchButton(this))
+, _addAccount(new PreLaunchButton(this))
 , _lock(new PreLaunchButton(this)) {
 	_status->setWordWrap(true);
 	_status->setTextFormat(Qt::PlainText);
@@ -167,6 +170,7 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 	_confirmPasscode->setPlaceholderText(u"Confirm new set passcode"_q);
 	_cancel->setText(u"Cancel"_q);
 	_lock->setText(u"Lock"_q);
+	_addAccount->setText(u"Add account"_q);
 	const auto addSet = new PreLaunchButton(this);
 	addSet->setText(u"Add set"_q);
 	const auto emergencyRules = new PreLaunchButton(this);
@@ -178,6 +182,9 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 
 	connect(_passcode.get(), &QLineEdit::returnPressed, this, [this] {
 		submit();
+	});
+	connect(_addAccount.get(), &QPushButton::clicked, this, [this] {
+		openPreparedSet();
 	});
 	connect(_sets.get(), &QListWidget::currentRowChanged, this, [this](int row) {
 		_editSet->setEnabled(row >= 0);
@@ -226,6 +233,7 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 	actions->addWidget(_cancel.get());
 	actions->addWidget(_lock.get());
 	actions->addWidget(_unlock.get());
+	actions->addWidget(_addAccount.get());
 	layout->addLayout(actions);
 	showForm(u"Enter your passcode."_q);
 }
@@ -243,6 +251,7 @@ void ScopedProfileLockWindow::showForm(QString status) {
 	_editor->hide();
 	_cancel->hide();
 	_lock->hide();
+	_addAccount->hide();
 	_passcode->setAccessibleName(u"Passcode"_q);
 	_passcode->setPlaceholderText(QString());
 	_passcode->show();
@@ -314,7 +323,11 @@ void ScopedProfileLockWindow::authenticationDone(
 		return;
 	}
 	cSetPasscodeBadTries(0);
-	showPreparedProfile();
+	if (error == GenerationError::EmergencyResetComplete && !_domain->preparedScopedAccountCount()) {
+		openPreparedSet();
+	} else {
+		showPreparedProfile();
+	}
 }
 
 void ScopedProfileLockWindow::showPreparedProfile() {
@@ -326,15 +339,25 @@ void ScopedProfileLockWindow::showPreparedProfile() {
 		return;
 	} else if (_domain->preparedScopedAccountCount() == 0) {
 		_status->setText(u"This set has no accounts."_q);
-	} else if (_startSet(_sidecar)) {
-		hide();
-		return;
+		_addAccount->setEnabled(true);
+		_addAccount->show();
+		_addAccount->setFocus();
 	} else {
-		clearProfile();
-		showForm(u"Local data could not be opened."_q);
+		openPreparedSet();
+	}
+}
+
+void ScopedProfileLockWindow::openPreparedSet() {
+	if (_checking || _closing || Core::Quitting()) {
 		return;
 	}
-	_lock->setFocus();
+	_addAccount->setEnabled(false);
+	if (_startSet(_sidecar)) {
+		hide();
+		return;
+	}
+	clearProfile();
+	showForm(u"Local data could not be opened."_q);
 }
 
 void ScopedProfileLockWindow::showSetList() {

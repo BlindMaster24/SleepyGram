@@ -193,7 +193,15 @@ bool ReadSnapshot(
 		return false;
 	}
 	const auto bytes = file.read(kMaxSnapshotBytes + 1);
-	if (bytes.size() > kMaxSnapshotBytes || !file.atEnd()) {
+	return file.atEnd() && DecodeSnapshot(bytes, accountId, peerId, snapshot);
+}
+
+bool DecodeSnapshot(
+		const QByteArray &bytes,
+		uint64 accountId,
+		PeerId peerId,
+		Snapshot *snapshot) {
+	if (!snapshot || bytes.size() > kMaxSnapshotBytes) {
 		return false;
 	}
 	const auto document = QJsonDocument::fromJson(bytes);
@@ -329,7 +337,24 @@ bool ReadAttachments(
 		return false;
 	}
 	const auto bytes = file.read(kMaxManifestBytes + 1);
-	if (bytes.size() > kMaxManifestBytes || !file.atEnd()) {
+	auto result = std::vector<Attachment>();
+	if (!file.atEnd() || !DecodeAttachments(bytes, accountId, peerId, &result)) {
+		return false;
+	}
+	std::erase_if(result, [&](const auto &attachment) {
+		const auto fileInfo = QFileInfo(QDir(paths.attachmentDirectory).filePath(attachment.fileName));
+		return !fileInfo.isFile() || fileInfo.isSymLink() || fileInfo.size() != attachment.size;
+	});
+	*attachments = std::move(result);
+	return true;
+}
+
+bool DecodeAttachments(
+		const QByteArray &bytes,
+		uint64 accountId,
+		PeerId peerId,
+		std::vector<Attachment> *attachments) {
+	if (!attachments || bytes.size() > kMaxManifestBytes) {
 		return false;
 	}
 	const auto document = QJsonDocument::fromJson(bytes);
@@ -366,13 +391,7 @@ bool ReadAttachments(
 		if (!ValidAttachments({ attachment })) {
 			return false;
 		}
-		const auto path = QDir(paths.attachmentDirectory)
-			.filePath(attachment.fileName);
-		const auto fileInfo = QFileInfo(path);
-		if (fileInfo.isFile() && !fileInfo.isSymLink()
-			&& fileInfo.size() == attachment.size) {
-			result.push_back(std::move(attachment));
-		}
+		result.push_back(std::move(attachment));
 	}
 	if (!ValidAttachments(result)) {
 		return false;

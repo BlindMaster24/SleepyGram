@@ -265,10 +265,17 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_execution_capsule.h
         ayu/features/emergency_actions/emergency_recovery_record.cpp
         ayu/features/emergency_actions/emergency_recovery_record.h
+        ayu/features/emergency_actions/installation_removal.cpp
+        ayu/features/emergency_actions/installation_removal.h
+        ayu/features/emergency_actions/installation_removal_handoff.cpp
+        ayu/features/emergency_actions/installation_removal_handoff.h
+        ayu/features/emergency_actions/installation_removal_launcher.cpp
+        ayu/features/emergency_actions/installation_removal_launcher.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
         ayu/features/emergency_actions/mtproto_session_effect.cpp
         ayu/features/emergency_actions/mtproto_session_effect.h
+        ayu/features/emergency_actions/mtproto_device_inventory_response.h
         ayu/features/emergency_actions/mtproto_session_effect_transport.cpp
         ayu/features/emergency_actions/mtproto_session_effect_transport.h
         ayu/features/emergency_actions/scoped_account_clear.cpp
@@ -295,6 +302,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_account_storage.h
         ayu/features/profile_sets/profile_generation.cpp
         ayu/features/profile_sets/profile_generation.h
+        ayu/features/profile_sets/profile_enrollment.cpp
+        ayu/features/profile_sets/profile_enrollment.h
         ayu/features/profile_sets/profile_emergency_bundle.cpp
         ayu/features/profile_sets/profile_emergency_bundle.h
         ayu/features/profile_sets/profile_emergency_settings.cpp
@@ -324,6 +333,9 @@ set(ayugram_files
         ayu/features/offline_history/offline_history.h
         ayu/features/offline_history/offline_history_storage.cpp
         ayu/features/offline_history/offline_history_storage.h
+        ayu/features/offline_history/offline_history_paths.h
+        ayu/features/offline_history/offline_history_scoped.cpp
+        ayu/features/offline_history/offline_history_scoped.h
         ayu/features/translator/ayu_translator.cpp
         ayu/features/translator/ayu_translator.h
         ayu/features/translator/ayu_translate_provider.cpp
@@ -3205,6 +3217,29 @@ if (MSVC)
 endif()
 
 target_prepare_qrc(Telegram)
+
+find_package(Threads REQUIRED)
+add_executable(SleepyGramRemovalHelper)
+init_non_host_target(SleepyGramRemovalHelper)
+nice_target_sources(SleepyGramRemovalHelper ${src_loc} PRIVATE
+    ayu/features/emergency_actions/emergency_action_plan.cpp
+    ayu/features/emergency_actions/emergency_action_journal.cpp
+    ayu/features/emergency_actions/installation_removal.cpp
+    ayu/features/emergency_actions/installation_removal_handoff.cpp
+    ayu/features/emergency_actions/installation_removal_main.cpp
+)
+target_include_directories(SleepyGramRemovalHelper PRIVATE ${src_loc})
+target_link_libraries(SleepyGramRemovalHelper PRIVATE desktop-app::external_openssl Threads::Threads)
+target_link_libraries(Telegram PRIVATE Threads::Threads ${CMAKE_DL_LIBS})
+set_target_properties(SleepyGramRemovalHelper PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${output_folder})
+if (WIN32)
+    target_link_libraries(SleepyGramRemovalHelper PRIVATE advapi32)
+    target_link_libraries(Telegram PRIVATE advapi32)
+    if (NOT MSVC)
+        target_link_options(SleepyGramRemovalHelper PRIVATE -municode)
+    endif()
+endif()
+add_dependencies(Telegram SleepyGramRemovalHelper)
 
 if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_winstore)
     add_executable(Updater WIN32)

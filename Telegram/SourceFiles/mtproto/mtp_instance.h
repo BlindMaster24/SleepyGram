@@ -58,6 +58,8 @@ public:
 		Normal,
 		KeysDestroyer,
 		EmergencySessionEffect,
+		ProvisionalLogin,
+		EmergencyDeviceInventory,
 	};
 
 	Instance(Mode mode, Fields &&fields);
@@ -133,6 +135,7 @@ public:
 	bool isKeysDestroyer() const;
 	[[nodiscard]] bool isEmergencySessionEffect() const;
 	[[nodiscard]] bool emergencySessionEffectExpired() const;
+	[[nodiscard]] bool allowsPayloadDebugLogging() const;
 	void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId);
 
 	// Main thread.

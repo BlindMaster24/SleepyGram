@@ -16,6 +16,7 @@ class PreLaunchWindow;
 
 namespace Ayu::ProfileSets {
 class MigrationController;
+struct SetId;
 enum class ProfileStartupMode : uchar;
 } // namespace Ayu::ProfileSets
 
@@ -48,6 +49,7 @@ namespace Main {
 class Domain;
 class Account;
 class Session;
+class ProvisionalAccountAuthorization;
 } // namespace Main
 
 namespace Iv {
@@ -394,6 +396,11 @@ private:
 	void showScopedProfileLock();
 	[[nodiscard]] bool startScopedDesktop(
 		const Ayu::ProfileSets::MigrationController &sidecar);
+	void finishProvisionalEnrollment(
+		Ayu::ProfileSets::MigrationController sidecar,
+		QByteArray transactionId,
+		Ayu::ProfileSets::SetId setId,
+		Main::ProvisionalAccountAuthorization authorization);
 	void runDesktop(
 		const Ayu::ProfileSets::MigrationController *sidecar,
 		QString settingsDirectory,
@@ -436,6 +443,7 @@ private:
 	const Ayu::ProfileSets::ProfileStartupMode _profileStartupMode;
 	bool _desktopInitialized = false;
 	bool _profileSetupPostponed = false;
+	bool _profileEnrollmentSaving = false;
 	bool _localStorageStarted = false;
 	bool _scopedDesktopUnlocked = false;
 	struct InstanceSetter {

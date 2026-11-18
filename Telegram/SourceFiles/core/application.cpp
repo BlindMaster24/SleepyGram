@@ -111,6 +111,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/accessible/ui_accessible_factory.h"
 #include "ui/ui_utility.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/layers/generic_box.h"
+#include "ui/widgets/fields/password_input.h"
+#include "ui/widgets/labels.h"
 #include "core/cached_webview_availability.h"
 #include "test/test_agent.h"
 
@@ -128,8 +131,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "ayu/features/profile_sets/profile_generation.h"
 #include "ayu/features/profile_sets/profile_emergency.h"
+#include "ayu/features/profile_sets/profile_enrollment.h"
 #include "ayu/features/profile_sets/profile_setup.h"
 #include "window/window_profile_setup.h"
+
+#include "styles/style_settings.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
@@ -426,7 +432,7 @@ void Application::run() {
 	if (_profileStartupMode == ProfileStartupMode::Committed && workspace) {
 		const auto committed = workspace->LoadCommitted();
 		const auto emergency = committed && !committed->emergencyRecovery.isEmpty();
-		if (committed && (emergency || !committed->legacyRetirement.isEmpty())) {
+		if (committed) {
 			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>(
 				u"Checking local data…"_q);
 			_blockedProfileWindow->show();
@@ -488,6 +494,87 @@ bool Application::startScopedDesktop(const MigrationController &sidecar) {
 	cRefStartUrls().clear();
 	runDesktop(&sidecar, std::move(*directory), std::move(key));
 	return _scopedDesktopUnlocked;
+}
+
+void Application::finishProvisionalEnrollment(
+		MigrationController sidecar,
+		QByteArray transactionId,
+		Ayu::ProfileSets::SetId setId,
+		Main::ProvisionalAccountAuthorization authorization) {
+	if (Quitting() || !_domain->provisionalEnrollmentActive() || !_lastActivePrimaryWindow) {
+		return;
+	}
+	const auto auth = std::make_shared<Main::ProvisionalAccountAuthorization>(std::move(authorization));
+	_lastActivePrimaryWindow->show(Box([=, this](not_null<Ui::GenericBox*> box) {
+		using Result = Ayu::ProfileSets::ScopedEnrollmentResult;
+		box->setTitle(rpl::single(u"Add account to this set"_q));
+		box->setCloseByEscape(false);
+		box->setCloseByOutsideClick(false);
+		const auto first = box->addRow(object_ptr<Ui::PasswordInput>(
+			box, st::settingLocalPasscodeInputField, rpl::single(u"Master passcode"_q)));
+		const auto second = box->addRow(object_ptr<Ui::PasswordInput>(
+			box, st::settingLocalPasscodeInputField, rpl::single(u"Set passcode"_q)));
+		const auto error = box->addRow(object_ptr<Ui::FlatLabel>(box, QString(), st::boxLabel));
+		error->hide();
+		const auto submit = [=, this] {
+			if (_profileEnrollmentSaving) {
+				return;
+			} else if (first->text().isEmpty() || second->text().isEmpty()) {
+				error->setText(u"Enter both passcodes."_q);
+				error->show();
+				return;
+			}
+			_profileEnrollmentSaving = true;
+			auto request = Ayu::ProfileSets::ScopedEnrollmentRequest{
+				.expectedTransactionId = transactionId,
+				.targetSet = setId,
+				.masterPasscode = first->text(),
+				.setPasscode = second->text(),
+				.userId = auth->userId(),
+				.environment = auth->environment(),
+				.authorization = auth->authorization(),
+				.configuration = auth->config(),
+			};
+			first->setText(QString());
+			second->setText(QString());
+			first->setEnabled(false);
+			second->setEnabled(false);
+			error->hide();
+			const auto weak = QPointer<Ui::GenericBox>(box.get());
+			Ayu::ProfileSets::EnrollScopedAccount(sidecar, std::move(request),
+				crl::guard(this, [=, this](Result result) {
+					_profileEnrollmentSaving = false;
+					if (!weak) {
+						lockByPasscode();
+						return;
+					}
+					if (result == Result::Complete || result == Result::Stale) {
+						box->closeBox();
+						return;
+					}
+					first->setEnabled(true);
+					second->setEnabled(true);
+					error->setText((result == Result::InvalidPasscodes)
+						? u"The passcodes did not match."_q
+						: (result == Result::DuplicateAccount)
+						? u"This account is already in the protected profile."_q
+						: (result == Result::RuleUpdateRequired)
+						? u"Review the emergency rules in master mode before adding an account."_q
+						: u"The account could not be added."_q);
+					error->show();
+				}));
+		};
+		box->setFocusCallback([=] { first->setFocusFast(); });
+		box->addButton(tr::lng_settings_save(), submit);
+		box->addButton(tr::lng_cancel(), [=, this] {
+			if (!_profileEnrollmentSaving) {
+				box->closeBox();
+			}
+		});
+		box->boxClosing() | rpl::on_next([this] {
+			InvokeQueued(this, [this] { lockByPasscode(); });
+		}, box->lifetime());
+	}));
 }
 
 void Application::runDesktop(
@@ -639,7 +726,17 @@ void Application::runDesktop(
 	DEBUG_LOG(("Application Info: window created..."));
 
 	if (sidecar) {
-		if (!_domain->startPreparedScopedProfile(*sidecar)) {
+		const auto started = _domain->preparedScopedAccountCount()
+			? _domain->startPreparedScopedProfile(*sidecar)
+			: _domain->startPreparedScopedEnrollment(*sidecar, [
+					this,
+					sidecar = *sidecar,
+					transaction = _domain->preparedScopedProfileTransactionId(),
+					set = *_domain->preparedScopedProfileAccess()->setId](
+						Main::ProvisionalAccountAuthorization authorization) {
+				finishProvisionalEnrollment(sidecar, transaction, set, std::move(authorization));
+			});
+		if (!started) {
 			Quit();
 			return;
 		}
@@ -658,7 +755,8 @@ void Application::runDesktop(
 	DEBUG_LOG(("Application Info: showing."));
 	_lastActivePrimaryWindow->finishFirstShow();
 
-	if (!_lastActivePrimaryWindow->locked() && cStartToSettings()) {
+	if (!_domain->provisionalEnrollmentActive()
+		&& !_lastActivePrimaryWindow->locked() && cStartToSettings()) {
 		_lastActivePrimaryWindow->showSettings();
 	}
 
@@ -679,7 +777,7 @@ void Application::runDesktop(
 			_mediaView->show(std::move(request));
 		}
 	}, _lifetime);
-	{
+	if (!sidecar) {
 		const auto countries = std::make_shared<Countries::Manager>(
 			_domain.get());
 		countries->lifetime().add([=] {
@@ -1639,6 +1737,9 @@ void Application::updateWindowTitles() {
 }
 
 void Application::lockByPasscode() {
+	if (_profileEnrollmentSaving) {
+		return;
+	}
 	if (!legacyProfileAccessAllowed()) {
 		if (_scopedDesktopUnlocked && !Quitting()) {
 			_scopedDesktopUnlocked = false;
@@ -2570,8 +2671,8 @@ Application &App() {
 void Quit(QuitReason reason) {
    if (Quitting()) {
 	   return;
-   } else if (Application::Instance && Window::ProfileSetupInProgress(
-		   App()._blockedProfileWindow.get())) {
+   } else if (Application::Instance && (App()._profileEnrollmentSaving
+		   || Window::ProfileSetupInProgress(App()._blockedProfileWindow.get()))) {
 	   return;
    } else if (IsAppLaunched() && App().preventsQuit(reason)) {
 	   return;

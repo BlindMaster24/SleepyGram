@@ -174,8 +174,15 @@ public:
 	bool isEmergencySessionEffect() const {
 		return (_mode == Instance::Mode::EmergencySessionEffect);
 	}
-	bool emergencySessionEffectExpired() const {
+	bool isRestrictedEmergency() const {
 		return isEmergencySessionEffect()
+			|| (_mode == Instance::Mode::EmergencyDeviceInventory);
+	}
+	bool isProvisionalLogin() const {
+		return (_mode == Instance::Mode::ProvisionalLogin);
+	}
+	bool emergencySessionEffectExpired() const {
+		return isRestrictedEmergency()
 			&& std::chrono::steady_clock::now() >= _emergencyDeadline;
 	}
 
@@ -332,7 +339,7 @@ Instance::Private::Private(
 , _networkReachability(base::NetworkReachability::Instance())
 , _proxySettings(Core::App().settings().proxy()) {
 	Expects(_config != nullptr);
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency()) {
 		Expects(fields.mainDcId > 0 && fields.keys.size() == 1);
 		Expects(fields.keys.front()->dcId() == fields.mainDcId);
 	}
@@ -408,7 +415,7 @@ void Instance::Private::start() {
 }
 
 void Instance::Private::resolveProxyDomain(const QString &host) {
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency()) {
 		return;
 	}
 	if (!_domainResolver) {
@@ -426,6 +433,10 @@ void Instance::Private::applyDomainIps(
 		const QString &host,
 		const QStringList &ips,
 		crl::time expireAt) {
+	if (isProvisionalLogin()) {
+		_instance->proxyDomainResolved(host, ips, expireAt);
+		return;
+	}
 	const auto applyToProxy = [&](ProxyData &proxy) {
 		if (!proxy.tryCustomResolve() || proxy.host != host) {
 			return false;
@@ -468,7 +479,7 @@ void Instance::Private::applyDomainIps(
 void Instance::Private::setGoodProxyDomain(
 		const QString &host,
 		const QString &ip) {
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency() || isProvisionalLogin()) {
 		return;
 	}
 	const auto applyToProxy = [&](ProxyData &proxy) {
@@ -537,7 +548,7 @@ rpl::producer<DcId> Instance::Private::mainDcIdValue() const {
 }
 
 void Instance::Private::requestConfig() {
-	if (_configLoader || !isNormal()) {
+	if (_configLoader || (!isNormal() && !isProvisionalLogin())) {
 		return;
 	}
 	_configLoader = std::make_unique<ConfigLoader>(
@@ -567,7 +578,7 @@ void Instance::Private::badConfigurationError(const ProxyData &proxy) {
 }
 
 void Instance::Private::syncHttpUnixtime() {
-	if (isEmergencySessionEffect()
+	if (isRestrictedEmergency()
 		|| base::unixtime::http_valid()
 		|| _httpUnixtimeLoader) {
 		return;
@@ -618,7 +629,8 @@ void Instance::Private::requestConfigIfExpired() {
 }
 
 void Instance::Private::requestCDNConfig() {
-	if (isEmergencySessionEffect() || _cdnConfigLoadRequestId || !hasMainDcId()) {
+	if (isRestrictedEmergency() || isProvisionalLogin()
+		|| _cdnConfigLoadRequestId || !hasMainDcId()) {
 		return;
 	}
 	_cdnConfigLoadRequestId = request(
@@ -958,13 +970,15 @@ void Instance::Private::configLoadDone(const MTPConfig &result) {
 	const auto &data = result.c_config();
 	_config->apply(data);
 
-	const auto lang = qs(data.vsuggested_lang_code().value_or_empty());
-	Lang::CurrentCloudManager().setSuggestedLanguage(lang);
-	Lang::CurrentCloudManager().setCurrentVersions(
-		data.vlang_pack_version().value_or_empty(),
-		data.vbase_lang_pack_version().value_or_empty());
-	if (const auto prefix = data.vautoupdate_url_prefix()) {
-		Local::writeAutoupdatePrefix(qs(*prefix));
+	if (!isProvisionalLogin()) {
+		const auto lang = qs(data.vsuggested_lang_code().value_or_empty());
+		Lang::CurrentCloudManager().setSuggestedLanguage(lang);
+		Lang::CurrentCloudManager().setCurrentVersions(
+			data.vlang_pack_version().value_or_empty(),
+			data.vbase_lang_pack_version().value_or_empty());
+		if (const auto prefix = data.vautoupdate_url_prefix()) {
+			Local::writeAutoupdatePrefix(qs(*prefix));
+		}
 	}
 
 	_configExpiresAt = crl::now()
@@ -1047,19 +1061,21 @@ void Instance::Private::sendRequest(
 		crl::time msCanWait,
 		bool needsLayer,
 		mtpRequestId afterRequestId) {
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency()) {
 		const auto body = SerializedRequest::kMessageBodyPosition;
 		const auto type = request->size() > body + 1
 			? mtpTypeId(request->at(body + 1))
 			: mtpTypeId();
+		const auto allowed = (_mode == Mode::EmergencyDeviceInventory)
+			? (type == mtpc_account_getAuthorizations && request->size() == body + 2)
+			: (type == mtpc_account_resetAuthorization
+				|| type == mtpc_auth_resetAuthorizations
+				|| type == mtpc_auth_logOut);
 		if (emergencySessionEffectExpired()
 			|| shiftedDcId
 			|| afterRequestId
-			|| !type
-			|| mtpTypeId(request->at(body)) != mtpc_invokeWithoutUpdates
-			|| (type != mtpc_account_resetAuthorization
-				&& type != mtpc_auth_resetAuthorizations
-				&& type != mtpc_auth_logOut)) {
+			|| !allowed
+			|| mtpTypeId(request->at(body)) != mtpc_invokeWithoutUpdates) {
 			return;
 		}
 	}
@@ -1204,7 +1220,7 @@ void Instance::Private::processCallback(const Response &response) {
 	}
 	if (handler.done || handler.fail) {
 		const auto handleError = [&](const Error &error) {
-			if (!isEmergencySessionEffect()) {
+			if (_instance->allowsPayloadDebugLogging()) {
 				DEBUG_LOG(("RPC Info: "
 					"error received, code %1, type %2, description: %3").arg(
 						QString::number(error.code()),
@@ -1251,7 +1267,7 @@ void Instance::Private::processCallback(const Response &response) {
 }
 
 void Instance::Private::processUpdate(const Response &message) {
-	if (!isEmergencySessionEffect() && _updatesHandler) {
+	if (!isRestrictedEmergency() && _updatesHandler) {
 		_updatesHandler(message);
 	}
 }
@@ -1272,7 +1288,7 @@ bool Instance::Private::rpcErrorOccured(
 		const Response &response,
 		const FailHandler &onFail,
 		const Error &error) { // return true if need to clean request data
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency()) {
 		const auto guard = QPointer<Instance>(_instance);
 		if (onFail) {
 			onFail(error, response);
@@ -1295,7 +1311,7 @@ bool Instance::Private::rpcErrorOccured(
 		QString::number(response.requestId),
 		QString::number(error.code()),
 		error.type(),
-		error.description().isEmpty()
+		(isProvisionalLogin() || error.description().isEmpty())
 			? QString()
 			: QString(": %1").arg(error.description())));
 	if (onFail) {
@@ -1922,7 +1938,7 @@ void Instance::Private::completedKeyDestroy(ShiftedDcId shiftedDcId) {
 void Instance::Private::keyDestroyedOnServer(
 		ShiftedDcId shiftedDcId,
 		uint64 keyId) {
-	if (isEmergencySessionEffect()) {
+	if (isRestrictedEmergency()) {
 		if (const auto session = findSession(shiftedDcId)) {
 			session->stop();
 		}
@@ -2236,6 +2252,11 @@ bool Instance::isKeysDestroyer() const {
 
 bool Instance::isEmergencySessionEffect() const {
 	return _private->isEmergencySessionEffect();
+}
+
+bool Instance::allowsPayloadDebugLogging() const {
+	return !_private->isRestrictedEmergency()
+		&& !_private->isProvisionalLogin();
 }
 
 bool Instance::emergencySessionEffectExpired() const {

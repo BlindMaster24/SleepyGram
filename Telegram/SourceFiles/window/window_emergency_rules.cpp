@@ -697,7 +697,7 @@ void EmergencyRulesPanel::appendReview(QVBoxLayout *layout, const DraftRule &dra
 		? u"Safe set: %1"_q.arg(safe->name)
 		: rule.safeProfileId.valid()
 		? u"Safe set unavailable"_q
-		: u"No safe set"_q);
+		: u"After the reset, this passcode opens an empty set for signing in."_q);
 }
 
 void EmergencyRulesPanel::showReview(std::optional<size_t> single) {
@@ -709,6 +709,9 @@ void EmergencyRulesPanel::showReview(std::optional<size_t> single) {
 		? u"Review the consequences before saving."_q
 		: u"Some rules cannot be saved with the available accounts and devices."_q);
 	const auto review = AddScrollArea(layout);
+	if (!_drafts.empty()) {
+		AddText(review, u"Set up emergency rules again after a reset."_q);
+	}
 	auto credentials = std::vector<RuleCredentials>();
 	for (auto i = size_t(0); i != _drafts.size(); ++i) {
 		if (single && *single != i) {

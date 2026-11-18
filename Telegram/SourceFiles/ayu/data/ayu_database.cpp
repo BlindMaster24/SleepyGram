@@ -443,6 +443,13 @@ Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
 	return Ayu::StageLegacyArchiveFiles(dataDirectory, targets, ArchiveSchemaSql());
 }
 
+Ayu::ArchivePartitionResult StageEmptyScopedArchivePartitions(
+		const std::filesystem::path &dataDirectory,
+		std::span<const Ayu::LegacyArchiveFileTarget> targets) {
+	std::lock_guard lock(databaseMutex);
+	return Ayu::StageEmptyScopedArchiveFiles(dataDirectory, targets, ArchiveSchemaSql());
+}
+
 void moveCurrentDatabase() {
 	std::lock_guard lock(databaseMutex);
 	if (!archiveRuntime.scoped) {

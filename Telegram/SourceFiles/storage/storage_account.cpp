@@ -47,6 +47,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <openssl/crypto.h>
 #include <QtCore/QTemporaryDir>
+#include <cstring>
 #include <map>
 
 // AyuGram includes
@@ -706,6 +707,12 @@ MigrationResult CompareMigrationRecords(
 		}
 		expectedEntries.insert(1, u"ayuprefss"_q);
 	}
+	if (!write && entries.contains(u"offline-history"_q)) {
+		if (!CanonicalMigrationDirectory(root + u"/offline-history"_q)) {
+			return MigrationResult::VerificationFailed;
+		}
+		expectedEntries.push_back(u"offline-history"_q);
+	}
 	if (!write && entries.contains(u"user"_q)) {
 		expectedEntries.push_back(u"user"_q);
 	}
@@ -911,6 +918,66 @@ UserId ReadLegacyAccountUserForMigration(
 	}
 	auto stream = QDataStream(auth.data);
 	return BeginMigrationRecord(stream) ? ReadAuthorizationUser(stream) : UserId();
+}
+
+AccountMigrationResult StageNewScopedAuthorization(
+		const AccountPaths &target,
+		const MTP::AuthKeyPtr &key,
+		UserId expectedUser,
+		const QByteArray &authorization,
+		const QByteArray &config) {
+	if (!key || !expectedUser || authorization.isEmpty() || config.isEmpty()
+		|| authorization.size() > kMaxMigrationRecordSize
+		|| config.size() > kMaxMigrationRecordSize) {
+		return MigrationResult::InvalidKeys;
+	}
+	const auto root = QFileInfo(target.authPath).path();
+	const auto parent = QFileInfo(root).path();
+	if (!MatchesScopedPaths(target) || !CanonicalMigrationDirectory(parent)
+		|| Present(QFileInfo(root))) {
+		return MigrationResult::InvalidPaths;
+	}
+	auto authData = EncryptedDescriptor(sizeof(quint32) + Serialize::bytearraySize(authorization));
+	authData.stream << quint32(dbiMtpAuthorization) << authorization;
+	authData.finish();
+	auto configData = EncryptedDescriptor(Serialize::bytearraySize(config));
+	configData.stream << config;
+	configData.finish();
+	const auto record = [](QByteArray data) {
+		const auto length = quint32(data.size());
+		std::memcpy(data.data(), &length, sizeof(length));
+		return MigrationRecord{ .version = AppVersion, .data = std::move(data) };
+	};
+	const auto auth = record(std::move(authData.data));
+	const auto configRecord = record(std::move(configData.data));
+	const auto map = record(QByteArray(sizeof(quint32), Qt::Uninitialized));
+	auto records = std::map<QString, MigrationRecordType>();
+	const auto valid = InspectMigrationRecord(auth, MigrationRecordType::Authorization, expectedUser, records);
+	if (valid != MigrationResult::Success) {
+		return valid;
+	}
+	if (InspectMigrationRecord(configRecord, MigrationRecordType::Config, expectedUser, records)
+		!= MigrationResult::Success) {
+		return MigrationResult::InvalidSource;
+	}
+	auto temporary = QTemporaryDir(parent + u"/.enroll-XXXXXX"_q);
+	if (!temporary.isValid() || !QDir(temporary.path()).mkdir(u"data"_q)) {
+		return MigrationResult::DestinationIo;
+	}
+	const auto directory = temporary.path();
+	if (CompareMigrationRecord(auth, directory + u"/auth"_q,
+			MigrationRecordType::Authorization, key, true) != MigrationResult::Success
+		|| CompareMigrationRecord(map, directory + u"/data/map"_q,
+			MigrationRecordType::Map, key, true) != MigrationResult::Success
+		|| CompareMigrationRecord(configRecord, directory + u"/data/config"_q,
+			MigrationRecordType::Config, key, true) != MigrationResult::Success
+		|| !QDir(parent).rename(directory, root)) {
+		return MigrationResult::VerificationFailed;
+	}
+	temporary.setAutoRemove(false);
+	const auto verified = ValidateScopedAccountForStartup(target, key);
+	return (verified && verified->userId == expectedUser)
+		? MigrationResult::Success : MigrationResult::VerificationFailed;
 }
 
 namespace {

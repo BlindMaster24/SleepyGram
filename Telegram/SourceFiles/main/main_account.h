@@ -30,11 +30,46 @@ class Session;
 class SessionSettings;
 class AppConfig;
 
+class ProvisionalAccountAuthorization final {
+public:
+	ProvisionalAccountAuthorization(
+		ProvisionalAccountAuthorization &&other) noexcept;
+	~ProvisionalAccountAuthorization();
+
+	[[nodiscard]] UserId userId() const;
+	[[nodiscard]] MTP::Environment environment() const;
+	[[nodiscard]] const QByteArray &authorization() const;
+	[[nodiscard]] const QByteArray &config() const;
+
+private:
+	friend class Account;
+
+	ProvisionalAccountAuthorization(
+		UserId userId,
+		MTP::Environment environment,
+		QByteArray authorization,
+		QByteArray config);
+
+	UserId _userId;
+	MTP::Environment _environment = {};
+	QByteArray _authorization;
+	QByteArray _config;
+
+};
+
 class Account final : public base::has_weak_ptr {
 public:
 	Account(not_null<Domain*> domain, const QString &dataName, int index);
 	Account(not_null<Domain*> domain, Storage::AccountPaths paths);
 	~Account();
+
+	// The queued callback can destroy the Intro widget and then this account.
+	[[nodiscard]] static std::unique_ptr<Account> CreateProvisionalScopedLogin(
+		not_null<Domain*> domain,
+		std::unique_ptr<MTP::Config> config,
+		Fn<void(ProvisionalAccountAuthorization)> done);
+	[[nodiscard]] bool isProvisionalScopedLogin() const;
+	[[nodiscard]] bool completeProvisionalScopedLogin(const MTPUser &user);
 
 	[[nodiscard]] Domain &domain() const {
 		return *_domain;
@@ -74,6 +109,8 @@ public:
 	}
 
 	[[nodiscard]] Storage::Account &local() const {
+		Expects(_local != nullptr);
+
 		return *_local;
 	}
 
@@ -130,6 +167,8 @@ private:
 		LoggedOut,
 	};
 
+	explicit Account(not_null<Domain*> domain);
+	void createMtp(MTP::Instance::Mode mode, std::unique_ptr<MTP::Config> config);
 	void startMtp(std::unique_ptr<MTP::Config> config);
 	void createSession(
 		const MTPUser &user,
@@ -162,6 +201,8 @@ private:
 	rpl::variable<Session*> _sessionValue;
 
 	Fn<void(QString)> _handleLoginCode = nullptr;
+	Fn<void(ProvisionalAccountAuthorization)> _provisionalLoginDone = nullptr;
+	bool _provisionalLoginCompleted = false;
 
 	UserId _sessionUserId = 0;
 	QByteArray _sessionUserSerialized;

@@ -3,6 +3,7 @@
 
 #include "api/api_common.h"
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/features/offline_history/offline_history_scoped.h"
 #include "ayu/features/offline_history/offline_history_storage.h"
 #include "core/application.h"
 #include "core/file_location.h"
@@ -20,18 +21,22 @@
 #include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "main/main_account.h"
+#include "media/streaming/media_streaming_loader_mtproto.h"
 #include "mtproto/sender.h"
 #include "rpl/lifetime.h"
 #include "storage/storage_account.h"
+#include "ui/image/image.h"
 #include "window/window_controller.h"
 #include "window/window_session_controller.h"
 
 #include <QtCore/QDateTime>
+#include <QtCore/QBuffer>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
 #include <QtCore/QPointer>
 #include <QtCore/QLocale>
+#include <QtCore/QSaveFile>
 #include <QtCore/QTimer>
 #include <QtCore/QUrl>
 #include <QtGui/QCloseEvent>
@@ -39,6 +44,7 @@
 #include <QtWidgets/QCheckBox>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QDialog>
+#include <QtWidgets/QFileDialog>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QListWidget>
@@ -46,6 +52,8 @@
 #include <QtWidgets/QPushButton>
 #include <QtWidgets/QTextBrowser>
 #include <QtWidgets/QVBoxLayout>
+
+#include <openssl/crypto.h>
 
 #include <algorithm>
 #include <map>
@@ -97,7 +105,24 @@ bool PeerAllowsOffline(not_null<PeerData*> peer) {
 	return true;
 }
 
-Paths PathsFor(not_null<Main::Session*> session, PeerId peerId) {
+ScopedOfflineAccount ScopeFor(not_null<Main::Session*> session) {
+	const auto &local = session->local();
+	return ScopedOfflineAccount{
+		.userId = session->userId().bare,
+		.accountRoot = local.usesScopedStorage()
+			? QFileInfo(QDir::cleanPath(local.basePath())).path()
+			: QString(),
+		.key = local.scopedPreferencesKey(),
+	};
+}
+
+Paths PathsFor(
+		not_null<Main::Session*> session,
+		PeerId peerId,
+		const ScopedOfflineAccount &scope) {
+	if (session->local().usesScopedStorage()) {
+		return Storage::ScopedPathsFor(scope, peerId);
+	}
 	return Storage::PathsFor(
 		RootPath(),
 		session->userId().bare,
@@ -142,7 +167,9 @@ public:
 	, _session(session)
 	, _peer(peer)
 	, _accountId(session->userId().bare)
-	, _paths(PathsFor(session, peer->id))
+	, _scoped(session->local().usesScopedStorage())
+	, _scope(ScopeFor(session))
+	, _paths(PathsFor(session, peer->id, _scope))
 	, _api(&session->account().mtp()) {
 		setWindowTitle(tr::lng_offline_history_title(tr::now)
 			+ u" — "_q
@@ -180,7 +207,9 @@ public:
 		_save = new QPushButton(tr::lng_offline_history_save(tr::now), this);
 		_delete = new QPushButton(tr::lng_offline_history_delete(tr::now), this);
 		_openAttachment = new QPushButton(
-			tr::lng_offline_history_open_attachment(tr::now),
+			_scoped
+				? tr::lng_context_save_file(tr::now)
+				: tr::lng_offline_history_open_attachment(tr::now),
 			this);
 		_close = new QPushButton(tr::lng_close(tr::now), this);
 		buttons->addWidget(_save);
@@ -211,6 +240,11 @@ public:
 				Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
 			}
 		}, _lockLifetime);
+		if (_scoped) {
+			Core::App().passcodeLockValue()
+				| rpl::filter([](bool locked) { return locked; })
+				| rpl::on_next([=] { closeForLock(); }, _lockLifetime);
+		}
 		_session->data().documentLoadProgress()
 			| rpl::filter([=](not_null<DocumentData*> document) {
 				return _activeDocument == document.get();
@@ -233,6 +267,10 @@ public:
 	}
 
 	void closeEvent(QCloseEvent *event) override {
+		if (_scoped) {
+			++_generation;
+			_running = false;
+		}
 		cancelActiveAttachment();
 		QDialog::closeEvent(event);
 	}
@@ -245,23 +283,54 @@ public:
 	}
 
 private:
+	bool readSnapshot(const QString &path, Snapshot *result) const {
+		if (!_scoped) {
+			return Storage::ReadSnapshot(path, _accountId, _peer->id, result);
+		}
+		const auto bytes = Storage::ReadScopedFile(_scope, path);
+		return bytes && Storage::DecodeSnapshot(*bytes, _accountId, _peer->id, result);
+	}
+
+	QString attachmentPath(const Storage::Attachment &attachment) const {
+		return _scoped
+			? Storage::ScopedAttachmentPath(_scope, _paths, attachment)
+			: QDir(_paths.attachmentDirectory).filePath(attachment.fileName);
+	}
+
+	bool attachmentPresent(const Storage::Attachment &attachment) const {
+		const auto path = attachmentPath(attachment);
+		if (_scoped) {
+			return Storage::ScopedFilePresent(_scope, path, attachment.size);
+		}
+		const auto info = QFileInfo(path);
+		return info.isFile() && info.size() == attachment.size;
+	}
+
+	bool writeRecord(
+			const QString &path,
+			const QByteArray &bytes,
+			const QStringList &excluded = {}) const {
+		return _scoped
+			? Storage::WriteScopedFile(_scope, path, bytes, kDeviceLimit, excluded)
+			: Storage::WriteAtomic(path, bytes, _paths.root, kDeviceLimit, excluded);
+	}
+
 	void loadSnapshot() {
-		Storage::ReadAttachments(
-			_paths,
-			_accountId,
-			_peer->id,
-			&_attachments);
+		if (_scoped) {
+			const auto data = Storage::ReadScopedFile(_scope, _paths.attachmentManifest);
+			auto attachments = std::vector<Storage::Attachment>();
+			if (data && Storage::DecodeAttachments(*data, _accountId, _peer->id, &attachments)
+				&& std::ranges::all_of(attachments, [&](const auto &item) {
+					return attachmentPresent(item);
+				})) {
+				_attachments = std::move(attachments);
+			}
+		} else {
+			Storage::ReadAttachments(_paths, _accountId, _peer->id, &_attachments);
+		}
 		refreshAttachmentList();
-		const auto complete = Storage::ReadSnapshot(
-			_paths.complete,
-			_accountId,
-			_peer->id,
-			&_snapshot);
-		const auto partial = Storage::ReadSnapshot(
-			_paths.partial,
-			_accountId,
-			_peer->id,
-			&_partial);
+		const auto complete = readSnapshot(_paths.complete, &_snapshot);
+		const auto partial = readSnapshot(_paths.partial, &_partial);
 		if (complete) {
 			_text->setPlainText(FormatSnapshot(_snapshot));
 			_status->setText(tr::lng_offline_history_messages(
@@ -309,14 +378,49 @@ private:
 			Ayu::OfflineHistory::CloseForChat(_accountId, _peer->id);
 			return;
 		}
-		const auto path = QDir(_paths.attachmentDirectory)
-			.filePath(attachment.fileName);
+		if (_scoped) {
+			exportSelectedAttachment(attachment);
+			return;
+		}
+		const auto path = attachmentPath(attachment);
 		const auto directoryInfo = QFileInfo(_paths.attachmentDirectory);
 		const auto info = QFileInfo(path);
 		if (directoryInfo.isDir() && !directoryInfo.isSymLink()
 			&& info.isFile() && !info.isSymLink()
 			&& info.size() == attachment.size) {
 			QDesktopServices::openUrl(QUrl::fromLocalFile(info.absoluteFilePath()));
+		}
+	}
+
+	void exportSelectedAttachment(Storage::Attachment attachment) {
+		const auto guard = QPointer(this);
+		const auto path = QFileDialog::getSaveFileName(
+			this,
+			tr::lng_save_file(tr::now),
+			QFileInfo(attachment.name).fileName());
+		if (!guard || path.isEmpty() || Core::App().passcodeLocked()
+			|| Ayu::ChatLock::IsChatLocked(_session, _peer->id)) {
+			return;
+		}
+		const auto fileInfo = QFileInfo(path);
+		const auto parent = fileInfo.absoluteDir().canonicalPath();
+		const auto profile = QFileInfo(cWorkingDir() + u"tdata"_q).canonicalFilePath();
+		if (parent.isEmpty() || profile.isEmpty() || fileInfo.isSymLink()
+			|| fileInfo.isJunction() || parent.compare(profile, Qt::CaseInsensitive) == 0
+			|| parent.startsWith(profile + '/', Qt::CaseInsensitive)) {
+			return;
+		}
+		auto bytes = Storage::ReadScopedFile(_scope, attachmentPath(attachment));
+		if (!bytes) {
+			return;
+		}
+		const auto wipe = gsl::finally([&] { OPENSSL_cleanse(bytes->data(), bytes->size()); });
+		const auto destination = parent + '/' + fileInfo.fileName();
+		auto file = QSaveFile(destination);
+		file.setDirectWriteFallback(false);
+		if (bytes->size() == attachment.size && file.open(QIODevice::WriteOnly)
+			&& file.write(*bytes) == bytes->size() && file.commit()) {
+			QDesktopServices::openUrl(QUrl::fromLocalFile(destination));
 		}
 	}
 
@@ -333,11 +437,7 @@ private:
 			_status->setText(tr::lng_offline_history_restricted(tr::now));
 			return;
 		}
-		if (!Storage::ReadSnapshot(
-				_paths.partial,
-				_accountId,
-				_peer->id,
-				&_snapshot)) {
+		if (!readSnapshot(_paths.partial, &_snapshot)) {
 			const auto now = QDateTime::currentSecsSinceEpoch();
 			const auto days = _days->currentData().toInt();
 			_snapshot = Snapshot{
@@ -431,14 +531,14 @@ private:
 		const auto existing = std::ranges::find(_attachments, task.entry.fileName,
 			&Storage::Attachment::fileName);
 		if (existing != end(_attachments)) {
-			const auto path = QDir(_paths.attachmentDirectory)
-				.filePath(existing->fileName);
 			if (existing->sourceSize == task.entry.sourceSize
-				&& QFileInfo(path).isFile()
-				&& QFileInfo(path).size() == existing->size) {
+				&& attachmentPresent(*existing)) {
 				return;
 			}
-			QFile::remove(path);
+			if (_scoped) {
+				return;
+			}
+			QFile::remove(attachmentPath(*existing));
 			_attachments.erase(existing);
 		}
 		_attachmentTasks.push_back(std::move(task));
@@ -560,12 +660,7 @@ private:
 			_snapshot,
 			_accountId,
 			_peer->id);
-		if (partialBytes.isEmpty() || !Storage::WriteAtomic(
-				_paths.partial,
-				partialBytes,
-				_paths.root,
-				kDeviceLimit,
-				{})) {
+		if (partialBytes.isEmpty() || !writeRecord(_paths.partial, partialBytes)) {
 			stopPartial(tr::lng_offline_history_limit(tr::now));
 			return;
 		}
@@ -596,12 +691,7 @@ private:
 			_snapshot,
 			_accountId,
 			_peer->id);
-		if (bytes.isEmpty() || !Storage::WriteAtomic(
-				_paths.complete,
-				bytes,
-				_paths.root,
-				kDeviceLimit,
-				{ _paths.partial })) {
+		if (bytes.isEmpty() || !writeRecord(_paths.complete, bytes, { _paths.partial })) {
 			stopPartial(tr::lng_offline_history_limit(tr::now));
 			return;
 		}
@@ -662,10 +752,11 @@ private:
 			if (!candidateAllowed(task)) {
 				continue;
 			}
-			const auto path = QDir(_paths.attachmentDirectory)
-				.filePath(task.entry.fileName);
-			const auto temporary = path + QStringLiteral(".part");
-			QFile::remove(temporary);
+			const auto path = attachmentPath(task.entry);
+			const auto temporary = _scoped ? QString() : path + QStringLiteral(".part");
+			if (!_scoped) {
+				QFile::remove(temporary);
+			}
 			if (Storage::UsageBytes(_paths.root) + task.entry.sourceSize
 				> kDeviceLimit) {
 				_attachmentLimitHit = true;
@@ -674,13 +765,20 @@ private:
 				finishRun();
 				return;
 			}
-			if (!ensureAttachmentDirectory()) {
+			if (path.isEmpty() || (!_scoped && !ensureAttachmentDirectory())) {
 				continue;
 			}
 			_activeTask = &task;
 			_activePath = path;
 			_activeTemporary = temporary;
 			if (task.document) {
+				if (_scoped) {
+					if (startScopedDocument(task)) {
+						return;
+					}
+					clearActiveAttachment();
+					continue;
+				}
 				if (task.document->loading()
 					|| task.document->forbidsFileSave()) {
 					clearActiveAttachment();
@@ -715,6 +813,65 @@ private:
 			return;
 		}
 		finishRun();
+	}
+
+	bool startScopedDocument(const AttachmentTask &task) {
+		const auto document = task.document;
+		if (const auto media = document->activeMediaView()) {
+			auto loaded = media->bytes();
+			if (loaded.size() == task.entry.sourceSize) {
+				_scopedBytes = std::move(loaded);
+				queueScopedAttachment(true);
+				return true;
+			}
+		}
+		if (!document->hasRemoteLocation()) {
+			return false;
+		}
+		_scopedLoader = std::make_unique<Media::Streaming::LoaderMtproto>(
+			&_session->downloader(),
+			document->videoPreloadLocation(),
+			task.entry.sourceSize,
+			Data::FileOrigin(FullMsgId(_peer->id, task.entry.messageId)));
+		_scopedLoader->parts() | rpl::on_next([=](const auto &part) {
+			if (!_activeTask || !_scopedLoader) {
+				return;
+			}
+			const auto size = _activeTask->entry.sourceSize;
+			if (!candidateAllowed(*_activeTask) || !part.valid(size)
+				|| part.offset != _scopedBytes.size()
+				|| part.bytes.isEmpty() || part.bytes.size() > size - _scopedBytes.size()) {
+				queueScopedAttachment(false);
+				return;
+			}
+			_scopedBytes.append(part.bytes);
+			if (_scopedBytes.size() == size) {
+				queueScopedAttachment(true);
+			} else {
+				const auto generation = _attachmentGeneration;
+				QTimer::singleShot(0, this, [=] {
+					if (_attachmentGeneration == generation && _scopedLoader) {
+						_scopedLoader->load(_scopedBytes.size());
+					}
+				});
+			}
+		}, _scopedAttachmentLifetime);
+		_scopedLoader->load(0);
+		return true;
+	}
+
+	void queueScopedAttachment(bool success) {
+		const auto generation = _attachmentGeneration;
+		QTimer::singleShot(0, this, [=] {
+			if (_attachmentGeneration != generation || !_activeTask) {
+				return;
+			}
+			if (success) {
+				promoteScopedAttachment(_scopedBytes);
+			} else {
+				failActiveAttachment();
+			}
+		});
 	}
 
 	void documentLoadChanged() {
@@ -766,6 +923,23 @@ private:
 			return;
 		}
 		const auto media = photo->activeMediaView();
+		if (_scoped) {
+			if (!media || !media->image(Data::PhotoSize::Large)) {
+				failActiveAttachment();
+				return;
+			}
+			auto bytes = media->imageBytes(Data::PhotoSize::Large);
+			if (bytes.isEmpty()) {
+				auto buffer = QBuffer(&bytes);
+				if (!buffer.open(QIODevice::WriteOnly)
+					|| !media->image(Data::PhotoSize::Large)->original().save(&buffer, "JPG")) {
+					failActiveAttachment();
+					return;
+				}
+			}
+			promoteScopedAttachment(bytes);
+			return;
+		}
 		if (!media || !media->image(Data::PhotoSize::Large)
 			|| !media->saveToFile(_activeTemporary)) {
 			failActiveAttachment();
@@ -777,6 +951,39 @@ private:
 			return;
 		}
 		promoteActiveAttachment(size);
+	}
+
+	void promoteScopedAttachment(const QByteArray &bytes) {
+		if (!_activeTask || Core::App().passcodeLocked()
+			|| !candidateAllowed(*_activeTask)
+			|| bytes.isEmpty() || bytes.size() > kMaxAttachmentBytes) {
+			failActiveAttachment();
+			return;
+		}
+		const auto existing = QFileInfo::exists(_activePath);
+		const auto haveData = existing
+			? Storage::ReadScopedFile(_scope, _activePath) == bytes
+			: writeRecord(_activePath, bytes);
+		if (!haveData) {
+			failActiveAttachment();
+			return;
+		}
+		auto entry = _activeTask->entry;
+		entry.size = bytes.size();
+		_attachments.push_back(entry);
+		const auto manifest = Storage::SerializeAttachments(_attachments, _accountId, _peer->id);
+		if (manifest.isEmpty() || !writeRecord(_paths.attachmentManifest, manifest)) {
+			_attachments.pop_back();
+			if (!existing) {
+				QFile::remove(_activePath);
+			}
+			failActiveAttachment();
+			return;
+		}
+		++_attachmentSaved;
+		refreshAttachmentList();
+		clearActiveAttachment();
+		startNextAttachment();
 	}
 
 	void promoteActiveAttachment(qint64 size) {
@@ -837,7 +1044,9 @@ private:
 		if (photo && photo->loading(Data::PhotoSize::Large)) {
 			photo->cancel();
 		}
-		QFile::remove(temporary);
+		if (!temporary.isEmpty()) {
+			QFile::remove(temporary);
+		}
 		startNextAttachment();
 	}
 
@@ -875,6 +1084,13 @@ private:
 	}
 
 	void clearActiveAttachment() {
+		++_attachmentGeneration;
+		_scopedAttachmentLifetime.destroy();
+		_scopedLoader.reset();
+		if (!_scopedBytes.isEmpty()) {
+			OPENSSL_cleanse(_scopedBytes.data(), _scopedBytes.size());
+			_scopedBytes.clear();
+		}
 		_activeDocument = nullptr;
 		_activePhoto = nullptr;
 		_activeTask = nullptr;
@@ -899,7 +1115,9 @@ private:
 		if (document) {
 			restoreDocumentLocation(document, previous, temporary);
 		}
-		QFile::remove(temporary);
+		if (!temporary.isEmpty()) {
+			QFile::remove(temporary);
+		}
 	}
 
 	void finishRun() {
@@ -937,14 +1155,21 @@ private:
 		++_generation;
 		_running = false;
 		cancelActiveAttachment();
-		QFile::remove(_paths.complete);
-		QFile::remove(_paths.partial);
-		QFile::remove(_paths.attachmentManifest);
-		const auto attachmentsDirectory = QFileInfo(_paths.attachmentDirectory);
-		if (attachmentsDirectory.isSymLink()) {
-			QFile::remove(_paths.attachmentDirectory);
+		if (_scoped) {
+			if (!Storage::RemoveScopedPeer(_scope, _paths)) {
+				stopPartial(tr::lng_offline_history_error(tr::now));
+				return;
+			}
 		} else {
-			QDir(_paths.attachmentDirectory).removeRecursively();
+			QFile::remove(_paths.complete);
+			QFile::remove(_paths.partial);
+			QFile::remove(_paths.attachmentManifest);
+			const auto attachmentsDirectory = QFileInfo(_paths.attachmentDirectory);
+			if (attachmentsDirectory.isSymLink()) {
+				QFile::remove(_paths.attachmentDirectory);
+			} else {
+				QDir(_paths.attachmentDirectory).removeRecursively();
+			}
 		}
 		_snapshot = Snapshot();
 		_partial = Snapshot();
@@ -965,6 +1190,8 @@ private:
 	not_null<Main::Session*> _session;
 	not_null<PeerData*> _peer;
 	const uint64 _accountId;
+	const bool _scoped;
+	const ScopedOfflineAccount _scope;
 	const Paths _paths;
 	MTP::Sender _api;
 	QComboBox *_days = nullptr;
@@ -987,6 +1214,9 @@ private:
 	PhotoData *_activePhoto = nullptr;
 	QString _activePath;
 	QString _activeTemporary;
+	std::unique_ptr<Media::Streaming::LoaderMtproto> _scopedLoader;
+	QByteArray _scopedBytes;
+	rpl::lifetime _scopedAttachmentLifetime;
 	Core::FileLocation _previousDocumentLocation;
 	std::set<MsgId> _records;
 	rpl::lifetime _downloadLifetime;
@@ -996,6 +1226,7 @@ private:
 	bool _attachmentLimitHit = false;
 	rpl::lifetime _lockLifetime;
 	int _generation = 0;
+	uint64 _attachmentGeneration = 0;
 	bool _attachmentsEnabled = false;
 	bool _running = false;
 };
@@ -1003,7 +1234,8 @@ private:
 } // namespace
 
 bool Available(not_null<Main::Session*> session) {
-	return !session->local().usesScopedStorage();
+	return !session->local().usesScopedStorage()
+		|| (!Core::App().passcodeLocked() && session->local().scopedPreferencesKey());
 }
 
 void Open(
@@ -1018,6 +1250,10 @@ void Open(
 		return;
 	}
 	if (!PeerAllowsOffline(peer)) {
+		return;
+	}
+	if (session->local().usesScopedStorage()
+		&& Storage::ScopedPathsFor(ScopeFor(session), peerId).root.isEmpty()) {
 		return;
 	}
 	const auto accountId = session->userId().bare;

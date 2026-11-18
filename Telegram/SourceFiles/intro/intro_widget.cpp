@@ -82,7 +82,9 @@ Widget::Widget(
 , _account(account)
 , _data(details::Data{
 	.controller = controller,
-	.accountBeforeIntro = base::make_weak(accountBeforeIntro),
+	.accountBeforeIntro = base::make_weak(account->isProvisionalScopedLogin()
+		? nullptr
+		: accountBeforeIntro),
 })
 , _nextStyle(&st::introNextButton)
 , _back(this, object_ptr<Ui::IconButton>(this, st::introBackButton))
@@ -96,14 +98,18 @@ Widget::Widget(
 	this,
 	object_ptr<Ui::RoundButton>(this, nullptr, *_nextStyle))
 , _footer(this, st::introFooter)
-, _connecting(std::make_unique<Window::ConnectionState>(
+, _connecting(account->isProvisionalScopedLogin()
+	? nullptr
+	: std::make_unique<Window::ConnectionState>(
 		this,
 		account,
 		rpl::single(true))) {
 	_settings->entity()->setTextTransform(Ui::RoundButtonTextTransform::ToUpper);
 	controller->setDefaultFloatPlayerDelegate(floatPlayerDelegate());
 
-	getData()->country = ComputeNewAccountCountry();
+	getData()->country = account->isProvisionalScopedLogin()
+		? Platform::SystemCountry()
+		: ComputeNewAccountCountry();
 
 	_account->mtpValue(
 	) | rpl::on_next([=](not_null<MTP::Instance*> instance) {
@@ -164,9 +170,10 @@ Widget::Widget(
 	getStep()->showFast();
 	setInnerFocus();
 
-	cSetPasswordRecovered(false);
-
-	if (!Core::UpdaterDisabled()) {
+	if (!account->isProvisionalScopedLogin()) {
+		cSetPasswordRecovered(false);
+	}
+	if (!account->isProvisionalScopedLogin() && !Core::UpdaterDisabled()) {
 		Core::UpdateChecker checker;
 		checker.start();
 		rpl::merge(
@@ -183,6 +190,9 @@ Widget::Widget(
 }
 
 rpl::producer<> Widget::showSettingsRequested() const {
+	if (_account->isProvisionalScopedLogin()) {
+		return rpl::never();
+	}
 	return _settings->entity()->clicks() | rpl::to_empty;
 }
 
@@ -258,6 +268,9 @@ void Widget::handleUpdate(const MTPUpdate &update) {
 			_account->session().promoSuggestions().invalidate();
 		}
 	}, [&](const MTPDupdateServiceNotification &data) {
+		if (_account->isProvisionalScopedLogin()) {
+			return;
+		}
 		const auto text = TextWithEntities{
 			qs(data.vmessage()),
 			Api::EntitiesFromMTP(nullptr, data.ventities().v)
@@ -267,7 +280,7 @@ void Widget::handleUpdate(const MTPUpdate &update) {
 }
 
 void Widget::createLanguageLink() {
-	if (_changeLanguage
+	if (_account->isProvisionalScopedLogin() || _changeLanguage
 		|| Core::App().domain().maybeLastOrSomeAuthedAccount()) {
 		return;
 	}
@@ -417,7 +430,9 @@ void Widget::historyMove(StackAction action, Animate animate) {
 	_back->toggle(getStep()->hasBack(), anim::type::normal);
 
 	auto stepHasCover = getStep()->hasCover();
-	_settings->toggle(!stepHasCover, anim::type::normal);
+	_settings->toggle(
+		!_account->isProvisionalScopedLogin() && !stepHasCover,
+		anim::type::normal);
 	if (_testModeLabel) {
 		_testModeLabel->toggle(!stepHasCover, anim::type::normal);
 	}
@@ -449,7 +464,7 @@ void Widget::fixOrder() {
 	_settings->raise();
 	_back->raise();
 	floatPlayerRaiseAll();
-	_connecting->raise();
+	if (_connecting) _connecting->raise();
 }
 
 void Widget::moveToStep(Step *step, StackAction action, Animate animate) {
@@ -459,7 +474,7 @@ void Widget::moveToStep(Step *step, StackAction action, Animate animate) {
 	if (_update) {
 		_update->raise();
 	}
-	_connecting->raise();
+	if (_connecting) _connecting->raise();
 
 	historyMove(action, animate);
 }
@@ -708,9 +723,11 @@ void Widget::showControls() {
 	setupNextButton();
 	_next->toggle(_nextShown, anim::type::instant);
 	_nextShownAnimation.stop();
-	_connecting->setForceHidden(false);
+	if (_connecting) _connecting->setForceHidden(false);
 	auto hasCover = getStep()->hasCover();
-	_settings->toggle(!hasCover, anim::type::instant);
+	_settings->toggle(
+		!_account->isProvisionalScopedLogin() && !hasCover,
+		anim::type::instant);
 	if (_testModeLabel) {
 		_testModeLabel->toggle(!hasCover, anim::type::instant);
 	}
@@ -759,7 +776,7 @@ void Widget::setupNextButton() {
 void Widget::hideControls() {
 	getStep()->hide();
 	_next->hide(anim::type::instant);
-	_connecting->setForceHidden(true);
+	if (_connecting) _connecting->setForceHidden(true);
 	_settings->hide(anim::type::instant);
 	if (_testModeLabel) _testModeLabel->hide(anim::type::instant);
 	if (_update) _update->hide(anim::type::instant);
@@ -891,21 +908,26 @@ void Widget::keyPressEvent(QKeyEvent *e) {
 }
 
 void Widget::backRequested() {
-	const auto back = getData()->accountBeforeIntro.get();
 	if (_stepHistory.size() > 1) {
 		historyMove(StackAction::Back, Animate::Back);
-	} else if (back && back->sessionExists()) {
-		Core::App().setActivePrimaryWindow(getData()->controller);
-		back->domain().activate(back);
-	} else if (const auto parent
-		= Core::App().domain().maybeLastOrSomeAuthedAccount()) {
-		Core::App().domain().activate(parent);
-	} else {
-		moveToStep(
-			Ui::CreateChild<QrWidget>(this, _account, getData()),
-			StackAction::Replace,
-			Animate::Back);
+		return;
 	}
+	if (!_account->isProvisionalScopedLogin()) {
+		const auto back = getData()->accountBeforeIntro.get();
+		if (back && back->sessionExists()) {
+			Core::App().setActivePrimaryWindow(getData()->controller);
+			back->domain().activate(back);
+			return;
+		}
+		if (const auto parent = Core::App().domain().maybeLastOrSomeAuthedAccount()) {
+			Core::App().domain().activate(parent);
+			return;
+		}
+	}
+	moveToStep(
+		Ui::CreateChild<QrWidget>(this, _account, getData()),
+		StackAction::Replace,
+		Animate::Back);
 }
 
 Widget::~Widget() {
