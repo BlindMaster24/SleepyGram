@@ -382,7 +382,7 @@ struct ReadOutcome {
 	keyring.entries.push_back(std::move(*entry));
 	if (vault.clearEpoch() != authority.epoch) {
 		return { .error = Error::kAuthenticationFailed };
-	} else if (!WriteDeviceKeyring(domain, keyring)) {
+	} else if (!vault.writeKeyring(keyring)) {
 		return { .error = Error::kUnavailable };
 	}
 	committed = true;

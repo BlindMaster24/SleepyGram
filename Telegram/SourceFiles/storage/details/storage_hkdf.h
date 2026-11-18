@@ -10,6 +10,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <openssl/kdf.h>
 
 #include <limits>
