@@ -492,7 +492,7 @@ void EmbedOverlay::resetState() {
 }
 
 Webview::WindowConfig EmbedOverlay::makeWindowConfig() const {
-	return {
+	return Ayu::ProfileSets::PersistentWebviewConfig({
 		.opaqueBg = st::markdownEmbedOverlay.bg->c,
 		.storageId = _storageId,
 		.safe = true,
@@ -502,7 +502,7 @@ Webview::WindowConfig EmbedOverlay::makeWindowConfig() const {
 		.initialSize = UsesExternalWindow(_mode)
 			? externalInitialSize()
 			: QSize(),
-	};
+	});
 }
 
 QSize EmbedOverlay::externalInitialSize() const {

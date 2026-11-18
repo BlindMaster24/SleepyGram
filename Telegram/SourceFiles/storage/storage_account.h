@@ -78,14 +78,16 @@ struct VerifiedLegacyAccountFiles final {
 	const AccountPaths &target,
 	const MTP::AuthKeyPtr &targetKey,
 	UserId expectedUser,
-	VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
+	VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
+	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated);
 [[nodiscard]] AccountMigrationResult VerifyStagedAccount(
 	const AccountPaths &source,
 	const MTP::AuthKeyPtr &sourceKey,
 	const AccountPaths &target,
 	const MTP::AuthKeyPtr &targetKey,
 	UserId expectedUser,
-	VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
+	VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
+	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated);
 
 [[nodiscard]] UserId ReadLegacyAccountUserForMigration(
 	const AccountPaths &source,

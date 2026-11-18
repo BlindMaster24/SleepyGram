@@ -39,6 +39,7 @@ enum class ProfileStagingResult {
 	std::span<const ProfileStagingAccount> accounts,
 	const QByteArray &transactionId = {},
 	LegacyRetirementPlan *retirement = nullptr,
-	const Preferences::LegacyPartition *preferences = nullptr);
+	const Preferences::LegacyPartition *preferences = nullptr,
+	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated);
 
 } // namespace Ayu::ProfileSets

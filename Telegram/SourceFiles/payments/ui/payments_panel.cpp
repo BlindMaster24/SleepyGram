@@ -565,10 +565,10 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 
 	_webview = std::make_unique<WebviewWithLifetime>(
 		container,
-		Webview::WindowConfig{
+		Ayu::ProfileSets::PersistentWebviewConfig({
 			.opaqueBg = params.bodyBg,
 			.storageId = storageId,
-		});
+		}));
 
 	const auto raw = &_webview->window;
 	QObject::connect(container, &QObject::destroyed, [=] {

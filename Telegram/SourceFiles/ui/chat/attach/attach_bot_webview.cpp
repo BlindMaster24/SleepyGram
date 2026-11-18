@@ -2246,7 +2246,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 	_externalWindowCloseRequested = false;
 	_webview = std::make_unique<WebviewWithLifetime>(
 		container,
-		Webview::WindowConfig{
+		Ayu::ProfileSets::PersistentWebviewConfig({
 			.opaqueBg = params.bodyBg,
 			.storageId = _storageId,
 			.allowThirdPartyCookies = _externalShell,
@@ -2265,7 +2265,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 			.shellMessageToken = _externalShell
 				? _externalShellToken
 				: QString(),
-		});
+		}));
 	const auto raw = &_webview->window;
 
 	const auto bottom = _webviewBottom.get();

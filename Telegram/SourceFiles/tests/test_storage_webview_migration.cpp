@@ -61,13 +61,15 @@ int main() {
 		"legacy callers keep their existing default storage on Windows and old macOS");
 	check(ready && CanUsePersistentWebview(false, OS::Unknown, -1, root, bots, token)
 		&& CanUsePersistentWebview(false, OS::MacOS, 14, root, other, uuid)
+		&& CanUsePersistentWebview(false, OS::Windows, 11, root, bots, uuid)
 		&& !QFileInfo::exists(user),
-		"GTK path and macOS 14 named storage are accepted without creating state");
-	check(!CanUsePersistentWebview(false, OS::Windows, 11, root, bots, uuid)
-		&& !CanUsePersistentWebview(false, OS::MacOS, 13, root, other, uuid),
-		"platforms that can use native shared fallback reject scoped persistent views");
+		"GTK, macOS named storage and Windows policy accept exact paths without writes");
+	check(!CanUsePersistentWebview(false, OS::MacOS, 13, root, other, uuid),
+		"macOS without named stores rejects scoped persistent views");
 	check(!CanUsePersistentWebview(false, OS::MacOS, 14, root, other, token)
 		&& !CanUsePersistentWebview(false, OS::MacOS, 14, root, other, legacy)
+		&& !CanUsePersistentWebview(false, OS::Windows, 11, root, bots, legacy)
+		&& !CanUsePersistentWebview(false, OS::Windows, 11, root, root, uuid)
 		&& !CanUsePersistentWebview(false, OS::Unknown, -1, root, {}, uuid)
 		&& !CanUsePersistentWebview(false, OS::Unknown, -1, root, root, uuid)
 		&& !CanUsePersistentWebview(false, OS::Unknown, -1, root, user, uuid),

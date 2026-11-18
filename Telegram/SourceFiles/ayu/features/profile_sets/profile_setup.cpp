@@ -343,7 +343,10 @@ Result Setup(ProfileSetupRequest &request) {
 	auto retirement = LegacyRetirementPlan();
 	const auto staged = StageScopedProfileData(
 		*workspace, request.dataDirectory, request.dataName, legacyPasscode,
-		setup->accounts, draft->transactionId, &retirement, &*preferences);
+		setup->accounts, draft->transactionId, &retirement, &*preferences,
+		request.preserveLegacyWebviewStorage
+			? Storage::LegacyWebviewTransfer::StartFresh
+			: Storage::LegacyWebviewTransfer::RequireIsolated);
 	if (staged != ProfileStagingResult::Success) {
 		return (staged == ProfileStagingResult::UnsupportedAccountData)
 			? Result::UnsupportedLegacyData

@@ -13,6 +13,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Storage {
 
+enum class LegacyWebviewTransfer : uchar {
+	RequireIsolated,
+	StartFresh,
+};
+
+[[nodiscard]] inline bool IsLegacyWebviewDirectoryName(QStringView name) {
+	return name == u"wvbots" || name == u"wvother";
+}
+
 using FileKey = quint64;
 
 enum class AccountStorageMode : uchar {

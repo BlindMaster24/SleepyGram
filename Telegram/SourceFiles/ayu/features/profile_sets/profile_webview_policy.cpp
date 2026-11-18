@@ -3,7 +3,7 @@
 
 #include "core/application.h"
 #include "settings.h"
-#include "webview/webview_common.h"
+#include "webview/webview_embed.h"
 
 namespace Ayu::ProfileSets {
 
@@ -19,6 +19,13 @@ bool CanUsePersistentWebview(const Webview::StorageId &id) {
 		dataRoot + u"/profile-sets/accounts"_q,
 		id.path,
 		id.token);
+}
+
+Webview::WindowConfig PersistentWebviewConfig(Webview::WindowConfig config) {
+#ifdef Q_OS_WIN
+	config.requireIsolatedStorage = !Core::App().legacyProfileAccessAllowed();
+#endif
+	return config;
 }
 
 } // namespace Ayu::ProfileSets

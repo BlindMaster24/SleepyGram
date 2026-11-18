@@ -66,7 +66,8 @@ bool WriteFixtureAuth(
 bool WriteFixtureMap(
 		const AccountPaths &paths,
 		const MTP::AuthKeyPtr &key,
-		bool active) {
+		bool active,
+		const QByteArray &oldBrowserToken = {}) {
 	auto self = QByteArray();
 	{
 		auto stream = QDataStream(&self, QIODevice::WriteOnly);
@@ -80,6 +81,8 @@ bool WriteFixtureMap(
 		map.stream << quint32(0x09) << quint64(kFixtureSettings);
 		map.stream << quint32(0x19) << QByteArray("scoped-fixture-token")
 			<< QByteArray();
+	} else if (!oldBrowserToken.isEmpty()) {
+		map.stream << quint32(0x19) << oldBrowserToken << QByteArray(16, 'b');
 	}
 	auto mapFile = FileWriteDescriptor(u"map"_q, paths.basePath);
 	mapFile.writeData(QByteArray());
@@ -94,7 +97,10 @@ bool MakeMapBackups(const AccountPaths &paths) {
 		&& QFile::copy(stem + '0', stem + '1');
 }
 
-bool WriteFixture(const AccountPaths &paths, const MTP::AuthKeyPtr &key) {
+bool WriteFixture(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		const QByteArray &oldBrowserToken = {}) {
 	auto prefs = EncryptedDescriptor(4);
 	prefs.stream << quint32(0);
 	auto prefsFile = FileWriteDescriptor(kFixturePrefs, paths.basePath);
@@ -103,7 +109,7 @@ bool WriteFixture(const AccountPaths &paths, const MTP::AuthKeyPtr &key) {
 	const auto prefsWritten = prefsFile.finishStaged(kFixtureVersion);
 	return prefsWritten
 		&& WriteFixtureAuth(paths, key, kFixtureUser, kFixtureVersion)
-		&& WriteFixtureMap(paths, key, false)
+		&& WriteFixtureMap(paths, key, false, oldBrowserToken)
 		&& MakeMapBackups(paths);
 }
 
@@ -188,7 +194,79 @@ void CheckScopedStartup(
 		u"Scoped startup rejects a present malformed config"_q);
 }
 
+void CheckFreshWebviewMigration() {
+	auto sandbox = QTemporaryDir();
+	const auto root = QDir(sandbox.path()).canonicalPath();
+	const auto legacyRoot = root + u"/legacy"_q;
+	const auto origin = AccountPathsForDataName(legacyRoot, u"test"_q);
+	const auto oldKey = LocalKey(gsl::byte(2));
+	const auto newKey = LocalKey(gsl::byte(3));
+	const auto browser = origin.databasePath + u"wvbots"_q;
+	const auto target = (!root.isEmpty()
+		&& QDir().mkpath(origin.basePath)
+		&& QDir().mkpath(browser)
+		&& QDir().mkpath(legacyRoot + u"/webview-tonsite"_q)
+		&& QDir().mkpath(root + u"/scoped"_q)
+		&& WriteFixture(origin, oldKey, QByteArray("<legacy>")))
+		? ScopedAccountPaths(root + u"/scoped"_q, u"31b8c8c73bea090704338f38d5c46894"_q)
+		: std::nullopt;
+	Check(target.has_value(), u"Legacy WebView migration fixture is ready"_q);
+	if (!target) {
+		return;
+	}
+	const auto oldMap = origin.basePath + u"map0"_q;
+	const auto oldBytes = ReadBytes(oldMap);
+	const auto auth = target->authPath + 's';
+	Check(StageLegacyAccount(origin, oldKey, *target, newKey, kFixtureUser)
+		== AccountMigrationResult::UnsupportedData && !QFileInfo::exists(auth),
+		u"An existing browser store requires migration consent"_q);
+	const auto stage = [&] {
+		return StageLegacyAccount(origin, oldKey, *target, newKey, kFixtureUser,
+			nullptr, LegacyWebviewTransfer::StartFresh);
+	};
+	const auto staged = stage() == AccountMigrationResult::Success;
+	Check(staged && stage() == AccountMigrationResult::Success
+		&& ValidateScopedAccountForStartup(*target, newKey)
+		&& !oldBytes.isEmpty() && ReadBytes(oldMap) == oldBytes
+		&& QFileInfo::exists(browser),
+		u"Opt-in is repeatable and preserves the legacy browser and encrypted map"_q);
+	if (!staged) {
+		return;
+	}
+	auto read = FileReadDescriptor();
+	auto decoded = EncryptedDescriptor();
+	const auto readable = ReadFile(
+		read, u"map"_q, target->basePath, LegacyBackupPolicy::Preserve);
+	auto salt = QByteArray();
+	auto wrapped = QByteArray();
+	auto encrypted = QByteArray();
+	read.stream >> salt >> wrapped >> encrypted;
+	const auto decrypted = readable && DecryptLocal(decoded, encrypted, newKey);
+	Check(decrypted, u"Fresh browser identifiers are in the staged map"_q);
+	if (!decrypted) {
+		return;
+	}
+	auto stream = QDataStream(decoded.data);
+	stream.setVersion(QDataStream::Qt_5_1);
+	auto self = quint32();
+	auto selfData = QByteArray();
+	auto preferences = quint32();
+	auto prefsKey = quint64();
+	auto webview = quint32();
+	auto bots = QByteArray();
+	auto other = QByteArray();
+	stream.skipRawData(sizeof(quint32));
+	stream >> self >> selfData >> preferences >> prefsKey >> webview >> bots >> other;
+	Check(stream.status() == QDataStream::Ok && stream.atEnd()
+		&& self == 0x15 && !selfData.isEmpty()
+		&& preferences == 0x1e && prefsKey == kFixturePrefs
+		&& webview == 0x19 && bots.size() == 16 && other.size() == 16
+		&& bots != other && other != QByteArray(16, 'b'),
+		u"Both browser stores get distinct identifiers and earlier map records survive"_q);
+}
+
 void RunStorageAccountMigration() {
+	CheckFreshWebviewMigration();
 	auto sandbox = QTemporaryDir();
 	const auto root = QDir(sandbox.path()).canonicalPath();
 	const auto origin = AccountPathsForDataName(root + u"/legacy"_q, u"test"_q);

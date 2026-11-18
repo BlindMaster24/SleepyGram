@@ -23,6 +23,7 @@ struct ProfileSetupRequest final {
 	QString masterPasscode;
 	QString firstSetName;
 	QString firstSetPasscode;
+	bool preserveLegacyWebviewStorage = false;
 };
 
 void SetupProfileFromLegacy(

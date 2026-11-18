@@ -89,9 +89,10 @@ struct Fixture final {
 
 	std::optional<LegacyRetirementPlan> capture(
 			LegacyArchiveRetirement archive = LegacyArchiveRetirement::ExpectedAbsent,
-			const QByteArray &preferences = {}) const {
+			const QByteArray &preferences = {},
+			Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated) const {
 		return CaptureLegacyRetirementPlan(
-			path, name, transaction, slotIndices, accounts, archive, preferences);
+			path, name, transaction, slotIndices, accounts, archive, preferences, {}, webview);
 	}
 };
 
@@ -277,6 +278,66 @@ void CheckLegacyCache() {
 		&& run() == Result::Complete, "resume cache retirement while preserving other account path");
 }
 
+void CheckPreservedWebview() {
+	auto fixture = Fixture();
+	if (!fixture.setup()) {
+		Check(false, "WebView fixture setup");
+		return;
+	}
+	auto &account = fixture.accounts.front();
+	const auto root = account.paths.databasePath;
+	const auto sites = fixture.path + u"/webview-tonsite"_q;
+	const auto browser = root + u"wvbots/Default/cookies"_q;
+	const auto external = fixture.path + u"/untouched"_q;
+	const auto binlog = root + u"cache/0/binlog"_q;
+	const auto cookies = QByteArray("synthetic browser state");
+	if (!QDir().mkpath(root + u"wvbots/Default"_q)
+		|| !QDir().mkpath(root + u"wvother"_q)
+		|| !QDir().mkpath(root + u"cache/0"_q)
+		|| !QDir().mkpath(sites)
+		|| !Write(browser, cookies)
+		|| !Write(root + u"wvother/session"_q, "other browser state")
+		|| !Write(sites + u"/session"_q, "shared browser state")
+		|| !Write(external, "outside the browser")
+		|| !Write(binlog, "verified cache")) {
+		Check(false, "populate previous browser storage");
+		return;
+	}
+	account.cacheDirectories = { u"cache"_q, u"cache/0"_q };
+	account.cacheFiles = { u"cache/0/binlog"_q };
+	Check(!fixture.capture(), "previous Mini App storage requires explicit opt-in");
+	const auto capture = [&] {
+		return fixture.capture(LegacyArchiveRetirement::ExpectedAbsent,
+			{}, Storage::LegacyWebviewTransfer::StartFresh);
+	};
+	const auto captured = capture();
+	const auto plan = captured
+		? ParseLegacyRetirementPlan(SerializeLegacyRetirementPlan(*captured))
+		: std::nullopt;
+	if (!plan || plan->webview != Storage::LegacyWebviewTransfer::StartFresh) {
+		Check(false, "explicit WebView consent survives roundtrip");
+		return;
+	}
+	const auto run = [&] {
+		return RetireLegacyProfileFiles(fixture.path, fixture.transaction, *plan);
+	};
+	const auto unknown = root + u"cache/0/wvbots"_q;
+	const auto key = fixture.path + u"/key_datas"_q;
+	Check(Write(unknown, "unknown cache entry") && !capture()
+		&& run() == Result::UnexpectedSource && QFileInfo::exists(key),
+		"opt-in permits only the exact previous browser roots");
+	Check(QFile::remove(unknown) && run() == Result::Complete
+		&& !QFileInfo::exists(binlog) && !QFileInfo::exists(key)
+		&& QFileInfo::exists(root + u"wvother/session"_q)
+		&& QFileInfo::exists(sites + u"/session"_q)
+		&& QFileInfo::exists(external)
+		&& run() == Result::Complete,
+		"retirement is repeatable and preserves both browser stores and unrelated files");
+	auto preserved = QFile(browser);
+	Check(preserved.open(QIODevice::ReadOnly) && preserved.readAll() == cookies,
+		"previous Mini App data remains byte-identical");
+}
+
 void CheckLegacyPreferences() {
 	auto fixture = Fixture();
 	if (!fixture.setup()) {
@@ -432,6 +493,7 @@ int main(int argc, char *argv[]) {
 	CheckReplay();
 	CheckLegacyArchive();
 	CheckLegacyCache();
+	CheckPreservedWebview();
 	CheckLegacyPreferences();
 	CheckLinks();
 	CheckLegacyOfflineHistory();

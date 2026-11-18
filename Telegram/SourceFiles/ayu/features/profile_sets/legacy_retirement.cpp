@@ -35,6 +35,7 @@ namespace {
 
 constexpr auto kTransactionIdSize = 16;
 constexpr auto kPlanVersion = 1;
+constexpr auto kPreserveWebviewPlanVersion = 2;
 constexpr auto kMaximumAccounts = 200;
 constexpr auto kMaximumEntries = 60'000;
 constexpr auto kMaximumPlanBytes = 16 * 1024 * 1024;
@@ -154,6 +155,8 @@ std::optional<Layout> BuildLayout(const Plan &plan) {
 		|| plan.dataDirectory.contains(QChar(0))
 		|| QDir::cleanPath(plan.dataDirectory) != plan.dataDirectory
 		|| QFileInfo(plan.dataDirectory).fileName().isEmpty()
+		|| (plan.webview != Storage::LegacyWebviewTransfer::RequireIsolated
+			&& plan.webview != Storage::LegacyWebviewTransfer::StartFresh)
 		|| plan.accountIndices.empty()
 		|| plan.accountIndices.size() > kMaximumAccounts) {
 		return std::nullopt;
@@ -182,6 +185,15 @@ std::optional<Layout> BuildLayout(const Plan &plan) {
 		}
 	}
 	return result;
+}
+
+bool PreserveWebviewRoot(
+		const Plan &plan,
+		const Layout &layout,
+		const QString &relative) {
+	const auto directory = layout.directories.find(relative);
+	return plan.webview == Storage::LegacyWebviewTransfer::StartFresh
+		&& directory != end(layout.directories) && directory->second == DirectoryKind::Database;
 }
 
 CachePathKind DatabaseEntryKind(const Layout &layout, const QString &path) {
@@ -282,7 +294,8 @@ bool MatchesPaths(
 
 std::optional<QStringList> ListExactDirectory(
 		const QString &path,
-		QStringList expected) {
+		QStringList expected,
+		bool preserveWebview) {
 	std::ranges::sort(expected);
 	if (std::adjacent_find(expected.cbegin(), expected.cend()) != expected.cend()) {
 		return std::nullopt;
@@ -294,6 +307,10 @@ std::optional<QStringList> ListExactDirectory(
 		return std::nullopt;
 	}
 	auto entries = QDir(path).entryList(kEntries);
+	if (preserveWebview) {
+		entries.removeAll(u"wvbots"_q);
+		entries.removeAll(u"wvother"_q);
+	}
 	std::ranges::sort(entries);
 	return (entries == expected) ? std::optional(std::move(entries)) : std::nullopt;
 }
@@ -321,9 +338,10 @@ std::optional<QByteArray> Fingerprint(
 bool AppendDirectory(
 		Plan &plan,
 		const QString &relative,
-		QStringList expected) {
+		QStringList expected,
+		bool preserveWebview = false) {
 	const auto path = plan.dataDirectory + '/' + relative;
-	if (!ListExactDirectory(path, std::move(expected))) {
+	if (!ListExactDirectory(path, std::move(expected), preserveWebview)) {
 		return false;
 	}
 	if (Present(QFileInfo(path))) {
@@ -379,8 +397,10 @@ bool AppendDatabase(
 	}
 	for (auto &[directory, children] : expected) {
 		const auto relative = directory.isEmpty() ? base : (base + '/' + directory);
+		const auto preserveWebview = directory.isEmpty()
+			&& plan.webview == Storage::LegacyWebviewTransfer::StartFresh;
 		if ((!directory.isEmpty() && !Present(QFileInfo(plan.dataDirectory + '/' + relative)))
-			|| !AppendDirectory(plan, relative, std::move(children))) {
+			|| !AppendDirectory(plan, relative, std::move(children), preserveWebview)) {
 			return false;
 		}
 	}
@@ -528,6 +548,10 @@ bool MatchesCurrentSource(const Plan &plan, const Layout &layout) {
 			return false;
 		}
 		for (const auto &name : QDir(path).entryList(kEntries)) {
+			if (PreserveWebviewRoot(plan, layout, directory)
+				&& Storage::IsLegacyWebviewDirectoryName(name)) {
+				continue;
+			}
 			if (!byPath.contains(directory + '/' + name)) {
 				return false;
 			}
@@ -815,7 +839,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		std::span<const VerifiedLegacyRetirementAccount> verifiedAccounts,
 		LegacyArchiveRetirement archive,
 		const QByteArray &verifiedAyuSettingsSha256,
-		std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline) {
+		std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline,
+		Storage::LegacyWebviewTransfer webview) {
 	if (legacyAccountIndices.size() != verifiedAccounts.size()
 		|| legacyAccountIndices.size() > kMaximumAccounts
 		|| !CanonicalDirectory(dataDirectory)) {
@@ -826,6 +851,7 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		.dataName = dataName,
 		.transactionId = transactionId,
 		.accountIndices = { begin(legacyAccountIndices), end(legacyAccountIndices) },
+		.webview = webview,
 	};
 	std::ranges::sort(plan.accountIndices);
 	const auto layout = BuildLayout(plan);
@@ -893,7 +919,9 @@ QByteArray SerializeLegacyRetirementPlan(const LegacyRetirementPlan &plan) {
 		});
 	}
 	auto encoded = QJsonDocument(QJsonArray{
-		kPlanVersion,
+		(plan.webview == Storage::LegacyWebviewTransfer::StartFresh)
+			? kPreserveWebviewPlanVersion
+			: kPlanVersion,
 		plan.dataDirectory,
 		plan.dataName,
 		QString::fromLatin1(plan.transactionId.toHex()),
@@ -909,13 +937,18 @@ std::optional<LegacyRetirementPlan> ParseLegacyRetirementPlan(
 		return std::nullopt;
 	}
 	const auto array = QJsonDocument::fromJson(serialized).array();
-	if (array.size() != 6 || array[0].toInt() != kPlanVersion) {
+	const auto version = array.isEmpty() ? 0 : array[0].toInt();
+	if (array.size() != 6
+		|| (version != kPlanVersion && version != kPreserveWebviewPlanVersion)) {
 		return std::nullopt;
 	}
 	auto result = Plan{
 		.dataDirectory = array[1].toString(),
 		.dataName = array[2].toString(),
 		.transactionId = QByteArray::fromHex(array[3].toString().toLatin1()),
+		.webview = (version == kPreserveWebviewPlanVersion)
+			? Storage::LegacyWebviewTransfer::StartFresh
+			: Storage::LegacyWebviewTransfer::RequireIsolated,
 	};
 	const auto indices = array[4].toArray();
 	const auto entries = array[5].toArray();
@@ -962,12 +995,18 @@ LegacyRetirementResult RetireLegacyProfileFiles(
 		}
 	}
 	for (auto i = plan.entries.rbegin(); i != plan.entries.rend(); ++i) {
+		if (i->sha256.isEmpty() && PreserveWebviewRoot(plan, *layout, i->relativePath)) {
+			continue;
+		}
 		if (!RemoveIfPresent(dataDirectory, *i)) {
 			return Result::FilesystemFailure;
 		}
 	}
 	if (!MatchesCurrentSource(plan, *layout)
 		|| std::ranges::any_of(plan.entries, [&](const Entry &entry) {
+			if (entry.sha256.isEmpty() && PreserveWebviewRoot(plan, *layout, entry.relativePath)) {
+				return false;
+			}
 			return Present(QFileInfo(dataDirectory + '/' + entry.relativePath));
 		})) {
 		return Result::UnexpectedSource;

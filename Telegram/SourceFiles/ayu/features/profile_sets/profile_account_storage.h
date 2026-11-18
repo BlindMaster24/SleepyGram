@@ -24,6 +24,7 @@ class MigrationController;
 	UserId expectedUser,
 	const AccountKey &account,
 	const AccountVaultLocator &locator,
-	Storage::VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
+	Storage::VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
+	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated);
 
 } // namespace Ayu::ProfileSets

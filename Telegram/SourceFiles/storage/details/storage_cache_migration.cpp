@@ -151,7 +151,7 @@ bool ReadCache(const QString &root, const QFileInfo &cache, Tree &tree) {
 	return true;
 }
 
-std::optional<Tree> ReadTree(const QString &root, bool scoped) {
+std::optional<Tree> ReadTree(const QString &root, bool scoped, bool preserveLegacyWebview = false) {
 	const auto directory = QFileInfo(root);
 	if (!Present(directory)) {
 		return Tree();
@@ -161,6 +161,9 @@ std::optional<Tree> ReadTree(const QString &root, bool scoped) {
 	auto tree = Tree();
 	for (const auto &item : QDir(root).entryInfoList(kEntries)) {
 		const auto name = item.fileName();
+		if (!scoped && preserveLegacyWebview && IsLegacyWebviewDirectoryName(name)) {
+			continue;
+		}
 		if (scoped && name == u"archive.db"_q
 			&& CanonicalFile(item) && item.size() > 0) {
 			continue;
@@ -389,7 +392,8 @@ CacheMigrationResult CompareAccountCachesForMigration(
 		const EncryptionKey &legacyKey,
 		const EncryptionKey &scopedKey,
 		bool write,
-		CacheMigrationInventory *inventory) {
+		CacheMigrationInventory *inventory,
+		LegacyWebviewTransfer webview) {
 	if (inventory) {
 		*inventory = {};
 	}
@@ -403,7 +407,7 @@ CacheMigrationResult CompareAccountCachesForMigration(
 		|| target.startsWith(source + '/')) {
 		return Result::InvalidPaths;
 	}
-	const auto oldTree = ReadTree(source, false);
+	const auto oldTree = ReadTree(source, false, webview == LegacyWebviewTransfer::StartFresh);
 	if (!oldTree) {
 		return Result::UnsupportedSource;
 	}

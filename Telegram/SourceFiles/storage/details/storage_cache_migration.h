@@ -1,6 +1,8 @@
 // This is the source code of AyuGram for Desktop.
 #pragma once
 
+#include "storage/storage_account_paths.h"
+
 #include <QtCore/QStringList>
 
 namespace Storage {
@@ -31,7 +33,8 @@ struct CacheMigrationInventory final {
 	const EncryptionKey &legacyKey,
 	const EncryptionKey &scopedKey,
 	bool write,
-	CacheMigrationInventory *inventory = nullptr);
+	CacheMigrationInventory *inventory = nullptr,
+	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated);
 
 } // namespace details
 } // namespace Storage

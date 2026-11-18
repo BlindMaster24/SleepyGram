@@ -18,7 +18,7 @@ add_subdirectory(lib_lottie)
 add_subdirectory(lib_qr)
 add_subdirectory(lib_translate)
 add_subdirectory(lib_webrtc)
-add_subdirectory(lib_webview)
+include(cmake/lib_webview.cmake)
 add_subdirectory(codegen)
 
 # AyuGram filters

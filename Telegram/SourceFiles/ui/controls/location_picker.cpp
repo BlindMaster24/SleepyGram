@@ -408,12 +408,12 @@ void LocationPicker::setupWebview() {
 	const auto window = _window.get();
 	_webview = std::make_unique<Webview::Window>(
 		_container,
-		Webview::WindowConfig{
+		Ayu::ProfileSets::PersistentWebviewConfig({
 			.opaqueBg = st::windowBg->c,
 			.storageId = _webviewStorageId,
 			.dataRequestRedirectHost = u"api.mapbox.com"_q,
 			.safe = true,
-		});
+		}));
 	const auto raw = _webview.get();
 	if (!raw->widget()) {
 		_webview = nullptr;

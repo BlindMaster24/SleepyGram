@@ -1,0 +1,227 @@
+--- a/webview/webview_embed.h
++++ b/webview/webview_embed.h
+@@ -51,6 +51,7 @@
+ 	QSize initialSize;
+ 	QString shellMessageToken;
+ 	QString restrictedOrigin;
++	bool requireIsolatedStorage = false;
+ };
+ 
+ class Window final {
+--- a/webview/webview_embed.cpp
++++ b/webview/webview_embed.cpp
+@@ -187,6 +187,7 @@
+ 		.restrictedOrigin = config.restrictedOrigin.toStdString(),
+ 		.restrictedContentSecurityPolicy
+ 			= restrictedContent.policy.toStdString(),
++		.requireIsolatedStorage = config.requireIsolatedStorage,
+ 	});
+ 	if (_webview && restricted) {
+ 		_webview->initAllFrames(restrictedContent.script.toStdString());
+--- a/webview/webview_interface.h
++++ b/webview/webview_interface.h
+@@ -191,6 +191,7 @@
+ 	std::string shellMessageToken;
+ 	std::string restrictedOrigin;
+ 	std::string restrictedContentSecurityPolicy;
++	bool requireIsolatedStorage = false;
+ };
+ 
+ struct Available {
+--- a/webview/platform/win/webview_win.cpp
++++ b/webview/platform/win/webview_win.cpp
+@@ -73,7 +73,7 @@
+ std::unique_ptr<Interface> CreateInstance(Config config) {
+ 	if (SystemTooOld()) {
+ 		return nullptr;
+-	} else if (config.mode == WindowMode::Hidden) {
++	} else if (config.requireIsolatedStorage || config.mode == WindowMode::Hidden) {
+ 		return EdgeChromium::CreateInstance(std::move(config));
+ 	} else if (auto result = EdgeChromium::CreateInstance(config)) {
+ 		return result;
+--- a/webview/platform/win/webview_windows_edge_chromium.cpp
++++ b/webview/platform/win/webview_windows_edge_chromium.cpp
+@@ -27,6 +27,7 @@
+ 
+ #include <wrl/event.h>
+ 
++#include <QtCore/QDir>
+ #include <QtCore/QUrl>
+ #include <QtGui/QDesktopServices>
+ #include <QtGui/QWindow>
+@@ -199,6 +200,76 @@
+ 		return {};
+ 	}
+ 	return result;
++}
++
++[[nodiscard]] bool HasStorageOverride() {
++	for (const auto name : {
++			"WEBVIEW2_USER_DATA_FOLDER",
++			"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER",
++			"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
++			"WEBVIEW2_PIPE_FOR_SCRIPT_DEBUGGER",
++			"WEBVIEW2_WAIT_FOR_SCRIPT_DEBUGGER" }) {
++		if (qEnvironmentVariableIsSet(name)) {
++			return true;
++		}
++	}
++	if (StrStrIW(GetCommandLineW(), L"edge-webview-switches")) {
++		return true;
++	}
++	for (const auto root : { HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER }) {
++		for (const auto view : { KEY_WOW64_32KEY, KEY_WOW64_64KEY }) {
++			for (const auto policy : {
++					L"UserDataFolder",
++					L"BrowserExecutableFolder",
++					L"AdditionalBrowserArguments" }) {
++				const auto path = std::wstring(
++					L"Software\\Policies\\Microsoft\\Edge\\WebView2\\") + policy;
++				auto key = HKEY();
++				const auto status = RegOpenKeyExW(
++					root, path.c_str(), 0, KEY_QUERY_VALUE | view, &key);
++				if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND) {
++					continue;
++				} else if (status != ERROR_SUCCESS) {
++					return true;
++				}
++				auto values = DWORD();
++				const auto query = RegQueryInfoKeyW(
++					key, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
++					&values, nullptr, nullptr, nullptr, nullptr);
++				RegCloseKey(key);
++				if (query != ERROR_SUCCESS || values != 0) {
++					return true;
++				}
++			}
++		}
++	}
++	return false;
++}
++
++[[nodiscard]] bool MatchesUserDataFolder(
++		const winrt::com_ptr<ICoreWebView2Environment> &environment,
++		const std::wstring &expected,
++		HANDLE pinned) {
++	const auto version = environment.try_as<ICoreWebView2Environment7>();
++	auto effective = base::CoTaskMemString();
++	if (!version || version->get_UserDataFolder(effective.put()) != S_OK || !effective) {
++		return false;
++	}
++	const auto actual = QDir::toNativeSeparators(
++		QString::fromWCharArray(effective.data())).toStdWString();
++	if (CompareStringOrdinal(expected.c_str(), -1, actual.c_str(), -1, TRUE)
++		!= CSTR_EQUAL) {
++		return false;
++	}
++	const auto folder = PinDirectory(actual);
++	auto left = FILE_ID_INFO();
++	auto right = FILE_ID_INFO();
++	return folder
++		&& GetFileInformationByHandleEx(pinned, FileIdInfo, &left, sizeof(left))
++		&& GetFileInformationByHandleEx(folder.get(), FileIdInfo, &right, sizeof(right))
++		&& left.VolumeSerialNumber == right.VolumeSerialNumber
++		&& std::equal(std::begin(left.FileId.Identifier), std::end(left.FileId.Identifier),
++			std::begin(right.FileId.Identifier));
+ }
+ 
+ struct PendingPermission {
+@@ -237,6 +308,8 @@
+ 		Config config,
+ 		HWND handle,
+ 		winrt::file_handle userDataPin,
++		winrt::file_handle enginePin,
++		std::wstring requiredUserDataPath,
+ 		std::function<void(not_null<Handler*>)> saveThis,
+ 		std::function<void()> readyHandler);
+ 	~Handler();
+@@ -342,6 +415,8 @@
+ 
+ 	// Keeps the folder unclaimable until every runtime object below is gone.
+ 	winrt::file_handle _userDataPin;
++	winrt::file_handle _enginePin;
++	std::wstring _requiredUserDataPath;
+ 	HWND _window = nullptr;
+ 	winrt::com_ptr<ICoreWebView2Environment> _environment;
+ 	winrt::com_ptr<ICoreWebView2Controller> _controller;
+@@ -377,9 +452,13 @@
+ 	Config config,
+ 	HWND handle,
+ 	winrt::file_handle userDataPin,
++	winrt::file_handle enginePin,
++	std::wstring requiredUserDataPath,
+ 	std::function<void(not_null<Handler*>)> saveThis,
+ 	std::function<void()> readyHandler)
+ : _userDataPin(std::move(userDataPin))
++, _enginePin(std::move(enginePin))
++, _requiredUserDataPath(std::move(requiredUserDataPath))
+ , _window(handle)
+ , _messageHandler(std::move(config.messageHandler))
+ , _navigationPolicyHandler(std::move(config.navigationPolicyHandler))
+@@ -419,6 +498,16 @@
+ 		return S_OK;
+ 	}
+ 	_environment.copy_from(env);
++	if (!_requiredUserDataPath.empty()) {
++		if (FAILED(res) || !_environment
++			|| !MatchesUserDataFolder(_environment, _requiredUserDataPath, _userDataPin.get())) {
++			return Invoke(E_ACCESSDENIED, static_cast<ICoreWebView2Controller*>(nullptr));
++		}
++		const auto result = _environment->CreateCoreWebView2Controller(_window, this);
++		return FAILED(result)
++			? Invoke(result, static_cast<ICoreWebView2Controller*>(nullptr))
++			: S_OK;
++	}
+ 	if (!_environment) {
+ 		return E_FAIL;
+ 	}
+@@ -1179,9 +1268,29 @@
+ 		_keepActiveTimer.callEach(kKeepActiveInterval);
+ 	}
+ 
+-	const auto wpath = ToWide(config.userDataPath);
++	const auto nativePath = config.requireIsolatedStorage
++		? QDir::toNativeSeparators(QString::fromStdString(config.userDataPath))
++		: QString();
++	const auto wpath = config.requireIsolatedStorage
++		? nativePath.toStdWString()
++		: ToWide(config.userDataPath);
+ 	auto pin = winrt::file_handle();
+-	if (!config.restrictedOrigin.empty() && !wpath.empty()) {
++	auto enginePin = winrt::file_handle();
++	if (config.requireIsolatedStorage) {
++		if (!QDir::isAbsolutePath(nativePath)
++			|| wpath.empty()
++			|| !QDir().mkpath(nativePath)) {
++			return;
++		}
++		pin = PinDirectory(wpath);
++		if (!pin || !CreateEngineFolder(wpath)) {
++			return;
++		}
++		enginePin = PinDirectory(wpath + L"\\EBWebView");
++		if (!enginePin || HasStorageOverride()) {
++			return;
++		}
++	} else if (!config.restrictedOrigin.empty() && !wpath.empty()) {
+ 		if (CreateEngineFolder(wpath)) {
+ 			pin = PinDirectory(wpath);
+ 		}
+@@ -1200,6 +1309,8 @@
+ 		config,
+ 		_handle,
+ 		std::move(pin),
++		std::move(enginePin),
++		config.requireIsolatedStorage ? wpath : std::wstring(),
+ 		[&](not_null<Handler*> that) { handler = that; },
+ 		crl::guard(this, ready));
+ 	const auto result = CreateCoreWebView2EnvironmentWithOptions(
+@@ -1473,7 +1584,7 @@
+ }
+ 
+ std::unique_ptr<Interface> CreateInstance(Config config) {
+-	if (!Supported()) {
++	if ((config.requireIsolatedStorage && HasStorageOverride()) || !Supported()) {
+ 		return nullptr;
+ 	}
+ 	auto result = std::make_unique<Instance>(std::move(config));

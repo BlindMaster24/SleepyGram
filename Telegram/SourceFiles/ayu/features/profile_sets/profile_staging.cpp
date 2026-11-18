@@ -27,7 +27,8 @@ ProfileStagingResult StageWhilePreparing(
 		std::span<const ProfileStagingAccount> accounts,
 		const QByteArray &transactionId,
 		LegacyRetirementPlan *retirement,
-		const Preferences::LegacyPartition *preferences) {
+		const Preferences::LegacyPartition *preferences,
+		Storage::LegacyWebviewTransfer webview) {
 	using Result = ProfileStagingResult;
 	const auto root = QDir::cleanPath(dataDirectory);
 	if (workspace.accountStorageRoot() != root + u"/profile-sets/accounts"_q) {
@@ -80,7 +81,7 @@ ProfileStagingResult StageWhilePreparing(
 		auto files = Storage::VerifiedLegacyAccountFiles();
 		const auto stage = StageProfileAccount(
 			workspace, source, legacy->localKey, account.userId,
-			account.key, account.locator, retirement ? &files : nullptr);
+			account.key, account.locator, retirement ? &files : nullptr, webview);
 		if (stage != Storage::AccountMigrationResult::Success) {
 			return (stage == Storage::AccountMigrationResult::UnsupportedData)
 				? Result::UnsupportedAccountData
@@ -136,7 +137,7 @@ ProfileStagingResult StageWhilePreparing(
 		auto captured = CaptureLegacyRetirementPlan(
 			root, dataName, transactionId, legacy->accountIndices,
 			verifiedAccounts, archive,
-			preferences ? preferences->sourceSha256 : QByteArray(), *offline);
+			preferences ? preferences->sourceSha256 : QByteArray(), *offline, webview);
 		if (!captured) {
 			return Result::RetirementVerificationFailed;
 		}
@@ -155,12 +156,13 @@ ProfileStagingResult StageScopedProfileData(
 		std::span<const ProfileStagingAccount> accounts,
 		const QByteArray &transactionId,
 		LegacyRetirementPlan *retirement,
-		const Preferences::LegacyPartition *preferences) {
+		const Preferences::LegacyPartition *preferences,
+		Storage::LegacyWebviewTransfer webview) {
 	auto staged = ProfileStagingResult::InvalidWorkspace;
 	const auto verify = [&] {
 		staged = StageWhilePreparing(
 			workspace, dataDirectory, dataName, legacyPasscode, accounts,
-			transactionId, retirement, preferences);
+			transactionId, retirement, preferences, webview);
 		return staged == ProfileStagingResult::Success;
 	};
 	const auto ran = (!transactionId.isEmpty() && workspace.LoadStaged())

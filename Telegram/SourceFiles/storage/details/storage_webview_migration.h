@@ -1,7 +1,13 @@
 // This is the source code of AyuGram for Desktop.
 #pragma once
 
+#include "storage/details/storage_hkdf.h"
+
 #include <QtCore/QByteArray>
+
+#include <array>
+#include <optional>
+#include <string_view>
 
 namespace Storage::details {
 
@@ -15,6 +21,29 @@ enum class LegacyWebviewBackend : uchar {
 	SuppliedPaths,
 	SharedOrNativeStorage,
 };
+
+struct ProtectedWebviewTokens final {
+	QByteArray bots;
+	QByteArray other;
+};
+
+[[nodiscard]] inline std::optional<ProtectedWebviewTokens> MakeProtectedWebviewTokens(
+		bytes::const_span accountKey) {
+	constexpr auto kTokenSize = size_t(16);
+	constexpr auto context = std::string_view("SleepyGram scoped Mini App storage v1");
+	auto tokens = std::array<unsigned char, 2 * kTokenSize>();
+	if (!HkdfSha256(accountKey, {}, bytes::make_span(context), bytes::make_span(tokens))) {
+		return std::nullopt;
+	}
+	const auto take = [&](size_t offset) {
+		tokens[offset + 6] = (tokens[offset + 6] & 0x0F) | 0x40;
+		tokens[offset + 8] = (tokens[offset + 8] & 0x3F) | 0x80;
+		return QByteArray(reinterpret_cast<const char*>(tokens.data() + offset), kTokenSize);
+	};
+	auto result = ProtectedWebviewTokens{ take(0), take(kTokenSize) };
+	OPENSSL_cleanse(tokens.data(), tokens.size());
+	return result.bots != result.other ? std::optional(std::move(result)) : std::nullopt;
+}
 
 [[nodiscard]] inline LegacyWebviewStorageProof ClassifyLegacyWebviewTokens(
 		const QByteArray &bots,

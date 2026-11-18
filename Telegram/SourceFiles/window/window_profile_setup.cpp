@@ -6,6 +6,7 @@
 
 #include <QtCore/QPointer>
 #include <QtGui/QCloseEvent>
+#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QVBoxLayout>
@@ -100,6 +101,7 @@ private:
 	const not_null<PreLaunchInput*> _confirmMaster;
 	const not_null<PreLaunchInput*> _setPasscode;
 	const not_null<PreLaunchInput*> _confirmSet;
+	const not_null<QCheckBox*> _preserveLegacyWebview;
 	const not_null<PreLaunchButton*> _close;
 	const not_null<PreLaunchButton*> _start;
 	const not_null<PreLaunchButton*> _restart;
@@ -127,6 +129,7 @@ ProfileSetupWindow::ProfileSetupWindow(
 , _confirmMaster(new PreLaunchInput(this, true))
 , _setPasscode(new PreLaunchInput(this, true))
 , _confirmSet(new PreLaunchInput(this, true))
+, _preserveLegacyWebview(new QCheckBox(_form.get()))
 , _close(new PreLaunchButton(this, false))
 , _start(new PreLaunchButton(this))
 , _restart(new PreLaunchButton(this)) {
@@ -151,6 +154,14 @@ ProfileSetupWindow::ProfileSetupWindow(
 	addField(u"Confirm master passcode"_q, _confirmMaster);
 	addField(u"First set passcode"_q, _setPasscode);
 	addField(u"Confirm first set passcode"_q, _confirmSet);
+	const auto webviewNotice = new PreLaunchLabel(_form.get());
+	webviewNotice->setTextFormat(Qt::PlainText);
+	webviewNotice->setWordWrap(true);
+	webviewNotice->setText(u"Existing Mini App browser data stays on this device. "
+		"You will need to sign in again in the protected profile."_q);
+	_preserveLegacyWebview->setText(u"Start with separate Mini App storage"_q);
+	form->addRow(webviewNotice);
+	form->addRow(_preserveLegacyWebview.get());
 	_setName->setMaxLength(kSetNameLength + 1);
 	for (const auto input : {
 		_legacyPasscode.get(),
@@ -205,6 +216,7 @@ void ProfileSetupWindow::submit() {
 		.masterPasscode = TakeInput(*_masterPasscode),
 		.firstSetName = _setName->text().trimmed(),
 		.firstSetPasscode = TakeInput(*_setPasscode),
+		.preserveLegacyWebviewStorage = _preserveLegacyWebview->isChecked(),
 	};
 	const auto wipe = gsl::finally([&] {
 		request.legacyPasscode.fill(QChar(0));

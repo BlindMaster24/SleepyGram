@@ -10,11 +10,13 @@
 
 namespace Webview {
 struct StorageId;
+struct WindowConfig;
 } // namespace Webview
 
 namespace Ayu::ProfileSets {
 
 [[nodiscard]] bool CanUsePersistentWebview(const Webview::StorageId &id);
+[[nodiscard]] Webview::WindowConfig PersistentWebviewConfig(Webview::WindowConfig config);
 
 namespace details {
 
@@ -29,7 +31,7 @@ namespace details {
 		return true;
 	}
 	using OS = QOperatingSystemVersion;
-	if ((platform != OS::Unknown && platform != OS::MacOS)
+	if ((platform != OS::Unknown && platform != OS::MacOS && platform != OS::Windows)
 		|| token.size() != 16
 		|| (platform == OS::MacOS
 			&& (majorVersion < 14 || token == QByteArray(16, '\0')))) {

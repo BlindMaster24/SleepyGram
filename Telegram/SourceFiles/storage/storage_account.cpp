@@ -156,6 +156,11 @@ struct MigrationPaths final {
 	QString targetRoot;
 };
 
+struct LegacyWebviewMapSection final {
+	qsizetype offset = -1;
+	qsizetype length = 0;
+};
+
 bool Present(const QFileInfo &info) {
 	return info.exists() || info.isSymLink() || info.isJunction();
 }
@@ -390,7 +395,8 @@ MigrationResult InspectMap(
 		QDataStream &stream,
 		UserId expectedUser,
 		std::map<QString, MigrationRecordType> &files,
-		AccountStorageMode mode) {
+		AccountStorageMode mode,
+		LegacyWebviewMapSection *legacyWebview) {
 	const auto keys = [&](int count, MigrationRecordType kind) {
 		for (auto i = 0; i != count; ++i) {
 			auto key = FileKey();
@@ -404,6 +410,7 @@ MigrationResult InspectMap(
 	};
 	auto seen = base::flat_set<quint32>();
 	while (!stream.atEnd()) {
+		const auto start = stream.device()->pos();
 		auto type = quint32();
 		stream >> type;
 		if (stream.status() != QDataStream::Ok || !seen.emplace(type).second) {
@@ -495,11 +502,22 @@ MigrationResult InspectMap(
 			stream >> bots >> other;
 			if (stream.status() != QDataStream::Ok) {
 				return MigrationResult::InvalidSource;
+			}
+			const auto legacy = Webview::LegacyStorageIdToken();
+			if (legacyWebview) {
+				const auto valid = [&](const QByteArray &token) {
+					return token.isEmpty() || token == legacy || token.size() == 16;
+				};
+				if (!valid(bots) || !valid(other)) {
+					return MigrationResult::UnsupportedData;
+				}
+				legacyWebview->offset = start;
+				legacyWebview->length = stream.device()->pos() - start;
+				break;
 			} else if (mode == AccountStorageMode::Legacy
 				&& ClassifyLegacyWebviewTokens(bots, other) == LegacyWebviewStorageProof::Unsupported) {
 				return MigrationResult::UnsupportedData;
 			}
-			const auto legacy = Webview::LegacyStorageIdToken();
 			ok = (bots.isEmpty() || bots != legacy)
 				&& (other.isEmpty() || other != legacy);
 		} break;
@@ -562,14 +580,15 @@ MigrationResult InspectMigrationRecord(
 		UserId expectedUser,
 		std::map<QString, MigrationRecordType> &files,
 		AccountStorageMode mode = AccountStorageMode::Legacy,
-		MTP::Environment *environment = nullptr) {
+		MTP::Environment *environment = nullptr,
+		LegacyWebviewMapSection *legacyWebview = nullptr) {
 	auto stream = QDataStream(record.data);
 	if (!BeginMigrationRecord(stream)) {
 		return MigrationResult::InvalidSource;
 	}
 	switch (type) {
 	case MigrationRecordType::Map:
-		return InspectMap(stream, expectedUser, files, mode);
+		return InspectMap(stream, expectedUser, files, mode, legacyWebview);
 	case MigrationRecordType::Authorization: {
 		const auto user = ReadAuthorizationUser(stream);
 		if (!user) {
@@ -667,10 +686,13 @@ MigrationResult CompareMigrationRecords(
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
 		bool write,
-		VerifiedLegacyAccountFiles *verifiedFiles = nullptr) {
+		VerifiedLegacyAccountFiles *verifiedFiles,
+		LegacyWebviewTransfer webview) {
+	const auto startFresh = webview == LegacyWebviewTransfer::StartFresh;
 	if (!EmptyMigrationDirectory(source.tempPath)
 		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/tdld"_q)
-		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/webview"_q)) {
+		|| (!startFresh && (!EmptyMigrationDirectory(paths.sourceRoot + u"/webview"_q)
+			|| !EmptyMigrationDirectory(paths.sourceRoot + u"/webview-tonsite"_q)))) {
 		return MigrationResult::UnsupportedData;
 	}
 
@@ -684,13 +706,28 @@ MigrationResult CompareMigrationRecords(
 		map)) {
 		return MigrationResult::InvalidSource;
 	}
+	auto legacyWebview = LegacyWebviewMapSection();
 	const auto mapResult = InspectMigrationRecord(
 		map,
 		MigrationRecordType::Map,
 		expectedUser,
-		files);
+		files, AccountStorageMode::Legacy, nullptr, startFresh ? &legacyWebview : nullptr);
 	if (mapResult != MigrationResult::Success) {
 		return mapResult;
+	}
+	if (startFresh) {
+		const auto tokens = MakeProtectedWebviewTokens(bytes::make_span(targetKey->data()));
+		if (!tokens) {
+			return MigrationResult::InvalidKeys;
+		}
+		auto webviewData = QByteArray();
+		auto stream = QDataStream(&webviewData, QIODevice::WriteOnly);
+		stream.setVersion(QDataStream::Qt_5_1);
+		stream << quint32(lskWebviewTokens) << tokens->bots << tokens->other;
+		const auto offset = (legacyWebview.offset >= 0) ? legacyWebview.offset : map.data.size();
+		map.data.replace(offset, legacyWebview.length, webviewData);
+		const auto length = quint32(map.data.size());
+		std::memcpy(map.data.data(), &length, sizeof(length));
 	}
 	files.emplace(mapName, MigrationRecordType::Map);
 	const auto configName = u"config"_q;
@@ -754,7 +791,8 @@ MigrationResult CompareMigrationRecords(
 		EncryptionKey(bytes::make_vector(sourceKey->data())),
 		EncryptionKey(bytes::make_vector(targetKey->data())),
 		write,
-		verifiedFiles ? &cacheFiles : nullptr);
+		verifiedFiles ? &cacheFiles : nullptr,
+		webview);
 	if (cache != CacheMigrationResult::Success) {
 		return (cache == CacheMigrationResult::UnsupportedSource)
 			? MigrationResult::UnsupportedData
@@ -870,7 +908,8 @@ AccountMigrationResult StageLegacyAccount(
 		const AccountPaths &target,
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
-		VerifiedLegacyAccountFiles *verifiedFiles) {
+		VerifiedLegacyAccountFiles *verifiedFiles,
+		LegacyWebviewTransfer webview) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -882,7 +921,7 @@ AccountMigrationResult StageLegacyAccount(
 	if (Present(QFileInfo(paths->targetRoot))) {
 		return CompareMigrationRecords(
 			*paths, source, sourceKey, target, targetKey, expectedUser, false,
-			verifiedFiles);
+			verifiedFiles, webview);
 	}
 	const auto parent = QFileInfo(paths->targetRoot).absolutePath();
 	auto temporary = QTemporaryDir(parent + u"/.stage-XXXXXX"_q);
@@ -896,7 +935,7 @@ AccountMigrationResult StageLegacyAccount(
 		.mode = AccountStorageMode::Scoped,
 	};
 	const auto result = CompareMigrationRecords(
-		*paths, source, sourceKey, staged, targetKey, expectedUser, true);
+		*paths, source, sourceKey, staged, targetKey, expectedUser, true, nullptr, webview);
 	if (result != MigrationResult::Success) {
 		return result;
 	}
@@ -905,7 +944,7 @@ AccountMigrationResult StageLegacyAccount(
 	}
 	temporary.setAutoRemove(false);
 	return VerifyStagedAccount(
-		source, sourceKey, target, targetKey, expectedUser, verifiedFiles);
+		source, sourceKey, target, targetKey, expectedUser, verifiedFiles, webview);
 }
 
 AccountMigrationResult VerifyStagedAccount(
@@ -914,7 +953,8 @@ AccountMigrationResult VerifyStagedAccount(
 		const AccountPaths &target,
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
-		VerifiedLegacyAccountFiles *verifiedFiles) {
+		VerifiedLegacyAccountFiles *verifiedFiles,
+		LegacyWebviewTransfer webview) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -923,7 +963,7 @@ AccountMigrationResult VerifyStagedAccount(
 	return paths
 		? CompareMigrationRecords(
 			*paths, source, sourceKey, target, targetKey, expectedUser, false,
-			verifiedFiles)
+			verifiedFiles, webview)
 		: MigrationResult::InvalidPaths;
 }
 
