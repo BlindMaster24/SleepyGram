@@ -1,6 +1,8 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/emergency_actions/emergency_action_runtime_service.h"
 
+#include "ayu/features/emergency_actions/emergency_rule_vault.h"
+
 #include <algorithm>
 #include <ranges>
 #include <utility>
@@ -120,8 +122,24 @@ EmergencyActionRuntimeService::EmergencyActionRuntimeService(
 		LocalAccountEffect &local,
 		SafeDestinationEffect &destination,
 		const CoordinatorClock &clock)
-: _configuration(configuration)
-, _readLiveInstallation(std::move(readLiveInstallation))
+: EmergencyActionRuntimeService(
+	std::move(readLiveInstallation),
+	store,
+	std::move(provideRemote),
+	local,
+	destination,
+	clock) {
+	_configuration = &configuration;
+}
+
+EmergencyActionRuntimeService::EmergencyActionRuntimeService(
+		LiveInstallationReader readLiveInstallation,
+		JournalStore &store,
+		RemoteSessionProvider provideRemote,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		const CoordinatorClock &clock)
+: _readLiveInstallation(std::move(readLiveInstallation))
 , _store(store)
 , _provideRemote(std::move(provideRemote))
 , _local(local)
@@ -132,10 +150,13 @@ EmergencyActionRuntimeService::EmergencyActionRuntimeService(
 RuntimeServiceReport EmergencyActionRuntimeService::Submit(
 		LockScreenSubmit lockScreen,
 		const CredentialVerifier &verifiedCredential) {
+	if (!_configuration) {
+		return {};
+	}
 	auto result = RuntimeServiceReport{
 		.route = DispatchLockScreenPasscode(
 			lockScreen,
-			_configuration,
+			*_configuration,
 			verifiedCredential),
 	};
 	const auto match = std::get_if<EmergencyActionMatch>(&result.route);
@@ -144,10 +165,10 @@ RuntimeServiceReport EmergencyActionRuntimeService::Submit(
 		return result;
 	}
 	const auto draft = std::ranges::find(
-		_configuration.emergencyRules,
+		_configuration->emergencyRules,
 		match->id,
 		&EmergencyRuleDraft::id);
-	if (draft == _configuration.emergencyRules.end()
+	if (draft == _configuration->emergencyRules.end()
 		|| !draft->confirmed
 		|| draft->confirmed->revision != draft->revision
 		|| draft->confirmed->reviewedRule != draft->rule
@@ -155,7 +176,38 @@ RuntimeServiceReport EmergencyActionRuntimeService::Submit(
 		result.status = RuntimeServiceStatus::Rejected;
 		return result;
 	}
-	const auto rule = draft->rule;
+	return SubmitRule(
+		std::move(result),
+		draft->rule,
+		draft->confirmed->reviewedPlan.operationId,
+		[](const std::function<void()> &admit) {
+			admit();
+			return true;
+		});
+}
+
+RuntimeServiceReport EmergencyActionRuntimeService::SubmitVerified(
+		LockScreenSubmit,
+		const EmergencyRuleTicket &ticket,
+		const WithCurrentEmergencyAuthority &withCurrentAuthority) {
+	if (!withCurrentAuthority) {
+		return {};
+	}
+	const auto &details = ticket.details();
+	return SubmitRule(
+		{ .route = EmergencyActionMatch{ details.actionId } },
+		details.rule,
+		details.operationId,
+		[&](const std::function<void()> &admit) {
+			return withCurrentAuthority(ticket.authority(), admit);
+		});
+}
+
+RuntimeServiceReport EmergencyActionRuntimeService::SubmitRule(
+		RuntimeServiceReport result,
+		const EmergencyRule &rule,
+		const OperationId &operationId,
+		const std::function<bool(const std::function<void()>&)> &admit) {
 	if (rule.action != EmergencyAction::ResetAccountData) {
 		result.status = RuntimeServiceStatus::UnsupportedAction;
 		return result;
@@ -165,39 +217,55 @@ RuntimeServiceReport EmergencyActionRuntimeService::Submit(
 		result.status = RuntimeServiceStatus::CheckpointFailed;
 		return result;
 	}
-	const auto operationId = draft->confirmed->reviewedPlan.operationId;
-	auto journal = LoadJournal(_store, operationId);
-	if (journal) {
-		if (!MatchesConfirmedRule(*journal, rule)) {
-			return result;
+	auto journal = std::optional<EmergencyActionJournal>();
+	auto prepared = false;
+	auto resumed = false;
+	auto entered = false;
+	const auto authorized = admit([&] {
+		if (entered) {
+			return;
 		}
+		entered = true;
+		journal = LoadJournal(_store, operationId);
+		if (journal) {
+			resumed = true;
+			prepared = MatchesConfirmedRule(*journal, rule);
+			return;
+		}
+		const auto live = _readLiveInstallation ? _readLiveInstallation() : std::nullopt;
+		if (!live || live->id != rule.installationId) {
+			result.status = RuntimeServiceStatus::StaleReview;
+			return;
+		}
+		const auto current = BuildDryRunPlan(operationId, rule, *live);
+		if (current.status != DryRunStatus::Ready) {
+			result.status = RuntimeServiceStatus::StaleReview;
+			return;
+		}
+		journal = MakeJournal(current);
+		if (!journal) {
+			return;
+		}
+		const auto seedBytes = EncodeJournal(*journal);
+		if (seedBytes.empty()) {
+			return;
+		}
+		prepared = _store.createAtomically(operationId, seedBytes)
+			== JournalCreateResult::Created;
+		if (!prepared) {
+			result.status = RuntimeServiceStatus::CheckpointFailed;
+		}
+	});
+	if (!authorized || !entered) {
+		result.status = RuntimeServiceStatus::StaleReview;
+		return result;
+	}
+	if (!prepared) {
+		return result;
+	}
+	if (resumed) {
 		result.coordinator = ResumeResetCoordinator(*journal, *lease, _local, _destination);
 		result.status = RuntimeStatus(result.coordinator->result);
-		return result;
-	}
-	if (!_readLiveInstallation) {
-		return result;
-	}
-	const auto live = _readLiveInstallation();
-	if (!live || live->id != rule.installationId) {
-		result.status = RuntimeServiceStatus::StaleReview;
-		return result;
-	}
-	const auto current = BuildDryRunPlan(operationId, rule, *live);
-	if (current.status != DryRunStatus::Ready) {
-		result.status = RuntimeServiceStatus::StaleReview;
-		return result;
-	}
-	journal = MakeJournal(current);
-	if (!journal) {
-		return result;
-	}
-	const auto seedBytes = EncodeJournal(*journal);
-	if (seedBytes.empty()) {
-		return result;
-	}
-	if (_store.createAtomically(operationId, seedBytes) != JournalCreateResult::Created) {
-		result.status = RuntimeServiceStatus::CheckpointFailed;
 		return result;
 	}
 	auto provided = std::unique_ptr<RemoteSessionEffect>();

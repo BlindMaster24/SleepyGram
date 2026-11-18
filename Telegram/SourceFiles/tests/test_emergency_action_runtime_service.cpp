@@ -1,4 +1,5 @@
 #include "ayu/features/emergency_actions/emergency_action_runtime_service.h"
+#include "ayu/features/emergency_actions/emergency_rule_vault.h"
 
 #include <algorithm>
 #include <array>
@@ -484,6 +485,199 @@ public:
 	const bool owned;
 };
 
+void SealedRulesMatchExactCredentialAndCurrentAuthority() {
+	auto f = Fixture();
+	const auto generation = EmergencyRuleGeneration{
+		.installationId = f.live.id,
+		.transactionId = "current-generation",
+	};
+	const auto masterKey = Verifier(0xD1);
+	const auto firstKey = Verifier(0xD2);
+	const auto secondKey = Verifier(0xD3);
+	const auto firstId = f.config.emergencyRules.front().id;
+	const auto secondId = EmergencyActionId("another-rule-action");
+	auto secondRule = Rule();
+	secondRule.id = RuleId("another-rule");
+	secondRule.remoteSessionPolicies.clear();
+	f.config.emergencyRules.push_back({
+		.id = secondId,
+		.rule = secondRule,
+		.verifier = Verifier(0x22),
+	});
+	const auto entries = std::array{
+		EmergencyRuleSealInput{ firstId, "First reviewed rule", Verifier(0x20), firstKey },
+		EmergencyRuleSealInput{ secondId, "Second reviewed rule", Verifier(0x22), secondKey },
+	};
+	Check("unconfirmed-inventory-cannot-be-sealed",
+		!SealEmergencyRules(generation, masterKey, f.config, f.live, entries));
+	const auto first = PreviewEmergencyRule(
+		f.config, firstId, f.live, OperationId("operation-reviewed"));
+	const auto second = PreviewEmergencyRule(
+		f.config, secondId, f.live, OperationId("another-operation"));
+	if (!first || !second
+		|| !ConfirmEmergencyRule(f.config, *first, f.live, true)
+		|| !ConfirmEmergencyRule(f.config, *second, f.live, true)) {
+		Check("both-sealed-rule-fixtures-confirmed", false);
+		return;
+	}
+	auto duplicate = entries;
+	duplicate[1].key = duplicate.front().key;
+	Check("duplicate-derived-slot-key-cannot-be-sealed",
+		!SealEmergencyRules(generation, masterKey, f.config, f.live, duplicate));
+	auto changedLive = f.live;
+	changedLive.profiles.clear();
+	Check("changed-live-review-cannot-be-sealed",
+		!SealEmergencyRules(generation, masterKey, f.config, changedLive, entries));
+	const auto sealed = SealEmergencyRules(generation, masterKey, f.config, f.live, entries);
+	const auto directory = FixtureDirectory();
+	if (!sealed || !directory.owned) {
+		Check("fixture-rule-vault-created", false);
+		return;
+	}
+	const auto file = directory.path / "rules.fixture";
+	{
+		auto out = std::ofstream(file, std::ios::binary);
+		out.write(reinterpret_cast<const char*>(sealed->bytes.data()), sealed->bytes.size());
+	}
+	auto stored = std::vector<uint8_t>(sealed->bytes.size());
+	{
+		auto in = std::ifstream(file, std::ios::binary);
+		Check("fixture-rule-vault-round-trips-on-disk",
+			in.read(reinterpret_cast<char*>(stored.data()), stored.size())
+				&& stored == sealed->bytes);
+	}
+	const auto hides = [&](std::string_view value) {
+		return std::ranges::search(stored, value).empty();
+	};
+	Check("sealed-bytes-hide-rule-labels-targets-and-generation",
+		stored.size() == SealedEmergencyRulesSize()
+		&& hides(entries.front().name) && hides(firstId.value)
+		&& hides(generation.transactionId) && hides(generation.installationId.value)
+		&& hides(Rule().selectedAccountIds.front().value));
+	const auto resealed = SealEmergencyRules(generation, masterKey, f.config, f.live, entries);
+	Check("rule-sealing-randomizes-envelopes",
+		resealed && resealed->bytes.size() == stored.size()
+		&& resealed->authority.digest != sealed->authority.digest);
+	auto wrongKey = firstKey;
+	wrongKey.back() ^= 1;
+	Check("near-match-and-master-key-do-not-yield-a-ticket",
+		std::holds_alternative<WrongPasscode>(
+			AuthenticateEmergencyRule(sealed->authority, stored, wrongKey))
+		&& std::holds_alternative<WrongPasscode>(
+			AuthenticateEmergencyRule(sealed->authority, stored, masterKey)));
+	stored.back() ^= 1;
+	Check("any-ciphertext-tamper-invalidates-trusted-digest",
+		std::holds_alternative<EmergencyVaultUnavailable>(
+			AuthenticateEmergencyRule(sealed->authority, stored, firstKey)));
+	stored.back() ^= 1;
+	auto rebound = sealed->authority;
+	rebound.generation.transactionId = "rebound-generation";
+	Check("generation-is-bound-inside-ciphertext",
+		std::holds_alternative<WrongPasscode>(
+			AuthenticateEmergencyRule(rebound, stored, firstKey)));
+	const auto firstAuth = AuthenticateEmergencyRule(sealed->authority, stored, firstKey);
+	const auto secondAuth = AuthenticateEmergencyRule(sealed->authority, stored, secondKey);
+	const auto firstTicket = std::get_if<EmergencyRuleTicket>(&firstAuth);
+	const auto secondTicket = std::get_if<EmergencyRuleTicket>(&secondAuth);
+	Check("each-exact-key-opens-only-its-reviewed-rule",
+		firstTicket && firstTicket->details().actionId == firstId
+		&& firstTicket->details().rule == Rule() && secondTicket
+		&& secondTicket->details().actionId == secondId
+		&& secondTicket->details().rule == secondRule);
+	const auto names = OpenEmergencyRulesForMaster(sealed->authority, stored, masterKey);
+	Check("both-rule-names-are-master-only",
+		names && names->size() == 2 && names->at(0).name == entries.front().name
+		&& names->at(1).name == entries.back().name
+		&& !OpenEmergencyRulesForMaster(sealed->authority, stored, firstKey));
+	const auto nextMasterKey = Verifier(0xD4);
+	const auto nextMaster = EmergencyRuleMasterContext{
+		.derivedKey = nextMasterKey,
+		.verifier = Verifier(0xE1),
+		.normalCredentials = f.config.normalCredentials,
+	};
+	const auto reboundRules = RebindEmergencyRulesForMaster(
+		sealed->authority, stored, masterKey, rebound.generation, f.live, nextMaster);
+	Check("master-can-rebind-rules-without-emergency-passwords",
+		reboundRules && reboundRules->authority.generation == rebound.generation
+		&& reboundRules->authority.digest != sealed->authority.digest
+		&& !OpenEmergencyRulesForMaster(reboundRules->authority, reboundRules->bytes, masterKey)
+		&& OpenEmergencyRulesForMaster(reboundRules->authority, reboundRules->bytes, nextMasterKey));
+	if (reboundRules) {
+		const auto newAuth = AuthenticateEmergencyRule(
+			reboundRules->authority, reboundRules->bytes, firstKey);
+		const auto newTicket = std::get_if<EmergencyRuleTicket>(&newAuth);
+		Check("rebinding-keeps-exact-rule-and-once-only-operation-identity",
+			newTicket && newTicket->details().rule == Rule()
+			&& newTicket->details().operationId == first->plan.operationId
+			&& newTicket->details().revision == first->revision
+			&& std::holds_alternative<EmergencyVaultUnavailable>(AuthenticateEmergencyRule(
+				sealed->authority, reboundRules->bytes, firstKey)));
+	}
+	auto conflicting = nextMaster;
+	conflicting.verifier = entries.front().verifier;
+	auto normalCollision = f.config.normalCredentials;
+	normalCollision.front().verifier = entries.back().verifier;
+	auto conflictingNormal = nextMaster;
+	conflictingNormal.normalCredentials = normalCollision;
+	auto unsafeLive = f.live;
+	unsafeLive.profiles.front().accountIds = { f.live.accounts.front().id };
+	Check("rebind-requires-prior-master-and-fails-on-role-or-safe-set-conflict",
+		!RebindEmergencyRulesForMaster(sealed->authority, stored, firstKey,
+			rebound.generation, f.live, nextMaster)
+		&& !RebindEmergencyRulesForMaster(sealed->authority, stored, masterKey,
+			rebound.generation, f.live, conflicting)
+		&& !RebindEmergencyRulesForMaster(sealed->authority, stored, masterKey,
+			rebound.generation, f.live, conflictingNormal)
+		&& !RebindEmergencyRulesForMaster(sealed->authority, stored, masterKey,
+			rebound.generation, unsafeLive, nextMaster));
+	Check("auth-and-preview-start-no-effects",
+		!f.store.creates && !f.local.calls && !f.destination.calls && !f.remote.calls);
+	if (!firstTicket || !resealed) return;
+	auto inLease = false;
+	auto liveReadDuringLease = false;
+	auto effectsOutsideLease = false;
+	auto service = EmergencyActionRuntimeService(
+		[&] {
+			liveReadDuringLease = inLease;
+			return std::optional(f.live);
+		},
+		f.store,
+		[&](const EmergencyActionJournal &journal) -> std::unique_ptr<RemoteSessionEffect> {
+			effectsOutsideLease = !inLease && f.store.seedWrites == 1
+				&& journal.ruleId == Rule().id;
+			return nullptr;
+		},
+		f.local,
+		f.destination,
+		f.clock);
+	auto authority = resealed->authority;
+	const auto withAuthority = [&](const auto &expected, const auto &admit) {
+		if (authority != expected) return false;
+		inLease = true;
+		admit();
+		inLease = false;
+		return true;
+	};
+	const auto staleDigest = service.SubmitVerified(LockScreenSubmit(), *firstTicket, withAuthority);
+	authority = rebound;
+	const auto staleGeneration = service.SubmitVerified(LockScreenSubmit(), *firstTicket, withAuthority);
+	Check("changed-authority-prevents-journal-creation-and-effects",
+		staleDigest.status == RuntimeServiceStatus::StaleReview
+		&& staleGeneration.status == RuntimeServiceStatus::StaleReview
+		&& !f.store.creates && !f.local.calls);
+	authority = sealed->authority;
+	const auto submitted = service.SubmitVerified(LockScreenSubmit(), *firstTicket, withAuthority);
+	Check("admission-freezes-targets-under-current-generation-before-effects",
+		submitted.status == RuntimeServiceStatus::Coordinated
+		&& liveReadDuringLease && effectsOutsideLease
+		&& f.store.seedWrites == 1 && f.local.calls == 1 && f.destination.calls == 1);
+	authority = rebound;
+	const auto staleReplay = service.SubmitVerified(LockScreenSubmit(), *firstTicket, withAuthority);
+	Check("changed-generation-also-rejects-existing-journal-replay",
+		staleReplay.status == RuntimeServiceStatus::StaleReview
+		&& f.store.seedWrites == 1 && f.local.calls == 1 && f.destination.calls == 1);
+}
+
 void OfflineStartupFinishesLocalCleanupFromDisk() {
 	const auto fixtureDirectory = FixtureDirectory();
 	if (!fixtureDirectory.owned) {
@@ -609,6 +803,7 @@ int main() {
 	ResetAllResolvesLiveAccountsOnce();
 	SelectedRuleDoesNotWidenOnLiveChanges();
 	FailedFirstJournalWriteStartsNoEffects();
+	SealedRulesMatchExactCredentialAndCurrentAuthority();
 	OfflineStartupFinishesLocalCleanupFromDisk();
 #ifndef _WIN32
 	ExecutionLeaseRecoversAfterProcessDeath();

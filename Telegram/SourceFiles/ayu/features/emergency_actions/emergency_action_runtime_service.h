@@ -11,6 +11,9 @@
 
 namespace Ayu::EmergencyActions {
 
+struct EmergencyRuleAuthority;
+class EmergencyRuleTicket;
+
 enum class RuntimeServiceStatus : uint8_t {
 	NoEmergencyMatch,
 	Rejected,
@@ -41,10 +44,20 @@ using LiveInstallationReader = std::function<
 	std::optional<LiveInstallation>()>;
 using RemoteSessionProvider = std::function<std::unique_ptr<RemoteSessionEffect>(
 	const EmergencyActionJournal&)>;
+// Call admission synchronously while the authenticated authority is current.
+using WithCurrentEmergencyAuthority = std::function<bool(
+	const EmergencyRuleAuthority&,
+	const std::function<void()>&)>;
 
-// It accepts only verified fixed-size credentials and the lock-screen token.
 class EmergencyActionRuntimeService final {
 public:
+	EmergencyActionRuntimeService(
+		LiveInstallationReader readLiveInstallation,
+		JournalStore &store,
+		RemoteSessionProvider provideRemote,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		const CoordinatorClock &clock);
 	EmergencyActionRuntimeService(
 		const RuleConfiguration &configuration,
 		LiveInstallationReader readLiveInstallation,
@@ -65,9 +78,19 @@ public:
 	[[nodiscard]] RuntimeServiceReport Submit(
 		LockScreenSubmit,
 		const CredentialVerifier &verifiedCredential);
+	[[nodiscard]] RuntimeServiceReport SubmitVerified(
+		LockScreenSubmit,
+		const EmergencyRuleTicket &ticket,
+		const WithCurrentEmergencyAuthority &withCurrentAuthority);
 
 private:
-	const RuleConfiguration &_configuration;
+	[[nodiscard]] RuntimeServiceReport SubmitRule(
+		RuntimeServiceReport result,
+		const EmergencyRule &rule,
+		const OperationId &operationId,
+		const std::function<bool(const std::function<void()>&)> &admit);
+
+	const RuleConfiguration *_configuration = nullptr;
 	LiveInstallationReader _readLiveInstallation;
 	JournalStore &_store;
 	RemoteSessionEffect *_remote = nullptr;
@@ -75,6 +98,7 @@ private:
 	LocalAccountEffect &_local;
 	SafeDestinationEffect &_destination;
 	const CoordinatorClock &_clock;
+
 };
 
 } // namespace Ayu::EmergencyActions
