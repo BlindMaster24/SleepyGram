@@ -377,6 +377,13 @@ auto Domain::preparedScopedAdminMetadata() const
 	return _scopedProfile ? _scopedProfile->generation.adminMetadata() : nullptr;
 }
 
+auto Domain::preparedScopedAdminAccountIds() const
+-> const std::vector<ProfileSets::AccountId>* {
+	return preparedScopedAdminMetadata()
+		? &_scopedProfile->generation.adminAccountIds()
+		: nullptr;
+}
+
 QByteArray Domain::preparedScopedProfileTransactionId() const {
 	return _scopedProfile ? _scopedProfile->generation.transactionId() : QByteArray();
 }

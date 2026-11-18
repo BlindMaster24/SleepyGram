@@ -593,7 +593,7 @@ void RestoreTheme(const Window::Theme::Object &object) {
 } // namespace
 
 QByteArray HandleExternalControl(const QString &command) {
-	if (!IsAppLaunched()) {
+	if (!IsAppLaunched() || !App().legacyProfileAccessAllowed()) {
 		return Error(u"application is not launched"_q);
 	} else if (!AutomationEnabled()) {
 		if (App().passcodeLocked()) {

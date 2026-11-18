@@ -453,7 +453,11 @@ bool InitializeFromCache(
 }
 
 [[nodiscard]] std::optional<QByteArray> ReadEditingPalette() {
-	auto file = QFile(EditingPalettePath());
+	const auto path = EditingPalettePath();
+	if (path.isEmpty()) {
+		return std::nullopt;
+	}
+	auto file = QFile(path);
 	return file.open(QIODevice::ReadOnly)
 		? std::make_optional(file.readAll())
 		: std::nullopt;
@@ -525,7 +529,9 @@ void ClearApplying() {
 }
 
 void ClearEditingPalette() {
-	QFile(EditingPalettePath()).remove();
+	if (const auto path = EditingPalettePath(); !path.isEmpty()) {
+		QFile(path).remove();
+	}
 }
 
 } // namespace
@@ -1610,7 +1616,9 @@ rpl::producer<bool> IsThemeDarkValue() {
 }
 
 QString EditingPalettePath() {
-	return cWorkingDir() + "tdata/editing-theme.tdesktop-palette";
+	return Local::usesScopedSettings()
+		? QString()
+		: cWorkingDir() + "tdata/editing-theme.tdesktop-palette";
 }
 
 bool ReadPaletteValues(const QByteArray &content, Fn<bool(QLatin1String name, QLatin1String value)> callback) {

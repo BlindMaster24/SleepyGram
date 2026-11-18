@@ -51,6 +51,7 @@ enum class ProfileGenerationError : uchar {
 	ValidationFailed,
 	SettingsRejected,
 	PublicationUncertain,
+	PasswordInUse,
 };
 
 // A failed start must leave no live account; success returns its close action.
@@ -85,6 +86,9 @@ public:
 	[[nodiscard]] const Metadata *adminMetadata() const {
 		return _adminMetadata ? &*_adminMetadata : nullptr;
 	}
+	[[nodiscard]] const std::vector<AccountId> &adminAccountIds() const {
+		return _adminAccountIds;
+	}
 	[[nodiscard]] bool Start(
 		const MigrationController &sidecar,
 		StartProfileAccount startAccount,
@@ -114,7 +118,8 @@ private:
 		ProfileGenerationAccess access,
 		QByteArray transactionId,
 		std::optional<Metadata> adminMetadata = std::nullopt,
-		QByteArray settingsKey = {});
+		QByteArray settingsKey = {},
+		std::vector<AccountId> adminAccountIds = {});
 
 	AccountStoragePlan _plan;
 	ProfileGenerationAccess _access;
@@ -122,6 +127,7 @@ private:
 	QByteArray _settingsKey;
 	std::vector<Fn<void()>> _closeAdapters;
 	std::optional<Metadata> _adminMetadata;
+	std::vector<AccountId> _adminAccountIds;
 	bool _started = false;
 	bool _closed = false;
 
@@ -147,6 +153,34 @@ void AuthenticateScopedProfilePasscode(
 	MigrationController sidecar,
 	QString passcode,
 	ProfilePasswordDone done);
+
+enum class ProfileSetChangeKind : uchar {
+	Add,
+	Edit,
+	Remove,
+};
+
+struct ProfileSetChange final {
+	ProfileSetChangeKind kind = ProfileSetChangeKind::Edit;
+	std::optional<SetId> id;
+	QString name;
+	std::vector<AccountId> accounts;
+};
+
+void SaveProfileSetChange(
+	MigrationController sidecar,
+	QByteArray expectedTransactionId,
+	ProfileSetChange change,
+	QString masterPasscode,
+	QString setPasscode,
+	Fn<void(ProfileGenerationError)> done);
+
+[[nodiscard]] ProfileGenerationError CommitProfileSetChange(
+	const MigrationController &sidecar,
+	const QByteArray &expectedTransactionId,
+	const ProfileSetChange &change,
+	DerivedCredential admin,
+	std::optional<DerivedCredential> replacement);
 
 [[nodiscard]] std::optional<QByteArray> CommitProfileSetChanges(
 	const MigrationController &sidecar,

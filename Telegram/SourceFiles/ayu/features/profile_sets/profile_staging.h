@@ -2,6 +2,7 @@
 #pragma once
 
 #include "ayu/features/profile_sets/profile_account_storage.h"
+#include "ayu/features/profile_sets/legacy_retirement.h"
 
 #include <span>
 
@@ -22,6 +23,7 @@ enum class ProfileStagingResult {
 	UnsupportedAccountData,
 	AccountStageFailed,
 	ArchiveStageFailed,
+	RetirementVerificationFailed,
 };
 
 // The caller keeps the original profile and scoped workspace closed to writers.
@@ -30,6 +32,8 @@ enum class ProfileStagingResult {
 	const QString &dataDirectory,
 	const QString &dataName,
 	const QByteArray &legacyPasscode,
-	std::span<const ProfileStagingAccount> accounts);
+	std::span<const ProfileStagingAccount> accounts,
+	const QByteArray &transactionId = {},
+	LegacyRetirementPlan *retirement = nullptr);
 
 } // namespace Ayu::ProfileSets

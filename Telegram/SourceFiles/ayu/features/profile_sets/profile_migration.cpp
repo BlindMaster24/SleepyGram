@@ -22,6 +22,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QSaveFile>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QStringList>
+#include <QtCore/QtEndian>
 
 #include <algorithm>
 #include <cstdio>
@@ -58,6 +59,8 @@ constexpr auto kCutoverProfileMarker
 constexpr auto kAccountsDirectoryName = "accounts";
 constexpr auto kSettingsDirectoryName = "set-settings";
 constexpr auto kWorkspaceLockName = "migration.lock";
+constexpr auto kSetupDraftName = "profile-setup.bin";
+constexpr auto kSetupDraftMagic = "SGPD1";
 constexpr auto kPendingManifestName = "migration.manifest.pending";
 constexpr auto kCommittedManifestName = "migration.manifest.committed";
 constexpr auto kStageDirectoryName = "stage";
@@ -110,18 +113,17 @@ QString ArtifactName(MigrationArtifact artifact) {
 		return u"profile-vault"_q;
 	case MigrationArtifact::AccountKeyring:
 		return u"account-keyring"_q;
+	case MigrationArtifact::LegacyRetirement:
+		return u"legacy-retirement"_q;
+	case MigrationArtifact::EmergencyRules:
+		return u"emergency-rules"_q;
 	}
 	return QString();
 }
 
 QString ArtifactFileName(MigrationArtifact artifact) {
-	switch (artifact) {
-	case MigrationArtifact::ProfileVault:
-		return u"profile-vault.bin"_q;
-	case MigrationArtifact::AccountKeyring:
-		return u"account-keyring.bin"_q;
-	}
-	return QString();
+	const auto name = ArtifactName(artifact);
+	return name.isEmpty() ? QString() : name + u".bin"_q;
 }
 
 std::optional<MigrationArtifact> ParseArtifactName(const QString &name) {
@@ -129,6 +131,10 @@ std::optional<MigrationArtifact> ParseArtifactName(const QString &name) {
 		return MigrationArtifact::ProfileVault;
 	} else if (name == u"account-keyring") {
 		return MigrationArtifact::AccountKeyring;
+	} else if (name == u"legacy-retirement") {
+		return MigrationArtifact::LegacyRetirement;
+	} else if (name == u"emergency-rules") {
+		return MigrationArtifact::EmergencyRules;
 	}
 	return std::nullopt;
 }
@@ -255,7 +261,7 @@ bool ParseManifest(
 		return false;
 	}
 	const auto array = object.value(u"entries"_q).toArray();
-	if (array.size() != 2) {
+	if (array.size() < 2 || array.size() > 4) {
 		return false;
 	}
 	auto parsed = Manifest{ .version = int(version), .transactionId = id };
@@ -291,7 +297,10 @@ bool ParseManifest(
 		});
 		totalSize += quint64(sizeNumber);
 	}
-	if (totalSize > kMaximumSidecarSize) {
+	if (!seen.contains(MigrationArtifact::ProfileVault)
+		|| !seen.contains(MigrationArtifact::AccountKeyring)) {
+		return false;
+	} else if (totalSize > kMaximumSidecarSize) {
 		SetError(error, MigrationError::TooLarge);
 		return false;
 	}
@@ -496,6 +505,7 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 		allowed.emplace(QString::fromLatin1(kAccountsDirectoryName));
 		allowed.emplace(QString::fromLatin1(kSettingsDirectoryName));
 		allowed.emplace(QString::fromLatin1(kCutoverDirectoryName));
+		allowed.emplace(QString::fromLatin1(kSetupDraftName));
 	}
 	for (const auto &entry : entries) {
 		if (entry.isSymLink() || entry.isJunction()
@@ -506,7 +516,7 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 	return true;
 }
 
-bool ValidateArtifactFiles(const QString &directory) {
+bool ValidateArtifactFiles(const QString &directory, const Manifest &manifest) {
 	if (CanonicalDirectory(directory) != directory) {
 		return false;
 	}
@@ -520,10 +530,10 @@ bool ValidateArtifactFiles(const QString &directory) {
 		names.push_back(entry.fileName());
 	}
 	std::sort(names.begin(), names.end());
-	auto expected = QStringList{
-		ArtifactFileName(MigrationArtifact::AccountKeyring),
-		ArtifactFileName(MigrationArtifact::ProfileVault),
-	};
+	auto expected = QStringList();
+	for (const auto &entry : manifest.entries) {
+		expected.push_back(ArtifactFileName(entry.artifact));
+	}
 	std::sort(expected.begin(), expected.end());
 	if (names != expected) {
 		return false;
@@ -540,9 +550,11 @@ std::unique_ptr<QLockFile> LockWorkspace(const QString &root) {
 std::optional<Manifest> PrepareManifest(
 		const std::vector<MigrationInput> &inputs,
 		int version,
+		QByteArray transactionId,
 		MigrationError *error) {
 	SetError(error, MigrationError::InvalidInput);
-	if (inputs.size() != 2) {
+	if (inputs.size() < 2 || inputs.size() > 4
+		|| (!transactionId.isEmpty() && transactionId.size() != kTransactionIdSize)) {
 		return std::nullopt;
 	}
 	auto manifest = Manifest{ .version = version };
@@ -562,7 +574,9 @@ std::optional<Manifest> PrepareManifest(
 			.digest = Digest(input.encryptedBytes),
 		});
 	}
-	if (total > kMaximumSidecarSize) {
+	if (!artifacts.contains(MigrationArtifact::ProfileVault)
+		|| !artifacts.contains(MigrationArtifact::AccountKeyring)
+		|| total > kMaximumSidecarSize) {
 		return std::nullopt;
 	}
 	std::sort(manifest.entries.begin(), manifest.entries.end(), [](
@@ -570,10 +584,10 @@ std::optional<Manifest> PrepareManifest(
 			const Entry &b) {
 		return a.artifact < b.artifact;
 	});
-	manifest.transactionId = QByteArray(kTransactionIdSize, Qt::Uninitialized);
-	if (RAND_bytes(
-		reinterpret_cast<unsigned char*>(manifest.transactionId.data()),
-		int(manifest.transactionId.size())) != 1) {
+	manifest.transactionId = transactionId.isEmpty()
+		? MigrationController::NewTransactionId()
+		: std::move(transactionId);
+	if (manifest.transactionId.isEmpty()) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return std::nullopt;
 	}
@@ -602,7 +616,7 @@ std::optional<CommittedMigration> ReadArtifacts(
 		const Manifest &manifest,
 		MigrationError *error) {
 	const auto directory = ArtifactsDirectory(root, manifest);
-	if (!ValidateArtifactFiles(directory)) {
+	if (!ValidateArtifactFiles(directory, manifest)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -622,6 +636,10 @@ std::optional<CommittedMigration> ReadArtifacts(
 			result.profileVault = std::move(*bytes);
 		} else if (entry.artifact == MigrationArtifact::AccountKeyring) {
 			result.accountKeyring = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::LegacyRetirement) {
+			result.legacyRetirement = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::EmergencyRules) {
+			result.emergencyRules = std::move(*bytes);
 		} else {
 			SetError(error, MigrationError::InvalidManifest);
 			return std::nullopt;
@@ -686,11 +704,12 @@ bool RemoveGenerationDirectory(const QString &directory) {
 	const auto entries = QDir(directory).entryInfoList(
 		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
 	for (const auto &entry : entries) {
+		const auto name = entry.fileName();
+		const auto artifact = name.endsWith(u".bin"_q)
+			? ParseArtifactName(name.chopped(4))
+			: std::nullopt;
 		if (entry.isSymLink() || entry.isJunction() || !entry.isFile()
-			|| (entry.fileName()
-					!= ArtifactFileName(MigrationArtifact::ProfileVault)
-				&& entry.fileName()
-					!= ArtifactFileName(MigrationArtifact::AccountKeyring))) {
+			|| !artifact || name != ArtifactFileName(*artifact)) {
 			return false;
 		}
 	}
@@ -918,7 +937,8 @@ MigrationController::OpenIsolatedFixtureWorkspace(
 
 bool MigrationController::Stage(
 		const std::vector<MigrationInput> &inputs,
-		MigrationError *error) const {
+		MigrationError *error,
+		QByteArray transactionId) const {
 	SetError(error, MigrationError::UnsafeWorkspace);
 	if (!validateWorkspace()) {
 		return false;
@@ -952,7 +972,8 @@ bool MigrationController::Stage(
 			return false;
 		}
 	}
-	const auto manifest = PrepareManifest(inputs, kStageManifestVersion, error);
+	const auto manifest = PrepareManifest(
+		inputs, kStageManifestVersion, std::move(transactionId), error);
 	if (!manifest) {
 		return false;
 	}
@@ -1015,7 +1036,8 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		const QByteArray &expectedTransactionId,
 		const std::vector<MigrationInput> &inputs,
 		const Verifier &verify,
-		MigrationError *error) const {
+		MigrationError *error,
+		QByteArray transactionId) const {
 	if (!verify) {
 		SetError(error, MigrationError::VerificationRequired);
 		return std::nullopt;
@@ -1048,6 +1070,7 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 	const auto manifest = PrepareManifest(
 		inputs,
 		kGenerationManifestVersion,
+		std::move(transactionId),
 		error);
 	if (!manifest) {
 		return std::nullopt;
@@ -1157,8 +1180,10 @@ bool MigrationController::RetireInactiveGenerations(
 	if (active->version == kGenerationManifestVersion) {
 		const auto stage = ManifestPath(_root, kStageDirectoryName);
 		const auto pending = ManifestPath(_root, kPendingManifestName);
+		const auto draft = ManifestPath(_root, kSetupDraftName);
 		if (!RemoveGenerationDirectory(stage)
 			|| (PathPresent(pending) && !QFile::remove(pending))
+			|| (!isIsolatedFixture() && PathPresent(draft) && !QFile::remove(draft))
 			|| !SyncDirectory(_root)) {
 			SetError(error, MigrationError::RetirementFailed);
 			return false;
@@ -1216,6 +1241,8 @@ std::optional<CommittedMigration> MigrationController::commit(
 	if (!pending || !checked || checked->transactionId != staged->transactionId
 		|| checked->profileVault != staged->profileVault
 		|| checked->accountKeyring != staged->accountKeyring
+		|| checked->legacyRetirement != staged->legacyRetirement
+		|| checked->emergencyRules != staged->emergencyRules
 		|| PathPresent(activePath)
 		|| (profile && ReadProfilePhase(_root) != phase)
 		|| pending != ReadBounded(pendingPath, kMaximumManifestSize)) {
@@ -1302,6 +1329,81 @@ std::optional<CommittedMigration> MigrationController::LoadCommitted(
 	return readManifest(kCommittedManifestName, error);
 }
 
+std::optional<CommittedMigration> MigrationController::LoadStaged(
+		MigrationError *error) const {
+	if (isIsolatedFixture() || !validateWorkspace()
+		|| PathPresent(ManifestPath(_root, kCommittedManifestName))) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
+	}
+	const auto phase = ReadProfilePhase(_root);
+	auto staged = readManifest(kPendingManifestName, error);
+	if (!phase || !staged
+		|| phase->phase == ProfilePhase::LegacyFormat
+		|| (phase->phase == ProfilePhase::CutoverStarted
+			&& phase->initialTransactionId != staged->transactionId)) {
+		return std::nullopt;
+	}
+	return staged;
+}
+
+bool MigrationController::StoreSetupDraft(const CommittedMigration &draft) const {
+	const auto vaultSize = draft.profileVault.size();
+	const auto keyringSize = draft.accountKeyring.size();
+	if (draft.transactionId.size() != kTransactionIdSize
+		|| vaultSize <= 0 || vaultSize > kMaximumArtifactSize
+		|| keyringSize <= 0 || keyringSize > kMaximumArtifactSize
+		|| vaultSize + keyringSize > kMaximumSidecarSize
+		|| !draft.legacyRetirement.isEmpty() || !draft.emergencyRules.isEmpty()) {
+		return false;
+	}
+	return WithPreparingWorkspace([&] {
+		const auto path = ManifestPath(_root, kSetupDraftName);
+		if (PathPresent(path)) {
+			return false;
+		}
+		auto data = QByteArray(kSetupDraftMagic) + draft.transactionId;
+		auto size = qToBigEndian(quint32(vaultSize));
+		data.append(reinterpret_cast<const char*>(&size), sizeof(size));
+		data.append(draft.profileVault);
+		data.append(draft.accountKeyring);
+		return WriteAtomic(path, data) && SyncDirectory(_root);
+	});
+}
+
+std::optional<CommittedMigration> MigrationController::LoadSetupDraft() const {
+	if (isIsolatedFixture() || !validateWorkspace()
+		|| PathPresent(ManifestPath(_root, kCommittedManifestName))) {
+		return std::nullopt;
+	}
+	const auto magic = QByteArrayView(kSetupDraftMagic);
+	const auto boundary = magic.size() + kTransactionIdSize;
+	const auto payload = boundary + qsizetype(sizeof(quint32));
+	const auto data = ReadBounded(
+		ManifestPath(_root, kSetupDraftName), kMaximumSidecarSize + payload);
+	if (!data || data->size() <= payload || !data->startsWith(magic)) {
+		return std::nullopt;
+	}
+	const auto vault = qsizetype(qFromBigEndian<quint32>(data->constData() + boundary));
+	const auto keyring = data->size() - payload - vault;
+	if (vault <= 0 || vault > kMaximumArtifactSize
+		|| keyring <= 0 || keyring > kMaximumArtifactSize) {
+		return std::nullopt;
+	}
+	return CommittedMigration{
+		.transactionId = data->mid(magic.size(), kTransactionIdSize),
+		.profileVault = data->mid(payload, vault),
+		.accountKeyring = data->right(keyring),
+	};
+}
+
+QByteArray MigrationController::NewTransactionId() {
+	auto id = QByteArray(kTransactionIdSize, Qt::Uninitialized);
+	return (RAND_bytes(reinterpret_cast<unsigned char*>(id.data()), int(id.size())) == 1)
+		? id
+		: QByteArray();
+}
+
 bool MigrationController::WithCurrentGeneration(
 		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
@@ -1352,6 +1454,29 @@ bool MigrationController::WithPreparingWorkspace(
 	const auto result = callback();
 	SetError(error, result ? MigrationError::None : MigrationError::CallbackFailed);
 	return result;
+}
+
+bool MigrationController::WithStagedSetup(
+		const QByteArray &expectedTransactionId,
+		const std::function<bool()> &callback,
+		MigrationError *error) const {
+	if (!callback || !validateWorkspace()) {
+		SetError(error, MigrationError::UnsafeWorkspace);
+		return false;
+	}
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return false;
+	}
+	const auto staged = LoadStaged(error);
+	if (!staged || staged->transactionId != expectedTransactionId) {
+		SetError(error, MigrationError::StaleGeneration);
+		return false;
+	}
+	const auto ok = callback();
+	SetError(error, ok ? MigrationError::None : MigrationError::CallbackFailed);
+	return ok;
 }
 
 std::optional<QString> MigrationController::PrepareScopedSettingsDirectory(

@@ -631,6 +631,19 @@ void BuildSecuritySection(
 			},
 			.keywords = { u"passcode"_q, u"lock"_q, u"pin"_q },
 		});
+		builder.addButton({
+			.id = u"security/double_bottom"_q,
+			.title = rpl::single(u"Double Bottom"_q),
+			.icon = { &st::menuIconLock },
+			.onClick = [=] {
+				controller->show(Ui::MakeConfirmBox({
+					.text = u"Double Bottom protects your accounts with passcodes for separate sets. SleepyGram will restart to open setup."_q,
+					.confirmed = [] { Core::App().beginProfileSetup(); },
+					.confirmText = u"Continue"_q,
+				}));
+			},
+			.keywords = { u"double bottom"_q, u"profiles"_q, u"sets"_q },
+		});
 	}
 
 	if (session->passkeys().possible()) {

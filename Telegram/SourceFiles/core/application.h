@@ -325,6 +325,7 @@ public:
 	[[nodiscard]] bool downloadPreventsQuit();
 	void checkLocalTime();
 	void lockByPasscode();
+	void beginProfileSetup();
 	void maybeLockByPasscode();
 	void unlockPasscode();
 	[[nodiscard]] bool legacyProfileAccessAllowed() const;
@@ -383,12 +384,14 @@ private:
 
 	friend bool IsAppLaunched();
 	friend Application &App();
+	friend void Quit(QuitReason reason);
 
 	void autoRegisterUrlScheme();
 	void clearEmojiSourceImages();
 	[[nodiscard]] auto prepareEmojiSourceImages()
 		-> std::shared_ptr<Ui::Emoji::UniversalImages>;
 	void initializeDesktop();
+	void showScopedProfileLock();
 	[[nodiscard]] bool startScopedDesktop(
 		const Ayu::ProfileSets::MigrationController &sidecar);
 	void runDesktop(
@@ -432,6 +435,7 @@ private:
 	static Application *Instance;
 	const Ayu::ProfileSets::ProfileStartupMode _profileStartupMode;
 	bool _desktopInitialized = false;
+	bool _profileSetupPostponed = false;
 	bool _localStorageStarted = false;
 	bool _scopedDesktopUnlocked = false;
 	struct InstanceSetter {

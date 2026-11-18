@@ -446,7 +446,10 @@ void System::setManager(Fn<std::unique_ptr<Manager>()> create) {
 		}
 	});
 
-	if ((Core::App().settings().nativeNotifications()
+	const auto nativeAllowed = !Platform::IsWindows()
+		|| Core::App().legacyProfileAccessAllowed();
+	if (nativeAllowed
+		&& (Core::App().settings().nativeNotifications()
 				|| nativeEnforced())
 			&& Platform::Notifications::Supported()) {
 		if (_manager->type() == ManagerType::Native) {
@@ -459,7 +462,7 @@ void System::setManager(Fn<std::unique_ptr<Manager>()> create) {
 		}
 	}
 
-	if (nativeEnforced()) {
+	if (nativeAllowed && nativeEnforced()) {
 		if (_manager->type() != ManagerType::Dummy) {
 			_manager = std::make_unique<DummyManager>(this);
 		}

@@ -7,6 +7,7 @@
 #include "storage/storage_domain.h"
 
 #include <QtCore/QDir>
+#include <QtCore/QFileInfo>
 #include <openssl/crypto.h>
 
 #include <array>
@@ -21,7 +22,9 @@ ProfileStagingResult StageWhilePreparing(
 		const QString &dataDirectory,
 		const QString &dataName,
 		const QByteArray &legacyPasscode,
-		std::span<const ProfileStagingAccount> accounts) {
+		std::span<const ProfileStagingAccount> accounts,
+		const QByteArray &transactionId,
+		LegacyRetirementPlan *retirement) {
 	using Result = ProfileStagingResult;
 	const auto root = QDir::cleanPath(dataDirectory);
 	if (workspace.accountStorageRoot() != root + u"/profile-sets/accounts"_q) {
@@ -66,25 +69,50 @@ ProfileStagingResult StageWhilePreparing(
 			.key = keys[i],
 		});
 	}
+	auto verifiedAccounts = std::vector<VerifiedLegacyRetirementAccount>();
 	for (const auto &account : accounts) {
 		const auto source = Storage::AccountPathsForDataName(root,
 			Storage::AccountDataName(dataName, account.slot));
+		auto files = Storage::VerifiedLegacyAccountFiles();
 		const auto stage = StageProfileAccount(
 			workspace, source, legacy->localKey, account.userId,
-			account.key, account.locator);
+			account.key, account.locator, retirement ? &files : nullptr);
 		if (stage != Storage::AccountMigrationResult::Success) {
 			return (stage == Storage::AccountMigrationResult::UnsupportedData)
 				? Result::UnsupportedAccountData
 				: Result::AccountStageFailed;
 		}
+		if (retirement) {
+			verifiedAccounts.push_back({
+				.index = account.slot,
+				.paths = source,
+				.dataFiles = std::move(files.dataFiles),
+				.tgwFiles = std::move(files.tgwFiles),
+				.cacheDirectories = std::move(files.cacheDirectories),
+				.cacheFiles = std::move(files.cacheFiles),
+			});
+		}
 	}
 	const auto utf8 = root.toUtf8();
 	const auto path = std::filesystem::path(std::u8string(
 		reinterpret_cast<const char8_t*>(utf8.constData()), utf8.size()));
-	return (AyuDatabase::StageLegacyArchivePartitions(path, archives)
-		== ArchivePartitionResult::Success)
-		? Result::Success
-		: Result::ArchiveStageFailed;
+	if (AyuDatabase::StageLegacyArchivePartitions(path, archives)
+		!= ArchivePartitionResult::Success) {
+		return Result::ArchiveStageFailed;
+	}
+	if (retirement) {
+		const auto archive = QFileInfo::exists(root + u"/ayudata.db"_q)
+			? LegacyArchiveRetirement::VerifiedPartitioned
+			: LegacyArchiveRetirement::ExpectedAbsent;
+		auto captured = CaptureLegacyRetirementPlan(
+			root, dataName, transactionId, legacy->accountIndices,
+			verifiedAccounts, archive);
+		if (!captured) {
+			return Result::RetirementVerificationFailed;
+		}
+		*retirement = std::move(*captured);
+	}
+	return Result::Success;
 }
 
 } // namespace
@@ -94,13 +122,19 @@ ProfileStagingResult StageScopedProfileData(
 		const QString &dataDirectory,
 		const QString &dataName,
 		const QByteArray &legacyPasscode,
-		std::span<const ProfileStagingAccount> accounts) {
+		std::span<const ProfileStagingAccount> accounts,
+		const QByteArray &transactionId,
+		LegacyRetirementPlan *retirement) {
 	auto staged = ProfileStagingResult::InvalidWorkspace;
-	const auto ran = workspace.WithPreparingWorkspace([&] {
+	const auto verify = [&] {
 		staged = StageWhilePreparing(
-			workspace, dataDirectory, dataName, legacyPasscode, accounts);
+			workspace, dataDirectory, dataName, legacyPasscode, accounts,
+			transactionId, retirement);
 		return staged == ProfileStagingResult::Success;
-	});
+	};
+	const auto ran = (!transactionId.isEmpty() && workspace.LoadStaged())
+		? workspace.WithStagedSetup(transactionId, verify)
+		: workspace.WithPreparingWorkspace(verify);
 	return ran ? ProfileStagingResult::Success : staged;
 }
 

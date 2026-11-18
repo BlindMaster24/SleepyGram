@@ -169,12 +169,14 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 		ProfileGenerationAccess access,
 		QByteArray transactionId,
 		std::optional<Metadata> adminMetadata,
-		QByteArray settingsKey)
+		QByteArray settingsKey,
+		std::vector<AccountId> adminAccountIds)
 : _plan(std::move(plan))
 , _access(access)
 , _transactionId(std::move(transactionId))
 , _settingsKey(std::move(settingsKey))
-, _adminMetadata(std::move(adminMetadata)) {
+, _adminMetadata(std::move(adminMetadata))
+, _adminAccountIds(std::move(adminAccountIds)) {
 }
 
 OpenedProfileGeneration::OpenedProfileGeneration(
@@ -185,6 +187,7 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 , _settingsKey(std::move(other._settingsKey))
 , _closeAdapters(std::move(other._closeAdapters))
 , _adminMetadata(std::move(other._adminMetadata))
+, _adminAccountIds(std::move(other._adminAccountIds))
 , _started(other._started)
 , _closed(std::exchange(other._closed, true)) {
 }
@@ -200,6 +203,7 @@ void OpenedProfileGeneration::Close() {
 	CloseAdapters(_closeAdapters);
 	_plan.Clear();
 	_adminMetadata.reset();
+	_adminAccountIds.clear();
 	OPENSSL_cleanse(_settingsKey.data(), _settingsKey.size());
 	_settingsKey.clear();
 	_closed = true;
@@ -387,12 +391,19 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 				return std::nullopt;
 			}
 		}
+		auto ids = std::vector<AccountId>();
+		ids.reserve(admin->accounts.size());
+		for (const auto &account : admin->accounts) {
+			ids.push_back(account.id);
+		}
 		SetError(error, ProfileGenerationError::None);
 		return OpenedProfileGeneration(
 			AccountStoragePlan(),
 			{ .role = ProfileGenerationRole::Master },
 			committed->transactionId,
-			std::move(admin->metadata));
+			std::move(admin->metadata),
+			{},
+			std::move(ids));
 	}
 	auto &set = std::get<SetVaultAccess>(access);
 	const auto route = ProfileGenerationAccess{
@@ -426,6 +437,90 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 		std::nullopt, std::move(set.settingsKey));
 }
 
+ProfileGenerationError CommitProfileSetChange(
+		const MigrationController &sidecar,
+		const QByteArray &expectedTransactionId,
+		const ProfileSetChange &change,
+		DerivedCredential admin,
+		std::optional<DerivedCredential> replacement) {
+	using Error = ProfileGenerationError;
+	using Kind = ProfileSetChangeKind;
+	auto adminWiper = CredentialWiper{ admin };
+	const auto replacementWiper = gsl::finally([&] {
+		if (replacement) {
+			CleanseCredential(*replacement);
+		}
+	});
+	const auto current = !sidecar.isIsolatedFixture()
+		? sidecar.LoadCommitted()
+		: std::nullopt;
+	if (!current) {
+		return Error::InvalidSidecar;
+	} else if (current->transactionId != expectedTransactionId) {
+		return Error::StaleGeneration;
+	}
+	const auto vault = ParseProfileVault(current->profileVault);
+	if (!vault || vault->version != kProfileVaultVersion) {
+		return Error::InvalidVault;
+	} else if (!admin.valid() || !EqualKey(admin.verifier, vault->adminVerifier)) {
+		return Error::WrongPassword;
+	}
+	auto opened = OpenProfileVault(*vault, admin);
+	auto accessWiper = AccessWiper{ opened };
+	const auto master = std::get_if<AdminVaultAccess>(&opened);
+	if (!master) {
+		return Error::InvalidVault;
+	}
+
+	auto &metadata = master->metadata;
+	auto i = std::ranges::find(
+		metadata.sets,
+		change.id.value_or(SetId()),
+		&AccountSet::id);
+	auto replacements = std::vector<SetGrantCredential>();
+	if (change.kind == Kind::Remove) {
+		if (i == end(metadata.sets) || replacement
+			|| !change.name.isEmpty() || !change.accounts.empty()) {
+			return Error::SettingsRejected;
+		}
+		metadata.sets.erase(i);
+	} else {
+		const auto adding = (change.kind == Kind::Add);
+		if ((adding && (change.id || !replacement))
+			|| (!adding && (change.kind != Kind::Edit || i == end(metadata.sets)))) {
+			return Error::SettingsRejected;
+		} else if (replacement
+			&& !std::holds_alternative<WrongPassword>(RoutePasswordVerifier(
+				metadata,
+				replacement->verifier))) {
+			return Error::PasswordInUse;
+		}
+		if (adding) {
+			i = metadata.sets.insert(end(metadata.sets), AccountSet{
+				.id = NewSetId(),
+			});
+		}
+		i->name = change.name.trimmed();
+		i->accounts = change.accounts;
+		if (replacement) {
+			i->verifier = replacement->verifier;
+			replacements.push_back({
+				.id = i->id,
+				.credential = std::move(*replacement),
+			});
+		}
+	}
+	auto error = Error::None;
+	const auto saved = CommitProfileSetChanges(
+		sidecar,
+		expectedTransactionId,
+		std::move(admin),
+		metadata,
+		std::move(replacements),
+		&error);
+	return saved ? Error::None : error;
+}
+
 std::optional<QByteArray> CommitProfileSetChanges(
 		const MigrationController &sidecar,
 		const QByteArray &expectedTransactionId,
@@ -445,6 +540,10 @@ std::optional<QByteArray> CommitProfileSetChanges(
 		return std::nullopt;
 	} else if (current->transactionId != expectedTransactionId) {
 		SetError(error, ProfileGenerationError::StaleGeneration);
+		return std::nullopt;
+	} else if (!current->emergencyRules.isEmpty()
+		|| !current->legacyRetirement.isEmpty()) {
+		SetError(error, ProfileGenerationError::SettingsRejected);
 		return std::nullopt;
 	}
 	const auto vault = ParseProfileVault(current->profileVault);

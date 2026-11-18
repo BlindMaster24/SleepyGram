@@ -683,6 +683,10 @@ void StartEditor(
 		not_null<Window::Controller*> window,
 		const Data::CloudTheme &cloud) {
 	const auto path = EditingPalettePath();
+	if (path.isEmpty()) {
+		window->show(Ui::MakeInformBox(tr::lng_theme_editor_error()));
+		return;
+	}
 	auto object = Local::ReadThemeContent();
 
 	const auto palette = object.content.isEmpty()

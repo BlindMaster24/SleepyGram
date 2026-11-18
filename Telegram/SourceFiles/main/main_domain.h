@@ -14,6 +14,7 @@ namespace Ayu::ProfileSets {
 class MigrationController;
 class OpenedProfileGeneration;
 struct Metadata;
+struct AccountId;
 struct ProfileGenerationAccess;
 enum class ProfileGenerationError : uchar;
 } // namespace Ayu::ProfileSets
@@ -67,6 +68,8 @@ public:
 		-> const Ayu::ProfileSets::ProfileGenerationAccess*;
 	[[nodiscard]] auto preparedScopedAdminMetadata() const
 		-> const Ayu::ProfileSets::Metadata*;
+	[[nodiscard]] auto preparedScopedAdminAccountIds() const
+		-> const std::vector<Ayu::ProfileSets::AccountId>*;
 	[[nodiscard]] QByteArray preparedScopedProfileTransactionId() const;
 	[[nodiscard]] std::shared_ptr<MTP::AuthKey> preparedScopedSettingsKey() const;
 	[[nodiscard]] int preparedScopedAccountCount() const;

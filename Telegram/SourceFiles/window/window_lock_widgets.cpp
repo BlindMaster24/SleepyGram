@@ -46,8 +46,27 @@ namespace Window {
 namespace {
 
 namespace ProfileSets = Ayu::ProfileSets;
+using SetChangeKind = ProfileSets::ProfileSetChangeKind;
+using GenerationError = ProfileSets::ProfileGenerationError;
 
 constexpr auto kSystemUnlockDelay = crl::time(1000);
+
+QString AccountLabel(ProfileSets::AccountId id) {
+	return u"Account %1%2"_q
+		.arg(qulonglong(id.high), 16, 16, u'0')
+		.arg(qulonglong(id.low), 16, 16, u'0');
+}
+
+QString TakeInput(QLineEdit &input) {
+	auto result = input.text();
+	input.setText(QString());
+	return result;
+}
+
+void ClearInput(QLineEdit &input) {
+	auto discarded = TakeInput(input);
+	discarded.fill(QChar(0));
+}
 
 class ScopedProfileLockWindow final : public PreLaunchWindow {
 public:
@@ -67,6 +86,12 @@ private:
 		std::optional<ProfileSets::OpenedProfileGeneration> generation,
 		ProfileSets::ProfileGenerationError error);
 	void showPreparedProfile();
+	void showSetList();
+	void beginSetChange(SetChangeKind kind);
+	void submitSetChange();
+	void setChangeDone(GenerationError error);
+	void setSubmitting(bool submitting);
+	void clearEditor();
 	void lockProfile();
 	void clearProfile();
 
@@ -76,8 +101,19 @@ private:
 	const not_null<PreLaunchLabel*> _status;
 	const not_null<PreLaunchInput*> _passcode;
 	const not_null<QListWidget*> _sets;
+	const not_null<QWidget*> _setActions;
+	const not_null<QWidget*> _editor;
+	const not_null<PreLaunchButton*> _editSet;
+	const not_null<PreLaunchButton*> _removeSet;
+	const not_null<PreLaunchInput*> _setName;
+	const not_null<QListWidget*> _accounts;
+	const not_null<PreLaunchInput*> _newPasscode;
+	const not_null<PreLaunchInput*> _confirmPasscode;
+	const not_null<PreLaunchButton*> _cancel;
 	const not_null<PreLaunchButton*> _unlock;
 	const not_null<PreLaunchButton*> _lock;
+	std::optional<SetChangeKind> _setChange;
+	std::optional<ProfileSets::SetId> _setId;
 	bool _checking = false;
 	bool _closing = false;
 
@@ -93,21 +129,64 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 , _status(new PreLaunchLabel(this))
 , _passcode(new PreLaunchInput(this, true))
 , _sets(new QListWidget(this))
+, _setActions(new QWidget(this))
+, _editor(new QWidget(this))
+, _editSet(new PreLaunchButton(this))
+, _removeSet(new PreLaunchButton(this))
+, _setName(new PreLaunchInput(this))
+, _accounts(new QListWidget(this))
+, _newPasscode(new PreLaunchInput(this, true))
+, _confirmPasscode(new PreLaunchInput(this, true))
+, _cancel(new PreLaunchButton(this, false))
 , _unlock(new PreLaunchButton(this))
 , _lock(new PreLaunchButton(this)) {
 	_status->setWordWrap(true);
-	_passcode->setAccessibleName(u"Passcode"_q);
-	_passcode->setInputMethodHints(
-		Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText);
-	_sets->setSelectionMode(QAbstractItemView::NoSelection);
+	_status->setTextFormat(Qt::PlainText);
+	for (const auto input : {
+		_passcode.get(),
+		_newPasscode.get(),
+		_confirmPasscode.get(),
+	}) {
+		input->setInputMethodHints(
+			Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText);
+		input->setMaxLength(1024);
+	}
+	_sets->setSelectionMode(QAbstractItemView::SingleSelection);
 	_sets->setAccessibleName(u"Sets"_q);
-	_unlock->setText(u"Unlock"_q);
+	_accounts->setSelectionMode(QAbstractItemView::SingleSelection);
+	_accounts->setAccessibleName(u"Accounts in this set"_q);
+	_setName->setAccessibleName(u"Set name"_q);
+	_setName->setPlaceholderText(u"Set name"_q);
+	_setName->setMaxLength(256);
+	_confirmPasscode->setAccessibleName(u"Confirm new set passcode"_q);
+	_confirmPasscode->setPlaceholderText(u"Confirm new set passcode"_q);
+	_cancel->setText(u"Cancel"_q);
 	_lock->setText(u"Lock"_q);
+	const auto addSet = new PreLaunchButton(this);
+	addSet->setText(u"Add set"_q);
+	_editSet->setText(u"Edit"_q);
+	_removeSet->setText(u"Remove"_q);
 	const auto close = new PreLaunchButton(this, false);
 	close->setText(u"Close"_q);
 
 	connect(_passcode.get(), &QLineEdit::returnPressed, this, [this] {
 		submit();
+	});
+	connect(_sets.get(), &QListWidget::currentRowChanged, this, [this](int row) {
+		_editSet->setEnabled(row >= 0);
+		_removeSet->setEnabled(row >= 0);
+	});
+	connect(addSet, &QPushButton::clicked, this, [this] {
+		beginSetChange(SetChangeKind::Add);
+	});
+	connect(_editSet.get(), &QPushButton::clicked, this, [this] {
+		beginSetChange(SetChangeKind::Edit);
+	});
+	connect(_removeSet.get(), &QPushButton::clicked, this, [this] {
+		beginSetChange(SetChangeKind::Remove);
+	});
+	connect(_cancel.get(), &QPushButton::clicked, this, [this] {
+		showSetList();
 	});
 	connect(_unlock.get(), &QPushButton::clicked, this, [this] { submit(); });
 	connect(_lock.get(), &QPushButton::clicked, this, [this] { lockProfile(); });
@@ -115,11 +194,25 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 
 	const auto layout = new QVBoxLayout(this);
 	layout->addWidget(_status.get());
-	layout->addWidget(_passcode.get());
 	layout->addWidget(_sets.get());
+	const auto setActions = new QHBoxLayout(_setActions.get());
+	setActions->setContentsMargins(0, 0, 0, 0);
+	setActions->addWidget(addSet);
+	setActions->addWidget(_editSet.get());
+	setActions->addWidget(_removeSet.get());
+	layout->addWidget(_setActions.get());
+	const auto editor = new QVBoxLayout(_editor.get());
+	editor->setContentsMargins(0, 0, 0, 0);
+	editor->addWidget(_setName.get());
+	editor->addWidget(_accounts.get());
+	editor->addWidget(_newPasscode.get());
+	editor->addWidget(_confirmPasscode.get());
+	layout->addWidget(_editor.get());
+	layout->addWidget(_passcode.get());
 	const auto actions = new QHBoxLayout();
 	actions->addStretch();
 	actions->addWidget(close);
+	actions->addWidget(_cancel.get());
 	actions->addWidget(_lock.get());
 	actions->addWidget(_unlock.get());
 	layout->addLayout(actions);
@@ -134,8 +227,14 @@ ScopedProfileLockWindow::~ScopedProfileLockWindow() {
 void ScopedProfileLockWindow::showForm(QString status) {
 	_status->setText(status);
 	_sets->hide();
+	_setActions->hide();
+	_editor->hide();
+	_cancel->hide();
 	_lock->hide();
+	_passcode->setAccessibleName(u"Passcode"_q);
+	_passcode->setPlaceholderText(QString());
 	_passcode->show();
+	_unlock->setText(u"Unlock"_q);
 	_unlock->show();
 	_passcode->setEnabled(true);
 	_unlock->setEnabled(true);
@@ -143,20 +242,23 @@ void ScopedProfileLockWindow::showForm(QString status) {
 }
 
 void ScopedProfileLockWindow::submit() {
-	if (_checking || _closing || Core::Quitting()
-		|| _domain->preparedScopedProfileAccess()) {
+	if (_checking || _closing || Core::Quitting()) {
+		return;
+	} else if (_setChange) {
+		submitSetChange();
+		return;
+	} else if (_domain->preparedScopedProfileAccess()) {
 		return;
 	}
 	if (_passcode->text().isEmpty()) {
 		showForm(u"Enter your passcode."_q);
 		return;
 	} else if (!passcodeCanTry()) {
-		_passcode->setText(QString());
+		ClearInput(*_passcode);
 		showForm(u"Too many tries. Please try again later."_q);
 		return;
 	}
-	auto passcode = _passcode->text();
-	_passcode->setText(QString());
+	auto passcode = TakeInput(*_passcode);
 	_checking = true;
 	_status->setText(u"Checking passcode…"_q);
 	_passcode->setEnabled(false);
@@ -202,12 +304,9 @@ void ScopedProfileLockWindow::showPreparedProfile() {
 	_passcode->hide();
 	_unlock->hide();
 	_lock->show();
-	if (const auto metadata = _domain->preparedScopedAdminMetadata()) {
-		_status->setText(metadata->sets.empty() ? u"No sets yet."_q : u"Sets"_q);
-		for (const auto &set : metadata->sets) {
-			_sets->addItem(set.name);
-		}
-		_sets->setVisible(!metadata->sets.empty());
+	if (_domain->preparedScopedAdminMetadata()) {
+		showSetList();
+		return;
 	} else if (_domain->preparedScopedAccountCount() == 0) {
 		_status->setText(u"This set has no accounts."_q);
 	} else if (_startSet(_sidecar)) {
@@ -221,13 +320,205 @@ void ScopedProfileLockWindow::showPreparedProfile() {
 	_lock->setFocus();
 }
 
+void ScopedProfileLockWindow::showSetList() {
+	const auto metadata = _domain->preparedScopedAdminMetadata();
+	if (!metadata || _checking || _closing) {
+		return;
+	}
+	clearEditor();
+	_status->setText(metadata->sets.empty() ? u"No sets yet."_q : u"Sets"_q);
+	_sets->clear();
+	for (const auto &set : metadata->sets) {
+		_sets->addItem(set.name);
+	}
+	_sets->setVisible(!metadata->sets.empty());
+	_sets->setCurrentRow(metadata->sets.empty() ? -1 : 0);
+	_editSet->setEnabled(!metadata->sets.empty());
+	_removeSet->setEnabled(!metadata->sets.empty());
+	_setActions->show();
+	_passcode->hide();
+	_unlock->hide();
+	_lock->show();
+	_lock->setFocus();
+}
+
+void ScopedProfileLockWindow::beginSetChange(SetChangeKind kind) {
+	const auto metadata = _domain->preparedScopedAdminMetadata();
+	const auto ids = _domain->preparedScopedAdminAccountIds();
+	if (!metadata || !ids || _checking || _closing) {
+		return;
+	}
+	const auto row = _sets->currentRow();
+	const auto adding = (kind == SetChangeKind::Add);
+	const auto removing = (kind == SetChangeKind::Remove);
+	const auto set = (row >= 0 && size_t(row) < metadata->sets.size())
+		? &metadata->sets[row]
+		: nullptr;
+	if (!adding && !set) {
+		return;
+	}
+	clearEditor();
+	_setChange = kind;
+	if (!adding) {
+		_setId = set->id;
+	}
+	if (removing) {
+		_status->setText(u"Remove “%1”?"_q.arg(set->name));
+	} else {
+		_status->setText(adding ? u"Add set"_q : u"Edit set"_q);
+		if (!adding) {
+			_setName->setText(set->name);
+		}
+		for (const auto id : *ids) {
+			const auto item = new QListWidgetItem(AccountLabel(id), _accounts.get());
+			item->setFlags(
+				Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsUserCheckable);
+			item->setCheckState(!adding && ranges::contains(set->accounts, id)
+				? Qt::Checked
+				: Qt::Unchecked);
+		}
+		const auto hint = adding
+			? u"Set passcode"_q
+			: u"New set passcode (leave blank to keep it)"_q;
+		_newPasscode->setAccessibleName(hint);
+		_newPasscode->setPlaceholderText(hint);
+		_editor->show();
+	}
+	_sets->hide();
+	_setActions->hide();
+	_passcode->setAccessibleName(u"Master passcode"_q);
+	_passcode->setPlaceholderText(u"Master passcode"_q);
+	_passcode->show();
+	_unlock->setText(removing ? u"Remove set"_q : u"Save"_q);
+	_unlock->show();
+	_cancel->show();
+	if (removing) {
+		_passcode->setFocus();
+	} else {
+		_setName->setFocus();
+	}
+}
+
+void ScopedProfileLockWindow::submitSetChange() {
+	const auto ids = _domain->preparedScopedAdminAccountIds();
+	if (!_setChange || !ids) {
+		return;
+	}
+	auto change = ProfileSets::ProfileSetChange{
+		.kind = *_setChange,
+		.id = _setId,
+	};
+	auto setPasscode = QString();
+	const auto wipe = gsl::finally([&] { setPasscode.fill(QChar(0)); });
+	if (change.kind != SetChangeKind::Remove) {
+		if (size_t(_accounts->count()) != ids->size()) {
+			clearProfile();
+			showForm(u"Local data changed. Enter your passcode again."_q);
+			return;
+		}
+		change.name = _setName->text().trimmed();
+		if (change.name.isEmpty()) {
+			_status->setText(u"Enter a set name."_q);
+			return;
+		}
+		for (auto row = 0; row != _accounts->count(); ++row) {
+			if (_accounts->item(row)->checkState() == Qt::Checked) {
+				change.accounts.push_back((*ids)[row]);
+			}
+		}
+		setPasscode = TakeInput(*_newPasscode);
+		auto confirm = TakeInput(*_confirmPasscode);
+		const auto matches = (setPasscode == confirm);
+		confirm.fill(QChar(0));
+		if (!matches) {
+			_status->setText(u"The set passcodes do not match."_q);
+			return;
+		} else if (change.kind == SetChangeKind::Add && setPasscode.isEmpty()) {
+			_status->setText(u"Enter a passcode for this set."_q);
+			return;
+		}
+	}
+	auto master = TakeInput(*_passcode);
+	if (master.isEmpty()) {
+		_status->setText(u"Enter the master passcode."_q);
+		return;
+	} else if (!passcodeCanTry()) {
+		master.fill(QChar(0));
+		_status->setText(u"Too many tries. Please try again later."_q);
+		return;
+	}
+	setSubmitting(true);
+	_status->setText(u"Saving changes…"_q);
+	const auto weak = QPointer<ScopedProfileLockWindow>(this);
+	ProfileSets::SaveProfileSetChange(
+		_sidecar,
+		_domain->preparedScopedProfileTransactionId(),
+		std::move(change),
+		std::move(master),
+		std::move(setPasscode),
+		[weak](GenerationError error) {
+			if (weak) {
+				weak->setChangeDone(error);
+			}
+		});
+}
+
+void ScopedProfileLockWindow::setChangeDone(GenerationError error) {
+	if (!_checking || _closing || Core::Quitting()) {
+		return;
+	}
+	setSubmitting(false);
+	if (error == GenerationError::WrongPassword) {
+		cSetPasscodeBadTries(cPasscodeBadTries() + 1);
+		cSetPasscodeLastTry(crl::now());
+		_status->setText(u"Wrong master passcode."_q);
+		_passcode->setFocus();
+	} else if (error == GenerationError::PasswordInUse) {
+		_status->setText(u"Choose a unique passcode."_q);
+		_newPasscode->setFocus();
+	} else if (error == GenerationError::SettingsRejected) {
+		_status->setText(u"The changes could not be saved."_q);
+	} else {
+		clearProfile();
+		if (error == GenerationError::None) {
+			cSetPasscodeBadTries(0);
+			showForm(u"Changes saved. Enter your passcode."_q);
+		} else if (error == GenerationError::StaleGeneration) {
+			showForm(u"Local data changed. Enter your passcode again."_q);
+		} else {
+			showForm(u"Local data could not be opened."_q);
+		}
+	}
+}
+
+void ScopedProfileLockWindow::setSubmitting(bool submitting) {
+	_checking = submitting;
+	_editor->setEnabled(!submitting);
+	_passcode->setEnabled(!submitting);
+	_unlock->setEnabled(!submitting);
+	_lock->setEnabled(!submitting);
+	_cancel->setEnabled(!submitting);
+}
+
+void ScopedProfileLockWindow::clearEditor() {
+	_setChange.reset();
+	_setId.reset();
+	_setName->setText(QString());
+	_accounts->clear();
+	ClearInput(*_newPasscode);
+	ClearInput(*_confirmPasscode);
+	ClearInput(*_passcode);
+	_editor->hide();
+	_cancel->hide();
+}
+
 void ScopedProfileLockWindow::lockProfile() {
 	clearProfile();
 	showForm(u"Enter your passcode."_q);
 }
 
 void ScopedProfileLockWindow::clearProfile() {
-	_passcode->setText(QString());
+	clearEditor();
 	_sets->clear();
 	_domain->clearPreparedScopedProfile();
 }

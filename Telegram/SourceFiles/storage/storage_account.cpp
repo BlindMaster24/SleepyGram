@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_encryption.h"
 #include "storage/storage_clear_legacy.h"
 #include "storage/cache/storage_cache_types.h"
+#include "storage/details/storage_cache_migration.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/details/storage_settings_scheme.h"
 #include "storage/serialize_common.h"
@@ -637,9 +638,9 @@ MigrationResult CompareMigrationRecords(
 		const AccountPaths &target,
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
-		bool write) {
-	if (!EmptyMigrationDirectory(source.databasePath)
-		|| !EmptyMigrationDirectory(source.tempPath)
+		bool write,
+		VerifiedLegacyAccountFiles *verifiedFiles = nullptr) {
+	if (!EmptyMigrationDirectory(source.tempPath)
 		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/tdld"_q)
 		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/webview"_q)) {
 		return MigrationResult::UnsupportedData;
@@ -695,16 +696,6 @@ MigrationResult CompareMigrationRecords(
 		? QStringList{ u"data"_q }
 		: QStringList{ u"auths"_q, u"data"_q };
 	if (!write && entries.contains(u"user"_q)) {
-		const auto user = root + u"/user"_q;
-		const auto archive = QFileInfo(user + u"/archive.db"_q);
-		if (!CanonicalMigrationDirectory(user)
-			|| QDir(user).entryList(kMigrationEntries) != QStringList{ u"archive.db"_q }
-			|| !archive.isFile()
-			|| archive.isSymLink()
-			|| archive.isJunction()
-			|| !archive.size()) {
-			return MigrationResult::VerificationFailed;
-		}
 		expectedEntries.push_back(u"user"_q);
 	}
 	const auto dataMatches = write
@@ -714,6 +705,19 @@ MigrationResult CompareMigrationRecords(
 		|| !dataMatches
 		|| entries != expectedEntries) {
 		return MigrationResult::VerificationFailed;
+	}
+	auto cacheFiles = CacheMigrationInventory();
+	const auto cache = CompareAccountCachesForMigration(
+		source.databasePath,
+		target.databasePath,
+		EncryptionKey(bytes::make_vector(sourceKey->data())),
+		EncryptionKey(bytes::make_vector(targetKey->data())),
+		write,
+		verifiedFiles ? &cacheFiles : nullptr);
+	if (cache != CacheMigrationResult::Success) {
+		return (cache == CacheMigrationResult::UnsupportedSource)
+			? MigrationResult::UnsupportedData
+			: MigrationResult::VerificationFailed;
 	}
 	const auto authCompared = CompareMigrationRecord(
 		auth,
@@ -758,10 +762,20 @@ MigrationResult CompareMigrationRecords(
 			return compared;
 		}
 	}
-	return Tgw::CompareStorageForMigration(
+	const auto tgw = Tgw::CompareStorageForMigration(
 		source.basePath, sourceKey,
 		target.basePath, targetKey,
 		expectedUser, environment, write);
+	if (tgw == MigrationResult::Success && verifiedFiles) {
+		const auto data = QDir(source.basePath);
+		verifiedFiles->dataFiles = data.entryList(kMigrationEntries, QDir::Name);
+		verifiedFiles->dataFiles.removeAll(u"tgw"_q);
+		verifiedFiles->tgwFiles = QDir(data.filePath(u"tgw"_q)).entryList(
+			kMigrationEntries, QDir::Name);
+		verifiedFiles->cacheDirectories = std::move(cacheFiles.directories);
+		verifiedFiles->cacheFiles = std::move(cacheFiles.files);
+	}
+	return tgw;
 }
 
 auto EmptyMessageDraftSources()
@@ -814,7 +828,8 @@ AccountMigrationResult StageLegacyAccount(
 		const MTP::AuthKeyPtr &sourceKey,
 		const AccountPaths &target,
 		const MTP::AuthKeyPtr &targetKey,
-		UserId expectedUser) {
+		UserId expectedUser,
+		VerifiedLegacyAccountFiles *verifiedFiles) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -825,7 +840,8 @@ AccountMigrationResult StageLegacyAccount(
 	}
 	if (Present(QFileInfo(paths->targetRoot))) {
 		return CompareMigrationRecords(
-			*paths, source, sourceKey, target, targetKey, expectedUser, false);
+			*paths, source, sourceKey, target, targetKey, expectedUser, false,
+			verifiedFiles);
 	}
 	const auto parent = QFileInfo(paths->targetRoot).absolutePath();
 	auto temporary = QTemporaryDir(parent + u"/.stage-XXXXXX"_q);
@@ -834,6 +850,7 @@ AccountMigrationResult StageLegacyAccount(
 	}
 	const auto staged = AccountPaths{
 		.basePath = temporary.path() + u"/data/"_q,
+		.databasePath = temporary.path() + u"/user/"_q,
 		.authPath = temporary.path() + u"/auth"_q,
 		.mode = AccountStorageMode::Scoped,
 	};
@@ -846,7 +863,8 @@ AccountMigrationResult StageLegacyAccount(
 		return MigrationResult::DestinationIo;
 	}
 	temporary.setAutoRemove(false);
-	return VerifyStagedAccount(source, sourceKey, target, targetKey, expectedUser);
+	return VerifyStagedAccount(
+		source, sourceKey, target, targetKey, expectedUser, verifiedFiles);
 }
 
 AccountMigrationResult VerifyStagedAccount(
@@ -854,7 +872,8 @@ AccountMigrationResult VerifyStagedAccount(
 		const MTP::AuthKeyPtr &sourceKey,
 		const AccountPaths &target,
 		const MTP::AuthKeyPtr &targetKey,
-		UserId expectedUser) {
+		UserId expectedUser,
+		VerifiedLegacyAccountFiles *verifiedFiles) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -862,8 +881,25 @@ AccountMigrationResult VerifyStagedAccount(
 	const auto paths = ValidateMigrationPaths(source, target);
 	return paths
 		? CompareMigrationRecords(
-			*paths, source, sourceKey, target, targetKey, expectedUser, false)
+			*paths, source, sourceKey, target, targetKey, expectedUser, false,
+			verifiedFiles)
 		: MigrationResult::InvalidPaths;
+}
+
+UserId ReadLegacyAccountUserForMigration(
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &key) {
+	if (!key || source.mode != AccountStorageMode::Legacy
+		|| !CanonicalMigrationDirectory(QFileInfo(source.authPath).path())) {
+		return {};
+	}
+	auto auth = MigrationRecord();
+	if (!ReadMigrationRecord(
+		source.authPath, MigrationRecordType::Authorization, key, auth)) {
+		return {};
+	}
+	auto stream = QDataStream(auth.data);
+	return BeginMigrationRecord(stream) ? ReadAuthorizationUser(stream) : UserId();
 }
 
 namespace {

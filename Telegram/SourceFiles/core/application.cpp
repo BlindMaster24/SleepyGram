@@ -62,6 +62,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "core/click_handler_types.h" // ClickHandlerContext.
 #include "core/crash_report_window.h"
 #include "core/crash_reports.h"
+#include "crl/crl_async.h"
+#include "crl/crl_on_main.h"
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
@@ -125,6 +127,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/ayu_settings.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "ayu/features/profile_sets/profile_generation.h"
+#include "ayu/features/profile_sets/profile_setup.h"
+#include "window/window_profile_setup.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
@@ -136,18 +140,20 @@ using Ayu::ProfileSets::ProfileStartupMode;
 
 class ProfileRecoveryWindow final : public PreLaunchWindow {
 public:
-	ProfileRecoveryWindow();
+	explicit ProfileRecoveryWindow(QString message = {});
 
 protected:
 	void closeEvent(QCloseEvent *e) override;
 
 };
 
-ProfileRecoveryWindow::ProfileRecoveryWindow() {
+ProfileRecoveryWindow::ProfileRecoveryWindow(QString message) {
 	const auto layout = new QVBoxLayout(this);
 	const auto label = new PreLaunchLabel(this);
 	label->setWordWrap(true);
-	label->setText(u"Local data needs recovery before it can be opened."_q);
+	label->setText(message.isEmpty()
+		? u"Local data needs recovery before it can be opened."_q
+		: message);
 	const auto button = new PreLaunchButton(this);
 	button->setText(u"Close"_q);
 	connect(button, &QPushButton::clicked, this, [this] { close(); });
@@ -376,28 +382,88 @@ Application::~Application() {
 }
 
 void Application::run() {
-	if (!legacyProfileAccessAllowed()) {
-		cRefStartUrls().clear();
-		const auto reserved = _domain->reserveScopedProfile();
-		if (reserved && _profileStartupMode == ProfileStartupMode::Committed) {
-			auto sidecar = MigrationController::OpenProfileWorkspace(
-				cWorkingDir() + u"tdata"_q);
-			if (sidecar) {
-				_blockedProfileWindow = Window::CreateScopedProfileLockWindow(
-					_domain.get(),
-					std::move(*sidecar),
-					[this](const MigrationController &sidecar) {
-						return startScopedDesktop(sidecar);
-					});
-			}
-		}
-		if (!_blockedProfileWindow) {
-			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>();
-		}
+	if (legacyProfileAccessAllowed()) {
+		runDesktop(nullptr, {}, {});
+		return;
+	}
+	cRefStartUrls().clear();
+	const auto dataDirectory = cWorkingDir() + u"tdata"_q;
+	const auto workspace = MigrationController::OpenProfileWorkspace(dataDirectory);
+	const auto preparing = _profileStartupMode == ProfileStartupMode::Preparing;
+	const auto interruptedSetup = _profileStartupMode == ProfileStartupMode::RecoveryRequired
+		&& workspace && workspace->LoadStaged() && workspace->LoadSetupDraft();
+	if (preparing || interruptedSetup) {
+		_blockedProfileWindow = Window::CreateProfileSetupWindow(
+			dataDirectory,
+			cDataFile(),
+			preparing,
+			[this] {
+				InvokeQueued(this, [this] {
+					if (Quitting()) {
+						return;
+					}
+					_blockedProfileWindow.reset();
+					if (MigrationController::ProbeProfileStartup(
+							cWorkingDir() + u"tdata"_q) != ProfileStartupMode::Preparing) {
+						showScopedProfileLock();
+						return;
+					}
+					_profileSetupPostponed = true;
+					_passcodeLock = false;
+					initializeDesktop();
+					runDesktop(nullptr, {}, {});
+				});
+			},
+			[] {
+				cSetRestarting(true);
+				cSetRestartingToSettings(false);
+				Quit();
+			});
 		_blockedProfileWindow->show();
 		return;
 	}
-	runDesktop(nullptr, {}, {});
+	if (_profileStartupMode == ProfileStartupMode::Committed && workspace) {
+		const auto committed = workspace->LoadCommitted();
+		if (committed && !committed->legacyRetirement.isEmpty()) {
+			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>(
+				u"Finishing protected profile setup…"_q);
+			_blockedProfileWindow->show();
+			crl::async([dataDirectory, done = crl::guard(this, [this](bool result) {
+				if (!Quitting()) {
+					_blockedProfileWindow.reset();
+					if (result) {
+						showScopedProfileLock();
+					} else {
+						_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>();
+						_blockedProfileWindow->show();
+					}
+				}
+			})] {
+				const auto result = Ayu::ProfileSets::FinishProfileRetirement(dataDirectory);
+				crl::on_main([done, result] { done(result); });
+			});
+			return;
+		}
+	}
+	showScopedProfileLock();
+}
+
+void Application::showScopedProfileLock() {
+	if (_profileStartupMode == ProfileStartupMode::Committed && _domain->reserveScopedProfile()) {
+		auto sidecar = MigrationController::OpenProfileWorkspace(cWorkingDir() + u"tdata"_q);
+		if (sidecar) {
+			_blockedProfileWindow = Window::CreateScopedProfileLockWindow(
+				_domain.get(),
+				std::move(*sidecar),
+				[this](const MigrationController &workspace) {
+					return startScopedDesktop(workspace);
+				});
+		}
+	}
+	if (!_blockedProfileWindow) {
+		_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>();
+	}
+	_blockedProfileWindow->show();
 }
 
 bool Application::startScopedDesktop(const MigrationController &sidecar) {
@@ -1622,7 +1688,27 @@ void Application::clearPasscodeLock() {
 
 bool Application::legacyProfileAccessAllowed() const {
 	return _profileStartupMode == ProfileStartupMode::Legacy
-		|| _profileStartupMode == ProfileStartupMode::Preparing;
+		|| (_profileStartupMode == ProfileStartupMode::Preparing && _profileSetupPostponed);
+}
+
+void Application::beginProfileSetup() {
+	if (!legacyProfileAccessAllowed() || passcodeLocked() || Quitting()) {
+		return;
+	}
+	const auto dataDirectory = cWorkingDir() + u"tdata"_q;
+	const auto mode = MigrationController::ProbeProfileStartup(dataDirectory);
+	if (mode != ProfileStartupMode::Preparing
+		&& (mode != ProfileStartupMode::Legacy
+			|| !MigrationController::CreateProfileWorkspace(dataDirectory))) {
+		if (_lastActivePrimaryWindow) {
+			_lastActivePrimaryWindow->show(
+				Ui::MakeInformBox(u"Protected profile setup could not be started."_q));
+		}
+		return;
+	}
+	cSetRestarting(true);
+	cSetRestartingToSettings(false);
+	Quit();
 }
 
 bool Application::passcodeLocked() const {
@@ -2477,6 +2563,9 @@ Application &App() {
 
 void Quit(QuitReason reason) {
    if (Quitting()) {
+	   return;
+   } else if (Application::Instance && Window::ProfileSetupInProgress(
+		   App()._blockedProfileWindow.get())) {
 	   return;
    } else if (IsAppLaunched() && App().preventsQuit(reason)) {
 	   return;

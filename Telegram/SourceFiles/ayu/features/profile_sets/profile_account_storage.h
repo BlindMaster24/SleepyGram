@@ -23,6 +23,7 @@ class MigrationController;
 	const MTP::AuthKeyPtr &legacyKey,
 	UserId expectedUser,
 	const AccountKey &account,
-	const AccountVaultLocator &locator);
+	const AccountVaultLocator &locator,
+	Storage::VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
 
 } // namespace Ayu::ProfileSets

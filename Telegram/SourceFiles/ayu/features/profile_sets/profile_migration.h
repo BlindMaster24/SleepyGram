@@ -24,6 +24,8 @@ struct SetId;
 enum class MigrationArtifact : quint32 {
 	ProfileVault = 1,
 	AccountKeyring = 2,
+	LegacyRetirement = 3,
+	EmergencyRules = 4,
 };
 
 struct MigrationInput final {
@@ -35,6 +37,8 @@ struct CommittedMigration final {
 	QByteArray transactionId;
 	QByteArray profileVault;
 	QByteArray accountKeyring;
+	QByteArray legacyRetirement;
+	QByteArray emergencyRules;
 };
 
 enum class MigrationState : uchar {
@@ -102,7 +106,8 @@ public:
 
 	[[nodiscard]] bool Stage(
 		const std::vector<MigrationInput> &inputs,
-		MigrationError *error = nullptr) const;
+		MigrationError *error = nullptr,
+		QByteArray transactionId = {}) const;
 	[[nodiscard]] std::optional<CommittedMigration> Commit(
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> CommitVerified(
@@ -112,7 +117,8 @@ public:
 		const QByteArray &expectedTransactionId,
 		const std::vector<MigrationInput> &inputs,
 		const Verifier &verify,
-		MigrationError *error = nullptr) const;
+		MigrationError *error = nullptr,
+		QByteArray transactionId = {}) const;
 	// Retire only after readers of the previous generation have stopped.
 	[[nodiscard]] bool RetireInactiveGenerations(
 		const QByteArray &expectedTransactionId,
@@ -121,12 +127,21 @@ public:
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> LoadCommitted(
 		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<CommittedMigration> LoadStaged(
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool StoreSetupDraft(const CommittedMigration &draft) const;
+	[[nodiscard]] std::optional<CommittedMigration> LoadSetupDraft() const;
+	[[nodiscard]] static QByteArray NewTransactionId();
 	// The synchronous lease callback must not acquire the workspace lock.
 	[[nodiscard]] bool WithCurrentGeneration(
 		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] bool WithPreparingWorkspace(
+		const std::function<bool()> &callback,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool WithStagedSetup(
+		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<QString> PrepareScopedSettingsDirectory(

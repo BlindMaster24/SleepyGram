@@ -54,7 +54,8 @@ Storage::AccountMigrationResult StageProfileAccount(
 		const MTP::AuthKeyPtr &legacyKey,
 		UserId expectedUser,
 		const AccountKey &account,
-		const AccountVaultLocator &locator) {
+		const AccountVaultLocator &locator,
+		Storage::VerifiedLegacyAccountFiles *verifiedFiles) {
 	using Result = Storage::AccountMigrationResult;
 	if (workspace.isIsolatedFixture() || account.id != locator.id) {
 		return Result::InvalidPaths;
@@ -64,7 +65,8 @@ Storage::AccountMigrationResult StageProfileAccount(
 	const auto key = ProfileAccountStorageKey(account);
 	return !paths
 		? Result::InvalidPaths
-		: Storage::StageLegacyAccount(legacy, legacyKey, *paths, key, expectedUser);
+		: Storage::StageLegacyAccount(
+			legacy, legacyKey, *paths, key, expectedUser, verifiedFiles);
 }
 
 } // namespace Ayu::ProfileSets

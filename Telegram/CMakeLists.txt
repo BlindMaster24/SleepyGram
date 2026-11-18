@@ -256,6 +256,8 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_action_coordinator.h
         ayu/features/emergency_actions/emergency_action_runtime_service.cpp
         ayu/features/emergency_actions/emergency_action_runtime_service.h
+        ayu/features/emergency_actions/emergency_rule_vault.cpp
+        ayu/features/emergency_actions/emergency_rule_vault.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
         ayu/features/emergency_actions/mtproto_session_effect.cpp
@@ -274,6 +276,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_vault_password.cpp
         ayu/features/profile_sets/profile_migration.cpp
         ayu/features/profile_sets/profile_migration.h
+        ayu/features/profile_sets/profile_setup.cpp
+        ayu/features/profile_sets/profile_setup.h
         ayu/features/profile_sets/profile_staging.cpp
         ayu/features/profile_sets/profile_staging.h
         ayu/features/profile_sets/account_registry.cpp
@@ -284,6 +288,13 @@ set(ayugram_files
         ayu/features/profile_sets/profile_account_storage.h
         ayu/features/profile_sets/profile_generation.cpp
         ayu/features/profile_sets/profile_generation.h
+        ayu/features/profile_sets/legacy_retirement.cpp
+        ayu/features/profile_sets/legacy_retirement.h
+        storage/details/storage_cache_migration.cpp
+        storage/details/storage_cache_migration.h
+        storage/details/storage_cache_migration_paths.h
+        window/window_profile_setup.cpp
+        window/window_profile_setup.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp

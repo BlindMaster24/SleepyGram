@@ -15,6 +15,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_drafts.h"
 #include "webview/webview_common.h"
 
+#include <QtCore/QStringList>
+
 class History;
 
 namespace Core {
@@ -62,19 +64,32 @@ enum class AccountMigrationResult : uchar {
 	VerificationFailed,
 };
 
+struct VerifiedLegacyAccountFiles final {
+	QStringList dataFiles;
+	QStringList tgwFiles;
+	QStringList cacheDirectories;
+	QStringList cacheFiles;
+};
+
 // The caller holds exclusive, quiesced access to legacy storage through verification.
 [[nodiscard]] AccountMigrationResult StageLegacyAccount(
 	const AccountPaths &source,
 	const MTP::AuthKeyPtr &sourceKey,
 	const AccountPaths &target,
 	const MTP::AuthKeyPtr &targetKey,
-	UserId expectedUser);
+	UserId expectedUser,
+	VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
 [[nodiscard]] AccountMigrationResult VerifyStagedAccount(
 	const AccountPaths &source,
 	const MTP::AuthKeyPtr &sourceKey,
 	const AccountPaths &target,
 	const MTP::AuthKeyPtr &targetKey,
-	UserId expectedUser);
+	UserId expectedUser,
+	VerifiedLegacyAccountFiles *verifiedFiles = nullptr);
+
+[[nodiscard]] UserId ReadLegacyAccountUserForMigration(
+	const AccountPaths &source,
+	const MTP::AuthKeyPtr &key);
 
 struct ScopedAccountStartupInfo final {
 	UserId userId;
