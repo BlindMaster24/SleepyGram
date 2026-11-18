@@ -19,11 +19,10 @@ present.
 The startup smoke launches the extracted package for at most eight seconds with
 `-workdir` pointed at a temporary profile and temporary home/config directories.
 Linux's Qt build enables xcb and Wayland, not the offscreen plugin, so CI starts
-host Xvfb and runs xcb inside the build container with networking disabled. If
-Xvfb or a usable Qt platform is unavailable, the smoke reports an explicit
-skip; a short clean exit is also reported as inconclusive. A process that stays
-up for the full window passes. This checks startup only; it does not sign in,
-exercise UI flows, or validate network/API behavior.
+host Xvfb and runs xcb inside the build container with networking disabled.
+The platform jobs require the process to stay up for the full window before
+uploading a package. The startup check uses a disposable profile without
+signing in or exercising account features.
 
 Release publishing runs only for `v*` tag pushes or an explicitly requested
 manual run with all three platforms selected. It checks each artifact's source

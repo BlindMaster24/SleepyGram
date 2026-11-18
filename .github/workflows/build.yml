@@ -248,7 +248,7 @@ jobs:
               -v "$extracted:/package:ro" \
               "$IMAGE_TAG" \
               python3 /usr/src/tdesktop/.github/ci/smoke.py \
-                --platform linux-x64 --directory /package --qpa-platform xcb
+                --platform linux-x64 --directory /package --qpa-platform xcb --require-startup
           else
             echo "::warning::Xvfb is unavailable; trying Qt offscreen startup"
             docker run --rm --network none \
@@ -257,7 +257,7 @@ jobs:
               -v "$extracted:/package:ro" \
               "$IMAGE_TAG" \
               python3 /usr/src/tdesktop/.github/ci/smoke.py \
-                --platform linux-x64 --directory /package
+                --platform linux-x64 --directory /package --require-startup
           fi
 
       - name: Upload artifact
@@ -783,7 +783,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows package validation failed" }
           $extracted = Join-Path $env:RUNNER_TEMP "sleepygram-windows-x64-extracted"
           Expand-Archive -LiteralPath $archive -DestinationPath $extracted -Force
-          python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted
+          python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted --require-startup
           if ($LASTEXITCODE -ne 0) { throw "Windows startup smoke failed" }
 
       - name: Upload artifact
