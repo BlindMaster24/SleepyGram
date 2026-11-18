@@ -1,9 +1,42 @@
+from argparse import Namespace
+from hashlib import sha256
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from build_artifact import _parse_gitlinks, submodule_revisions
+from build_artifact import (
+    MACOS_INSTALLER,
+    PLATFORMS,
+    _parse_gitlinks,
+    submodule_revisions,
+    verify_release,
+)
+
+
+class ReleaseInstallerTests(unittest.TestCase):
+    def test_requires_the_dmg_verified_by_the_mac_build(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = {"commit": "a" * 40, "workflow_run_id": "42", "workflow_run_attempt": "1"}
+            args = Namespace(directory=root, source_sha=source["commit"], run_id="42", run_attempt="1")
+            for filename, _ in PLATFORMS.values():
+                (root / filename).touch()
+            with patch("build_artifact.verify_package", return_value={"source": source}):
+                with self.assertRaises(FileNotFoundError):
+                    verify_release(args)
+
+                installer = root / MACOS_INSTALLER
+                installer.write_bytes(b"verified disk image")
+                (root / f"{MACOS_INSTALLER}.sha256").write_text(
+                    sha256(installer.read_bytes()).hexdigest() + "\n",
+                )
+                verify_release(args)
+
+                installer.write_bytes(b"different disk image")
+                with self.assertRaisesRegex(RuntimeError, "does not match the checksum"):
+                    verify_release(args)
 
 
 class SubmoduleRevisionTests(unittest.TestCase):

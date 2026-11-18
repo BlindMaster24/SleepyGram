@@ -77,6 +77,7 @@ def main() -> int:
     parser.add_argument("--platform", choices=("linux-x64", "macos-arm64", "windows-x64"), required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--qpa-platform", default="offscreen")
+    parser.add_argument("--require-startup", action="store_true")
     args = parser.parse_args()
     package = args.directory.resolve()
 
@@ -121,14 +122,14 @@ def main() -> int:
 
         output_text = log.read_text(errors="replace").lower()
         if any(marker in output_text for marker in UNSUPPORTED_QT):
+            if args.require_startup:
+                raise RuntimeError(f"No usable Qt platform for startup smoke on {args.platform}.")
             print(f"::warning::Startup smoke skipped on {args.platform}: no usable Qt platform in this runner.")
             return 0
-        if status == 0:
+        if status == 0 and not args.require_startup:
             print(f"::warning::Startup smoke inconclusive on {args.platform}: process exited before {WAIT_SECONDS}s.")
             return 0
-        if status != 0:
-            raise RuntimeError(f"Startup smoke exited with status {status} on {args.platform}.")
-    return 0
+        raise RuntimeError(f"Startup smoke exited early with status {status} on {args.platform}.")
 
 
 if __name__ == "__main__":

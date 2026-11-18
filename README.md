@@ -76,7 +76,7 @@ Prebuilt binaries are published on the [**Releases**](https://github.com/slpkbt/
 
 | Platform | Architecture | Package | Status |
 | :--- | :--- | :--- | :--- |
-| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Official Release |
+| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.dmg`](https://github.com/slpkbt/SleepyGram/releases) | Disk image installer |
 | **Linux** | 64-bit (`x86_64`) | [`SleepyGram-linux-x64.tar.xz`](https://github.com/slpkbt/SleepyGram/releases) | Official Release |
 | **Windows** | 64-bit (`x86_64`) | [`SleepyGram-windows-x64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Release Archive |
 
@@ -85,11 +85,9 @@ Prebuilt binaries are published on the [**Releases**](https://github.com/slpkbt/
 
 <br />
 
-SleepyGram builds are ad-hoc signed in CI without an Apple Developer notarization certificate. If macOS displays an unverified developer prompt after moving `SleepyGram.app` to `/Applications`, clear the quarantine attribute once in Terminal:
+Open the DMG, drag **SleepyGram** onto **Applications** in Finder, and launch the copy in **Applications**. If you downloaded the ZIP, extract it and move **SleepyGram** to **Applications** in Finder before opening it.
 
-```bash
-xattr -cr /Applications/SleepyGram.app
-```
+The builds use ad-hoc signing. If macOS requests approval on first launch, use **System Settings → Privacy & Security → Open Anyway** for the copy you downloaded from this repository. [Apple Support](https://support.apple.com/en-us/102445)
 
 </details>
 

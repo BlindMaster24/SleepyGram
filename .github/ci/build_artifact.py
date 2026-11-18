@@ -17,6 +17,7 @@ import zipfile
 
 
 MANIFEST = "build-manifest.json"
+MACOS_INSTALLER = "SleepyGram-macos-arm64.dmg"
 PLATFORMS = {
     "linux-x64": ("SleepyGram-linux-x64.tar.xz", "tar.xz"),
     "macos-arm64": ("SleepyGram-macos-arm64.zip", "zip"),
@@ -340,6 +341,15 @@ def verify_release(args: argparse.Namespace) -> None:
         for key, value in expected.items():
             if str(source.get(key, "")) != value:
                 raise RuntimeError(f"{filename} does not match this run's {key}.")
+    macos_package = by_name[PLATFORMS["macos-arm64"][0]].parent
+    installer = macos_package / MACOS_INSTALLER
+    checksum = macos_package / f"{MACOS_INSTALLER}.sha256"
+    digest = hashlib.sha256()
+    with installer.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    if checksum.read_text(encoding="ascii").strip() != digest.hexdigest():
+        raise RuntimeError("The macOS installer does not match the checksum from the build job.")
     print("Verified all three packages came from this workflow run and source SHA.")
 
 

@@ -537,15 +537,23 @@ jobs:
           mkdir -p "$extracted"
           ditto -x -k "$RUNNER_TEMP/SleepyGram-macos-arm64.zip" "$extracted"
           codesign --verify --deep --strict "$extracted/SleepyGram.app"
-          python3 tdesktop/.github/ci/smoke.py \
-            --platform macos-arm64 \
-            --directory "$extracted"
+          rm -rf "$extracted"
+
+      - name: Create and verify macOS installer
+        shell: bash
+        run: |
+          bash tdesktop/.github/ci/package_macos_dmg.sh \
+            tdesktop/out/Release/SleepyGram.app \
+            "$RUNNER_TEMP/SleepyGram-macos-arm64.dmg" --smoke
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: package-macos-arm64
-          path: ${{ runner.temp }}/SleepyGram-macos-arm64.zip
+          path: |
+            ${{ runner.temp }}/SleepyGram-macos-arm64.zip
+            ${{ runner.temp }}/SleepyGram-macos-arm64.dmg
+            ${{ runner.temp }}/SleepyGram-macos-arm64.dmg.sha256
           if-no-files-found: error
 
   windows-x64:
@@ -859,6 +867,7 @@ jobs:
           fi
           files=(
             release-assets/SleepyGram-linux-x64.tar.xz
+            release-assets/SleepyGram-macos-arm64.dmg
             release-assets/SleepyGram-macos-arm64.zip
             release-assets/SleepyGram-windows-x64.zip
           )

@@ -247,11 +247,9 @@ void ShowTranslocationError() {
 
 	NSAlert *alert = [[NSAlert alloc] init];
 	alert.alertStyle = NSAlertStyleCritical;
-	alert.messageText = @"Telegram Desktop can't start from here";
-	alert.informativeText = @"macOS started this copy of Telegram Desktop "
-		@"from a read-only temporary location (App Translocation), so it "
-		@"can't use its own folder. Please reinstall the app and launch it "
-		@"again.";
+	alert.messageText = @"Move SleepyGram to Applications";
+	alert.informativeText = @"In Finder, drag SleepyGram to the Applications "
+		@"folder, then open it from there.";
 	[alert addButtonWithTitle:@"Quit"];
 	[alert runModal];
 	[alert release];

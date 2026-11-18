@@ -76,7 +76,7 @@ AyuGram дал десктопному Telegram отличные инструме
 
 | Платформа | Архитектура | Архив | Статус |
 | :--- | :--- | :--- | :--- |
-| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Официальный релиз |
+| **macOS** | Apple Silicon (`arm64`) | [`SleepyGram-macos-arm64.dmg`](https://github.com/slpkbt/SleepyGram/releases) | Установочный образ |
 | **Linux** | 64-bit (`x86_64`) | [`SleepyGram-linux-x64.tar.xz`](https://github.com/slpkbt/SleepyGram/releases) | Официальный релиз |
 | **Windows** | 64-bit (`x86_64`) | [`SleepyGram-windows-x64.zip`](https://github.com/slpkbt/SleepyGram/releases) | Архив релиза |
 
@@ -85,11 +85,9 @@ AyuGram дал десктопному Telegram отличные инструме
 
 <br />
 
-Сборки подписываются ad-hoc подписью в GitHub Actions без платного сертификата Apple Developer. Если после переноса `SleepyGram.app` в `/Applications` система блокирует первый запуск, снимите карантин одной командой в Терминале:
+Откройте DMG, перетащите **SleepyGram** на ярлык **Applications** в Finder и запустите копию из папки **Программы**. Если скачали ZIP, распакуйте архив и перенесите **SleepyGram** в папку **Программы** в Finder перед запуском.
 
-```bash
-xattr -cr /Applications/SleepyGram.app
-```
+Сборки используют ad-hoc подпись. Если macOS запросит подтверждение при первом запуске, разрешите запуск скачанной из этого репозитория копии в **Системные настройки → Конфиденциальность и безопасность → Всё равно открыть**. [Поддержка Apple](https://support.apple.com/ru-ru/102445)
 
 </details>
 
