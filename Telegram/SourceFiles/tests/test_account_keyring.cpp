@@ -10,7 +10,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <openssl/rand.h>
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
 
+#include <array>
 #include <cstdio>
 
 namespace {
@@ -42,6 +44,27 @@ int RunChecks() {
 		return 1;
 	}
 	const auto accounts = std::vector<AccountKey>{ *first, *second };
+	const auto fixtureKey = AccountKey{ { 1, 7 }, QByteArray(kAccountKeySize, 'k') };
+	auto local = std::array<char, kAccountLocalStorageKeySize>();
+	auto otherLocal = std::array<char, kAccountLocalStorageKeySize>();
+	check("local-storage-key-format", DeriveAccountLocalStorageKey(
+		fixtureKey, bytes::make_span(local))
+		&& QCryptographicHash::hash(
+			QByteArrayView(local.data(), local.size()),
+			QCryptographicHash::Sha256).toHex()
+			== "6484322b3a2b302f559936a3b392bf9b90ce1b8596dac762c7321cfa59650b27");
+	check("local-storage-key-is-bound-to-account-id",
+		DeriveAccountLocalStorageKey(
+			{ { 1, 8 }, fixtureKey.key }, bytes::make_span(otherLocal))
+		&& local != otherLocal);
+	check("invalid-local-storage-keys-rejected",
+		!DeriveAccountLocalStorageKey(
+			{ {}, fixtureKey.key }, bytes::make_span(otherLocal))
+		&& !DeriveAccountLocalStorageKey(
+			{ fixtureKey.id, QByteArray(kAccountKeySize, '\0') },
+			bytes::make_span(otherLocal))
+		&& !DeriveAccountLocalStorageKey(
+			fixtureKey, bytes::make_span(otherLocal).subspan(1)));
 	KeyringError error = KeyringError::Malformed;
 	const auto sealed = SealAccountKeyring(accounts, wrappingKey, &error);
 	const auto restored = OpenAccountKeyring(sealed, wrappingKey, &error);

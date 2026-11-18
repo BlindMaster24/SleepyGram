@@ -57,6 +57,9 @@ enum class MigrationError : uchar {
 	WorkspaceBusy,
 	VerificationRequired,
 	VerificationFailed,
+	StaleGeneration,
+	PublicationUncertain, // Reopen the committed generation before retrying.
+	RetirementFailed,
 };
 
 class MigrationController final {
@@ -90,6 +93,15 @@ public:
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> CommitVerified(
 		const Verifier &verify,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<CommittedMigration> ReplaceCommitted(
+		const QByteArray &expectedTransactionId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error = nullptr) const;
+	// Retire only after readers of the previous generation have stopped.
+	[[nodiscard]] bool RetireInactiveGenerations(
+		const QByteArray &expectedTransactionId,
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] MigrationState Recover(
 		MigrationError *error = nullptr) const;

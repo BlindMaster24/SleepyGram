@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #pragma once
 
 #include "ayu/features/profile_sets/profile_sets.h"
+#include "base/bytes.h"
 
 #include <optional>
 #include <vector>
@@ -15,6 +16,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Ayu::ProfileSets {
 
 inline constexpr auto kAccountKeySize = 32;
+inline constexpr auto kAccountLocalStorageKeySize = 256;
 inline constexpr auto kAccountKeyringWrappingKeySize = 32;
 inline constexpr auto kAccountKeyringVersion = quint32(1);
 
@@ -42,6 +44,9 @@ enum class KeyringError : uchar {
 [[nodiscard]] std::optional<AccountKey> NewAccountKey(
 	AccountId id,
 	KeyringError *error = nullptr);
+[[nodiscard]] bool DeriveAccountLocalStorageKey(
+	const AccountKey &account,
+	bytes::span output);
 [[nodiscard]] KeyringError ValidateAccountKeys(
 	const std::vector<AccountKey> &accounts);
 [[nodiscard]] QByteArray SealAccountKeyring(

@@ -11,9 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QLockFile>
+#include <QtCore/QProcess>
 #include <QtCore/QTemporaryDir>
 
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -24,6 +26,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace {
 
 using namespace Ayu::ProfileSets;
+
+constexpr auto kCrashCode = 41;
+constexpr auto kProfileFixturePrefix = "sleepygram-migration-cas-fixture-";
 
 std::filesystem::path NewWorkspacePath(const char *label) {
 	const auto suffix = std::chrono::steady_clock::now()
@@ -61,6 +66,44 @@ std::vector<MigrationInput> Inputs() {
 			.encryptedBytes = QByteArray("generated-encrypted-keyring-fixture-v1"),
 		},
 	};
+}
+
+std::vector<MigrationInput> ReplacementInputs() {
+	auto inputs = Inputs();
+	inputs[0].encryptedBytes += QByteArray("-replaced-vault");
+	inputs[1].encryptedBytes += QByteArray("-replaced-keyring");
+	return inputs;
+}
+
+bool Matches(
+		const CommittedMigration &generation,
+		const std::vector<MigrationInput> &inputs) {
+	return generation.profileVault == inputs[0].encryptedBytes
+		&& generation.accountKeyring == inputs[1].encryptedBytes;
+}
+
+std::filesystem::path GenerationDirectory(
+		const std::filesystem::path &root,
+		const QByteArray &id) {
+	return root / "generations" / id.toHex().toStdString();
+}
+
+int EndDuringReplace(const QString &dataDirectory, const QByteArray &id) {
+	const auto container = QFileInfo(dataDirectory).dir();
+	if (!container.dirName().startsWith(QLatin1StringView(kProfileFixturePrefix))
+		|| QFileInfo(container.path()).dir().canonicalPath()
+			!= QDir(QDir::tempPath()).canonicalPath()) {
+		return 1;
+	}
+	const auto workspace = MigrationController::OpenProfileWorkspace(dataDirectory);
+	if (!workspace) {
+		return 1;
+	}
+	const auto interrupted = workspace->ReplaceCommitted(
+		id,
+		ReplacementInputs(),
+		[](const CommittedMigration&) -> bool { std::_Exit(kCrashCode); });
+	return interrupted ? 2 : 3;
 }
 
 int RunChecks() {
@@ -179,7 +222,9 @@ int RunChecks() {
 		incompleteFixture
 		&& incomplete->Recover(&error) == MigrationState::Incomplete
 		&& !incomplete->LoadCommitted(&error));
-	const auto profile = QTemporaryDir();
+	const auto profile = QTemporaryDir(
+		QDir::tempPath() + '/' + QString::fromLatin1(kProfileFixturePrefix)
+		+ QStringLiteral("XXXXXX"));
 	if (!profile.isValid()) {
 		return 1;
 	}
@@ -233,13 +278,168 @@ int RunChecks() {
 	if (!WriteFixture(liveVault, originalVault)) {
 		return 1;
 	}
+	const auto initial = live->CommitVerified(
+		[&](const CommittedMigration &files) { return Matches(files, inputs); },
+		&error);
 	check("verified-profile-commit-is-visible-to-startup",
-		live->CommitVerified([&](const CommittedMigration &files) {
-			return files.profileVault == inputs[0].encryptedBytes
-				&& files.accountKeyring == inputs[1].encryptedBytes;
-		}, &error).has_value()
+		initial
 		&& MigrationController::ProbeProfileWorkspace(dataDirectory)
 			== MigrationState::Committed);
+	if (!initial) {
+		return 1;
+	}
+	const auto root = std::filesystem::path(live->workspacePath().toStdString());
+	const auto accountRoot = live->accountStorageRoot();
+	const auto accountWitness = std::filesystem::path(accountRoot.toStdString())
+		/ "unrelated-account-fixture";
+	if (!WriteFixture(accountWitness, "account-data")) {
+		return 1;
+	}
+	const auto replacement = ReplacementInputs();
+	const auto verify = [&](const CommittedMigration &files) {
+		return Matches(files, replacement);
+	};
+	const auto isActive = [&](const QByteArray &id) {
+		const auto active = live->LoadCommitted();
+		return active && active->transactionId == id;
+	};
+	{
+		auto lock = QLockFile(QDir(live->workspacePath()).filePath(
+			QStringLiteral("migration.lock")));
+		check("another-owner-cannot-replace-or-retire",
+			lock.tryLock(0)
+			&& !live->ReplaceCommitted(
+				initial->transactionId,
+				replacement,
+				verify,
+				&error)
+			&& error == MigrationError::WorkspaceBusy
+			&& !live->RetireInactiveGenerations(initial->transactionId, &error)
+			&& error == MigrationError::WorkspaceBusy);
+	}
+	check("replacement-requires-a-verifier",
+		!live->ReplaceCommitted(initial->transactionId, replacement, {}, &error)
+		&& error == MigrationError::VerificationRequired);
+	check("replacement-cryptographic-refusal-does-not-advance",
+		!live->ReplaceCommitted(
+			initial->transactionId,
+			replacement,
+			[](const auto &) { return false; },
+			&error)
+		&& error == MigrationError::VerificationFailed
+		&& isActive(initial->transactionId));
+	check("tampered-replacement-is-never-selected",
+		!live->ReplaceCommitted(
+			initial->transactionId,
+			replacement,
+			[&](const CommittedMigration &candidate) {
+				return Matches(candidate, replacement)
+					&& WriteFixture(
+						GenerationDirectory(root, candidate.transactionId)
+							/ "account-keyring.bin",
+						"changed-after-verification");
+			},
+			&error)
+		&& error == MigrationError::ReadbackFailed
+		&& isActive(initial->transactionId));
+
+	auto crash = QProcess();
+	crash.start(QCoreApplication::applicationFilePath(), {
+		QStringLiteral("--end-during-replace"),
+		dataDirectory,
+		QString::fromLatin1(initial->transactionId.toHex()),
+	});
+	const auto crashed = crash.waitForFinished()
+		&& crash.exitStatus() == QProcess::NormalExit
+		&& crash.exitCode() == kCrashCode;
+	const auto afterCrash = live->LoadCommitted();
+	check("process-exit-with-written-candidate-leaves-old-pair-active",
+		crashed && afterCrash && afterCrash->transactionId == initial->transactionId
+		&& Matches(*afterCrash, inputs));
+
+	const auto second = live->ReplaceCommitted(
+		initial->transactionId,
+		replacement,
+		[&](const CommittedMigration &candidate) {
+			const auto active = live->LoadCommitted();
+			return active && active->transactionId == initial->transactionId
+				&& Matches(*active, inputs) && verify(candidate);
+		},
+		&error);
+	const auto reopened = MigrationController::OpenProfileWorkspace(dataDirectory);
+	const auto reopenedSecond = reopened ? reopened->LoadCommitted() : std::nullopt;
+	check("replace-publishes-both-artifacts-as-one-generation",
+		second && error == MigrationError::None
+		&& second->transactionId != initial->transactionId
+		&& reopenedSecond && reopenedSecond->transactionId == second->transactionId
+		&& Matches(*reopenedSecond, replacement)
+		&& reopened->accountStorageRoot() == accountRoot);
+	if (!second || !reopened) {
+		return 1;
+	}
+
+	auto staleCallbackCalled = false;
+	check("stale-cas-rejects-commit-and-retirement",
+		!reopened->ReplaceCommitted(
+			initial->transactionId,
+			inputs,
+			[&](const auto &) {
+				staleCallbackCalled = true;
+				return true;
+			},
+			&error)
+		&& error == MigrationError::StaleGeneration
+		&& !staleCallbackCalled
+		&& !reopened->RetireInactiveGenerations(initial->transactionId, &error)
+		&& error == MigrationError::StaleGeneration
+		&& std::filesystem::exists(root / "stage" / "profile-vault.bin"));
+
+	const auto third = reopened->ReplaceCommitted(
+		second->transactionId,
+		inputs,
+		[&](const auto &candidate) { return Matches(candidate, inputs); },
+		&error);
+	check("replace-supports-a-current-version-two-generation",
+		third && error == MigrationError::None
+		&& third->transactionId != second->transactionId
+		&& Matches(*third, inputs));
+	if (!third) {
+		return 1;
+	}
+
+	const auto selectedVault = GenerationDirectory(root, third->transactionId)
+		/ "profile-vault.bin";
+	check("damaged-active-artifact-cannot-fall-back-to-a-retired-pair",
+		WriteFixture(selectedVault, "tampered-active-vault")
+		&& reopened->Recover(&error) == MigrationState::Invalid
+		&& error == MigrationError::ReadbackFailed
+		&& !reopened->LoadCommitted());
+	if (!WriteFixture(selectedVault, inputs[0].encryptedBytes.toStdString())) {
+		return 1;
+	}
+	const auto unknown = root / "stage" / "unmanaged-file";
+	check("retirement-refuses-to-remove-unmanaged-storage",
+		WriteFixture(unknown, "unmanaged")
+		&& !reopened->RetireInactiveGenerations(third->transactionId, &error)
+		&& error == MigrationError::RetirementFailed
+		&& ReadFixture(unknown) == "unmanaged"
+		&& isActive(third->transactionId));
+	if (!std::filesystem::remove(unknown)) {
+		return 1;
+	}
+	check("retirement-removes-abandoned-and-previous-artifact-generations",
+		reopened->RetireInactiveGenerations(third->transactionId, &error)
+		&& error == MigrationError::None
+		&& std::distance(
+			std::filesystem::directory_iterator(root / "generations"),
+			std::filesystem::directory_iterator()) == 1
+		&& !std::filesystem::exists(root / "migration.manifest.pending")
+		&& !std::filesystem::exists(root / "stage")
+		&& std::filesystem::exists(selectedVault)
+		&& ReadFixture(accountWitness) == "account-data");
+	check("retirement-is-idempotent",
+		reopened->RetireInactiveGenerations(third->transactionId, &error)
+		&& error == MigrationError::None);
 	check("corrupt-committed-profile-cannot-look-like-legacy",
 		WriteFixture(
 			std::filesystem::path(live->workspacePath().toStdString())
@@ -247,6 +447,13 @@ int RunChecks() {
 			"damaged")
 		&& MigrationController::ProbeProfileWorkspace(dataDirectory)
 			== MigrationState::Invalid);
+	check("missing-active-manifest-cannot-reactivate-legacy",
+		std::filesystem::remove(root / "migration.manifest.committed")
+		&& MigrationController::ProbeProfileWorkspace(dataDirectory, &error)
+			== MigrationState::Invalid
+		&& error == MigrationError::InvalidManifest
+		&& !reopened->Stage(inputs, &error)
+		&& error == MigrationError::InvalidManifest);
 
 	std::printf("%d of %d checks passed.\n", passed, total);
 	return (passed == total) ? 0 : 1;
@@ -256,5 +463,11 @@ int RunChecks() {
 
 int main(int argc, char *argv[]) {
 	auto app = QCoreApplication(argc, argv);
+	const auto arguments = app.arguments();
+	if (arguments.size() == 4 && arguments[1] == u"--end-during-replace") {
+		return EndDuringReplace(
+			arguments[2],
+			QByteArray::fromHex(arguments[3].toLatin1()));
+	}
 	return RunChecks();
 }

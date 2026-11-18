@@ -50,6 +50,31 @@ class EncryptionKey;
 
 enum class StartResult : uchar;
 
+enum class AccountMigrationResult : uchar {
+	Success,
+	InvalidPaths,
+	InvalidKeys,
+	UnsupportedData,
+	InvalidSource,
+	IdentityMismatch,
+	DestinationIo,
+	VerificationFailed,
+};
+
+// The caller holds exclusive, quiesced access to legacy storage through verification.
+[[nodiscard]] AccountMigrationResult StageLegacyAccount(
+	const AccountPaths &source,
+	const MTP::AuthKeyPtr &sourceKey,
+	const AccountPaths &target,
+	const MTP::AuthKeyPtr &targetKey,
+	UserId expectedUser);
+[[nodiscard]] AccountMigrationResult VerifyStagedAccount(
+	const AccountPaths &source,
+	const MTP::AuthKeyPtr &sourceKey,
+	const AccountPaths &target,
+	const MTP::AuthKeyPtr &targetKey,
+	UserId expectedUser);
+
 struct MessageDraft {
 	FullReplyTo reply;
 	SuggestOptions suggest;

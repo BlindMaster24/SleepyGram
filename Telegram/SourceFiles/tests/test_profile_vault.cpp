@@ -293,6 +293,34 @@ int RunChecks() {
 	check("set-password-cannot-authorize-a-vault-update",
 		!UpdateProfileVault(*parsed, Credential(1), metadata, {}, &error)
 		&& error == ProfileVaultError::WrongPassword);
+	const auto pruned = PruneProfileVaultAccounts(
+		*parsed, Credential(0xFFFFFFFF), { { 4, 1 } }, &error);
+	if (!pruned) {
+		check("account-pruning-created-successor", false);
+		return 1;
+	}
+	const auto prunedAdmin = OpenProfileVault(*pruned, Credential(0xFFFFFFFF));
+	const auto prunedFirst = OpenProfileVault(*pruned, Credential(1));
+	const auto prunedShared = OpenProfileVault(*pruned, Credential(2));
+	const auto prunedAdminAccess = std::get_if<AdminVaultAccess>(&prunedAdmin);
+	const auto prunedFirstAccess = std::get_if<SetVaultAccess>(&prunedFirst);
+	const auto prunedSharedAccess = std::get_if<SetVaultAccess>(&prunedShared);
+	check("account-pruning-removes-keys-from-master-and-overlapping-grants",
+		prunedAdminAccess && prunedAdminAccess->accounts.size() == 1
+		&& prunedAdminAccess->locators
+			== std::vector<AccountVaultLocator>{ locators.back() }
+		&& prunedAdminAccess->metadata.sets[0].accounts.empty()
+		&& prunedFirstAccess && prunedFirstAccess->accounts.empty()
+		&& prunedSharedAccess && prunedSharedAccess->accounts.size() == 1
+		&& prunedSharedAccess->locators
+			== std::vector<AccountVaultLocator>{ locators.back() }
+		&& pruned->grants[2] == parsed->grants[2]);
+	check("account-pruning-rejects-unauthorized-or-unknown-targets",
+		!PruneProfileVaultAccounts(*parsed, Credential(1), { { 4, 1 } }, &error)
+		&& error == ProfileVaultError::WrongPassword
+		&& !PruneProfileVaultAccounts(
+			*parsed, Credential(0xFFFFFFFF), { { 4, 7 } }, &error)
+		&& error == ProfileVaultError::InvalidAccountRemoval);
 	check("changed-passcode-requires-matching-replacement-credential",
 		!UpdateProfileVault(
 			*membership,

@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_hkdf.h"
 #include "storage/serialize_common.h"
 #include "storage/storage_account.h"
 #include "storage/storage_domain.h"
@@ -23,8 +24,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QThread>
-
-#include <openssl/kdf.h>
 
 namespace Wallet {
 namespace {
@@ -396,37 +395,11 @@ SecureBytes HkdfSha256(
 		bytes::const_span salt,
 		bytes::const_span info,
 		int size) {
-	if (ikm.empty() || size <= 0) {
+	if (ikm.empty() || size <= 0 || size > 255 * 32) {
 		return {};
 	}
-	const auto context = EVP_PKEY_CTX_new_id(EVP_PKEY_HKDF, nullptr);
-	if (!context) {
-		return {};
-	}
-	const auto guard = gsl::finally([&] {
-		EVP_PKEY_CTX_free(context);
-	});
 	auto result = SecureBytes(size);
-	auto length = size_t(size);
-	const auto ok = (EVP_PKEY_derive_init(context) > 0)
-		&& (EVP_PKEY_CTX_set_hkdf_md(context, EVP_sha256()) > 0)
-		&& (salt.empty()
-			|| (EVP_PKEY_CTX_set1_hkdf_salt(
-				context,
-				Unsigned(salt),
-				int(salt.size())) > 0))
-		&& (EVP_PKEY_CTX_set1_hkdf_key(
-			context,
-			Unsigned(ikm),
-			int(ikm.size())) > 0)
-		&& (info.empty()
-			|| (EVP_PKEY_CTX_add1_hkdf_info(
-				context,
-				Unsigned(info),
-				int(info.size())) > 0))
-		&& (EVP_PKEY_derive(context, Unsigned(result.span()), &length) > 0)
-		&& (length == size_t(size));
-	if (!ok) {
+	if (!Storage::HkdfSha256(ikm, salt, info, result.span())) {
 		return {};
 	}
 	return result;

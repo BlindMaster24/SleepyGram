@@ -94,9 +94,11 @@ public:
 	// report true. Idempotent - a repeated call (as from the destructor)
 	// returns the remembered result.
 	bool finish();
+	[[nodiscard]] bool finishStaged(int32 version);
 
 private:
 	void init(const QString &name);
+	bool finish(int32 version, bool staged);
 
 	const QString _basePath;
 	QBuffer _buffer;

@@ -103,6 +103,7 @@ enum class ProfileVaultError : uchar {
 	UnsupportedVersion,
 	TooLarge,
 	RandomFailure,
+	InvalidAccountRemoval,
 };
 
 [[nodiscard]] bool ValidProfileVaultKdf(KdfParameters kdf);
@@ -133,6 +134,11 @@ void DeriveProfileVaultCredential(
 	const DerivedCredential &admin,
 	const Metadata &metadata,
 	const std::vector<SetGrantCredential> &replacementCredentials,
+	ProfileVaultError *error = nullptr);
+[[nodiscard]] std::optional<ProfileVault> PruneProfileVaultAccounts(
+	const ProfileVault &vault,
+	const DerivedCredential &admin,
+	const std::vector<AccountId> &remove,
 	ProfileVaultError *error = nullptr);
 [[nodiscard]] ProfileVaultAccess OpenProfileVault(
 	const ProfileVault &vault,

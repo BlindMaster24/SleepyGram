@@ -1045,11 +1045,12 @@ std::optional<ProfileVault> SealProfileVault(
 		error);
 }
 
-std::optional<ProfileVault> UpdateProfileVault(
+namespace {
+
+std::optional<AdminVaultAccess> OpenForUpdate(
 		const ProfileVault &vault,
 		const DerivedCredential &admin,
-		const Metadata &metadata,
-		const std::vector<SetGrantCredential> &replacementCredentials,
+		GrantKeys &keys,
 		ProfileVaultError *error) {
 	const auto validation = ValidateVault(vault);
 	if (validation != ProfileVaultError::None) {
@@ -1062,9 +1063,20 @@ std::optional<ProfileVault> UpdateProfileVault(
 		SetError(error, ProfileVaultError::InvalidCredential);
 		return std::nullopt;
 	}
+	return OpenAdminVault(vault, admin, keys, error);
+}
+
+} // namespace
+
+std::optional<ProfileVault> UpdateProfileVault(
+		const ProfileVault &vault,
+		const DerivedCredential &admin,
+		const Metadata &metadata,
+		const std::vector<SetGrantCredential> &replacementCredentials,
+		ProfileVaultError *error) {
 	auto keys = GrantKeys();
 	const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); });
-	auto opened = OpenAdminVault(vault, admin, keys, error);
+	auto opened = OpenForUpdate(vault, admin, keys, error);
 	if (!opened) {
 		return std::nullopt;
 	}
@@ -1077,6 +1089,60 @@ std::optional<ProfileVault> UpdateProfileVault(
 		opened->locators,
 		admin,
 		replacementCredentials,
+		&vault,
+		&opened->metadata,
+		keys,
+		error);
+}
+
+std::optional<ProfileVault> PruneProfileVaultAccounts(
+		const ProfileVault &vault,
+		const DerivedCredential &admin,
+		const std::vector<AccountId> &remove,
+		ProfileVaultError *error) {
+	auto keys = GrantKeys();
+	const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); });
+	auto opened = OpenForUpdate(vault, admin, keys, error);
+	if (!opened) {
+		return std::nullopt;
+	}
+	const auto wipeAccounts = gsl::finally([&] {
+		CleanseAccountKeys(opened->accounts);
+	});
+	const auto targets = std::set<AccountId>(remove.begin(), remove.end());
+	const auto containsTarget = [&](AccountId id) {
+		return targets.contains(id);
+	};
+	const auto count = std::count_if(
+		opened->accounts.begin(),
+		opened->accounts.end(),
+		[&](const AccountKey &key) { return containsTarget(key.id); });
+	if (targets.empty() || targets.size() != remove.size()
+		|| size_t(count) != targets.size()) {
+		SetError(error, ProfileVaultError::InvalidAccountRemoval);
+		return std::nullopt;
+	}
+	auto metadata = opened->metadata;
+	for (auto &set : metadata.sets) {
+		std::erase_if(set.accounts, containsTarget);
+	}
+	for (auto &key : opened->accounts) {
+		if (containsTarget(key.id)) {
+			OPENSSL_cleanse(key.key.data(), key.key.size());
+		}
+	}
+	std::erase_if(opened->accounts, [&](const AccountKey &key) {
+		return containsTarget(key.id);
+	});
+	std::erase_if(opened->locators, [&](const AccountVaultLocator &locator) {
+		return containsTarget(locator.id);
+	});
+	return RewriteVault(
+		metadata,
+		opened->accounts,
+		opened->locators,
+		admin,
+		{},
 		&vault,
 		&opened->metadata,
 		keys,

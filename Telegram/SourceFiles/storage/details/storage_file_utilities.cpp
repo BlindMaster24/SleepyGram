@@ -703,13 +703,20 @@ void FileWriteDescriptor::writeEncrypted(
 }
 
 bool FileWriteDescriptor::finish() {
+	return finish(AppVersion, false);
+}
+
+bool FileWriteDescriptor::finishStaged(int32 version) {
+	return finish(version, true);
+}
+
+bool FileWriteDescriptor::finish(int32 version, bool staged) {
 	if (!_stream.device()) {
 		return _result;
 	}
 
 	_stream.setDevice(nullptr);
 	_md5.feed(&_fullSize, sizeof(_fullSize));
-	qint32 version = AppVersion;
 	_md5.feed(&version, sizeof(version));
 	_md5.feed(TdfMagic, TdfMagicLen);
 
@@ -721,7 +728,17 @@ bool FileWriteDescriptor::finish() {
 		.data = _safeData,
 		.md5 = QByteArray((const char*)_md5.result(), 0x10)
 	};
-	if (_sync) {
+	if (staged) {
+		auto file = QSaveFile(_base + 's');
+		_result = file.open(QIODevice::WriteOnly)
+			&& file.write(TdfMagic, TdfMagicLen) == TdfMagicLen
+			&& file.write(
+				reinterpret_cast<const char*>(&version),
+				sizeof(version)) == sizeof(version)
+			&& file.write(entry.data) == entry.data.size()
+			&& file.write(entry.md5) == entry.md5.size()
+			&& file.commit();
+	} else if (_sync) {
 		_result = Manager.writeSync(std::move(entry));
 	} else {
 		Manager.write(std::move(entry));

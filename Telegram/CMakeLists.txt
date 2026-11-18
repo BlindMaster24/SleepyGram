@@ -257,6 +257,8 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_action_runtime_service.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
+        ayu/features/emergency_actions/scoped_account_clear.cpp
+        ayu/features/emergency_actions/scoped_account_clear.h
         ayu/features/profile_sets/profile_sets.cpp
         ayu/features/profile_sets/profile_sets.h
         ayu/features/profile_sets/profile_sets_password.cpp
@@ -271,6 +273,8 @@ set(ayugram_files
         ayu/features/profile_sets/account_registry.h
         ayu/features/profile_sets/account_storage_plan.cpp
         ayu/features/profile_sets/account_storage_plan.h
+        ayu/features/profile_sets/profile_account_storage.cpp
+        ayu/features/profile_sets/profile_account_storage.h
         ayu/features/profile_sets/profile_generation.cpp
         ayu/features/profile_sets/profile_generation.h
         ayu/features/message_shot/message_shot.cpp
@@ -2222,6 +2226,7 @@ PRIVATE
     settings/sections/settings_websites.h
     storage/details/storage_file_utilities.cpp
     storage/details/storage_file_utilities.h
+    storage/details/storage_hkdf.h
     storage/details/storage_settings_scheme.cpp
     storage/details/storage_settings_scheme.h
     storage/download_manager_mtproto.cpp
@@ -2278,6 +2283,7 @@ PRIVATE
     support/support_templates.h
     tde2e/tde2e_integration.cpp
     tde2e/tde2e_integration.h
+    test/test_account_storage_migration.cpp
     test/test_activation.cpp
     test/test_activation.h
     test/test_agent.cpp

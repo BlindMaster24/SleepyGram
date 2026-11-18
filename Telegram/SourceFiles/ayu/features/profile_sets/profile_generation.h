@@ -46,6 +46,7 @@ enum class ProfileGenerationError : uchar {
 	InvalidPlan,
 	MissingAdapter,
 	StartFailed,
+	StaleGeneration,
 };
 
 // A failed start must leave no live account; success returns its close action.
@@ -71,11 +72,15 @@ public:
 	[[nodiscard]] const Metadata *adminMetadata() const {
 		return _adminMetadata ? &*_adminMetadata : nullptr;
 	}
+	[[nodiscard]] bool Start(
+		const MigrationController &sidecar,
+		StartProfileAccount startAccount,
+		ProfileGenerationError *error = nullptr);
 	void Close();
 
 private:
 	friend std::optional<OpenedProfileGeneration>
-	OpenCommittedProfileGeneration(
+	AuthenticateCommittedProfileGeneration(
 		const MigrationController&,
 		GetAdminKeyringWrappingKey,
 		DerivedCredential,
@@ -83,22 +88,36 @@ private:
 		const QByteArray&,
 		std::vector<ProfileGenerationAccountBinding>,
 		QString,
-		StartProfileAccount,
+		const QByteArray&,
 		ProfileGenerationError*);
 
 	OpenedProfileGeneration(
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
-		std::vector<Fn<void()>> closeAdapters,
+		QByteArray transactionId,
 		std::optional<Metadata> adminMetadata = std::nullopt);
 
 	AccountStoragePlan _plan;
 	ProfileGenerationAccess _access;
+	QByteArray _transactionId;
 	std::vector<Fn<void()>> _closeAdapters;
 	std::optional<Metadata> _adminMetadata;
+	bool _started = false;
 	bool _closed = false;
 
 };
+
+[[nodiscard]] std::optional<OpenedProfileGeneration>
+AuthenticateCommittedProfileGeneration(
+	const MigrationController &sidecar,
+	GetAdminKeyringWrappingKey getAdminKeyringWrappingKey,
+	DerivedCredential credential,
+	const AccountRegistry &registry,
+	const QByteArray &environmentId,
+	std::vector<ProfileGenerationAccountBinding> mappings,
+	QString globalTdataPath,
+	const QByteArray &expectedTransactionId,
+	ProfileGenerationError *error = nullptr);
 
 [[nodiscard]] std::optional<OpenedProfileGeneration>
 OpenCommittedProfileGeneration(

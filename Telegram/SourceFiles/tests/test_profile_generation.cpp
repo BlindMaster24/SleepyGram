@@ -314,6 +314,43 @@ int RunChecks() {
 		!partialFailure && error == ProfileGenerationError::StartFailed
 		&& startOrder == std::vector<AccountId>{ { 4, 1 }, { 4, 2 } }
 		&& partialCloseOrder == std::vector<AccountId>{ { 4, 1 } });
+
+	const auto authenticate = [&](const QByteArray &transactionId) {
+		return AuthenticateCommittedProfileGeneration(
+			*sidecar, {}, Credential(1), {}, {}, {}, {}, transactionId, &error);
+	};
+	auto firstRoute = authenticate(committed->transactionId);
+	auto pendingRoute = authenticate(committed->transactionId);
+	check("authentication-prepares-grants-without-starting-accounts",
+		firstRoute && pendingRoute && adapterCalls.size() == 2);
+	check("authenticated-route-starts-once",
+		firstRoute && firstRoute->Start(*sidecar, adapter, &error)
+		&& adapterCalls.size() == 3
+		&& !firstRoute->Start(*sidecar, adapter, &error)
+		&& error == ProfileGenerationError::InvalidPlan
+		&& adapterCalls.size() == 3);
+	if (firstRoute) {
+		firstRoute->Close();
+	}
+	const auto replacement = sidecar->ReplaceCommitted(
+		committed->transactionId,
+		{
+			{ MigrationArtifact::ProfileVault, fixture->vault },
+			{ MigrationArtifact::AccountKeyring, fixture->keyring },
+		},
+		[&](const auto &files) {
+			return files.profileVault == fixture->vault
+				&& files.accountKeyring == fixture->keyring;
+		});
+	check("credential-derived-for-old-generation-is-rejected",
+		replacement && !authenticate(committed->transactionId)
+		&& error == ProfileGenerationError::StaleGeneration);
+	check("prepared-grants-cannot-start-after-generation-replacement",
+		replacement && pendingRoute
+		&& !pendingRoute->Start(*sidecar, adapter, &error)
+		&& error == ProfileGenerationError::StaleGeneration
+		&& pendingRoute->plan().targets().empty()
+		&& adapterCalls.size() == 3);
 	std::printf("%d/%d checks passed\n", passed, total);
 	return (passed == total) ? 0 : 1;
 }

@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/profile_sets/account_keyring.h"
 
 #include "base/openssl_help.h"
+#include "storage/details/storage_hkdf.h"
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -16,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <algorithm>
 #include <set>
+#include <string_view>
 
 namespace Ayu::ProfileSets {
 namespace {
@@ -248,6 +250,26 @@ KeyringError ValidateAccountKeys(const std::vector<AccountKey> &accounts) {
 		}
 	}
 	return KeyringError::None;
+}
+
+bool DeriveAccountLocalStorageKey(
+		const AccountKey &account,
+		bytes::span output) {
+	constexpr auto kInfo = std::string_view(
+		"SleepyGram profile account local storage v1");
+	if (!account.id || account.key.size() != kAccountKeySize
+		|| AllZero(account.key) || output.size() != kAccountLocalStorageKeySize) {
+		return false;
+	}
+	auto salt = QByteArray();
+	salt.reserve(16);
+	AppendUint64(salt, account.id.high);
+	AppendUint64(salt, account.id.low);
+	return Storage::HkdfSha256(
+		bytes::make_span(account.key.constData(), account.key.size()),
+		bytes::make_span(salt.constData(), salt.size()),
+		bytes::make_span(kInfo.data(), kInfo.size()),
+		output);
 }
 
 QByteArray SealAccountKeyring(

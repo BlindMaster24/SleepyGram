@@ -17,6 +17,7 @@ TESTS = (
     "emergency_action_coordinator",
     "emergency_action_runtime_service",
     "lock_screen_submission",
+    "scoped_account_clear",
 )
 
 

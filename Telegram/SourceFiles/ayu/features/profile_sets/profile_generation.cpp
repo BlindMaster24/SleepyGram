@@ -160,11 +160,11 @@ void CloseAdapters(std::vector<Fn<void()>> &adapters) {
 OpenedProfileGeneration::OpenedProfileGeneration(
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
-		std::vector<Fn<void()>> closeAdapters,
+		QByteArray transactionId,
 		std::optional<Metadata> adminMetadata)
 : _plan(std::move(plan))
 , _access(access)
-, _closeAdapters(std::move(closeAdapters))
+, _transactionId(std::move(transactionId))
 , _adminMetadata(std::move(adminMetadata)) {
 }
 
@@ -172,8 +172,10 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 		OpenedProfileGeneration &&other) noexcept
 : _plan(std::move(other._plan))
 , _access(other._access)
+, _transactionId(std::move(other._transactionId))
 , _closeAdapters(std::move(other._closeAdapters))
 , _adminMetadata(std::move(other._adminMetadata))
+, _started(other._started)
 , _closed(std::exchange(other._closed, true)) {
 }
 
@@ -189,6 +191,45 @@ void OpenedProfileGeneration::Close() {
 	_plan.Clear();
 	_adminMetadata.reset();
 	_closed = true;
+}
+
+bool OpenedProfileGeneration::Start(
+		const MigrationController &sidecar,
+		StartProfileAccount startAccount,
+		ProfileGenerationError *error) {
+	if (_closed || _started) {
+		SetError(error, ProfileGenerationError::InvalidPlan);
+		return false;
+	}
+	const auto committed = sidecar.LoadCommitted();
+	if (!committed || committed->transactionId != _transactionId) {
+		SetError(error, ProfileGenerationError::StaleGeneration);
+		Close();
+		return false;
+	}
+	if (!startAccount && !_plan.targets().empty()) {
+		SetError(error, ProfileGenerationError::MissingAdapter);
+		Close();
+		return false;
+	}
+	for (const auto &target : _plan.targets()) {
+		const auto key = _plan.keyFor(target.id);
+		if (!key) {
+			SetError(error, ProfileGenerationError::InvalidPlan);
+			Close();
+			return false;
+		}
+		auto close = startAccount(target, *key);
+		if (!close || !*close) {
+			SetError(error, ProfileGenerationError::StartFailed);
+			Close();
+			return false;
+		}
+		_closeAdapters.push_back(std::move(*close));
+	}
+	_started = true;
+	SetError(error, ProfileGenerationError::None);
+	return true;
 }
 
 std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
@@ -218,6 +259,33 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 		QString globalTdataPath,
 		StartProfileAccount startAccount,
 		ProfileGenerationError *error) {
+	auto authenticated = AuthenticateCommittedProfileGeneration(
+		sidecar,
+		std::move(getAdminKeyringWrappingKey),
+		std::move(credential),
+		registry,
+		environmentId,
+		std::move(mappings),
+		std::move(globalTdataPath),
+		{},
+		error);
+	if (authenticated && !authenticated->Start(
+			sidecar, std::move(startAccount), error)) {
+		return std::nullopt;
+	}
+	return authenticated;
+}
+
+std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
+		const MigrationController &sidecar,
+		GetAdminKeyringWrappingKey getAdminKeyringWrappingKey,
+		DerivedCredential credential,
+		const AccountRegistry &registry,
+		const QByteArray &environmentId,
+		std::vector<ProfileGenerationAccountBinding> mappings,
+		QString globalTdataPath,
+		const QByteArray &expectedTransactionId,
+		ProfileGenerationError *error) {
 	SetError(error, ProfileGenerationError::NotCommitted);
 	auto credentialWiper = CredentialWiper{ credential };
 	MigrationError migrationError = MigrationError::None;
@@ -230,6 +298,11 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 	const auto committed = sidecar.LoadCommitted(&migrationError);
 	if (!committed) {
 		SetError(error, ProfileGenerationError::InvalidSidecar);
+		return std::nullopt;
+	}
+	if (!expectedTransactionId.isEmpty()
+		&& committed->transactionId != expectedTransactionId) {
+		SetError(error, ProfileGenerationError::StaleGeneration);
 		return std::nullopt;
 	}
 	auto vaultError = ProfileVaultError::Malformed;
@@ -286,7 +359,7 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 		return OpenedProfileGeneration(
 			AccountStoragePlan(),
 			{ .role = ProfileGenerationRole::Master },
-			{},
+			committed->transactionId,
 			std::move(admin->metadata));
 	}
 	const auto route = ProfileGenerationAccess{
@@ -314,32 +387,9 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 			: ProfileGenerationError::InvalidPlan);
 		return std::nullopt;
 	}
-	if (!startAccount && !plan->targets().empty()) {
-		SetError(error, ProfileGenerationError::MissingAdapter);
-		return std::nullopt;
-	}
-	auto closeAdapters = std::vector<Fn<void()>>();
-	for (const auto &target : plan->targets()) {
-		const auto key = plan->keyFor(target.id);
-		if (!key) {
-			CloseAdapters(closeAdapters);
-			SetError(error, ProfileGenerationError::InvalidPlan);
-			return std::nullopt;
-		}
-		auto close = startAccount(target, *key);
-		if (!close || !*close) {
-			CloseAdapters(closeAdapters);
-			SetError(error, ProfileGenerationError::StartFailed);
-			return std::nullopt;
-		}
-		closeAdapters.push_back(std::move(*close));
-	}
-	auto opened = OpenedProfileGeneration(
-		std::move(*plan),
-		route,
-		std::move(closeAdapters));
 	SetError(error, ProfileGenerationError::None);
-	return std::optional<OpenedProfileGeneration>(std::move(opened));
+	return OpenedProfileGeneration(
+		std::move(*plan), route, committed->transactionId);
 }
 
 } // namespace Ayu::ProfileSets

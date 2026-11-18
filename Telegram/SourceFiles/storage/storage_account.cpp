@@ -43,6 +43,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webview/webview_interface.h"
 #include "window/themes/window_theme.h"
 
+#include <openssl/crypto.h>
+#include <QtCore/QTemporaryDir>
+#include <map>
+
 namespace Storage {
 namespace {
 
@@ -111,6 +115,555 @@ enum { // Local Storage Keys
 	lskWalletEngineStorages = 0x21, // data: QString key
 };
 
+using MigrationResult = AccountMigrationResult;
+constexpr auto kMaxMigrationRecordSize = 64 * 1024 * 1024;
+constexpr auto kMigrationEntries = QDir::AllEntries
+	| QDir::NoDotAndDotDot
+	| QDir::Hidden
+	| QDir::System;
+
+struct MigrationRecord final {
+	~MigrationRecord() {
+		if (!data.isEmpty()) {
+			OPENSSL_cleanse(data.data(), size_t(data.size()));
+		}
+	}
+
+	int32 version = 0;
+	QByteArray data;
+};
+
+enum class MigrationRecordType : uchar {
+	Map,
+	Authorization,
+	Settings,
+	Config,
+	Other,
+};
+
+struct MigrationPaths final {
+	QString sourceRoot;
+	QString targetRoot;
+};
+
+bool Present(const QFileInfo &info) {
+	return info.exists() || info.isSymLink() || info.isJunction();
+}
+
+bool CanonicalMigrationDirectory(const QString &path) {
+	const auto info = QFileInfo(path);
+	return info.isDir()
+		&& !info.isSymLink()
+		&& !info.isJunction()
+		&& info.canonicalFilePath() == path;
+}
+
+bool EmptyMigrationDirectory(const QString &path) {
+	const auto clean = QDir::cleanPath(path);
+	return !Present(QFileInfo(clean))
+		|| (CanonicalMigrationDirectory(clean)
+			&& QDir(clean).isReadable()
+			&& QDir(clean).isEmpty(kMigrationEntries));
+}
+
+std::optional<MigrationPaths> ValidateMigrationPaths(
+		const AccountPaths &source,
+		const AccountPaths &target) {
+	const auto sourceAuth = QFileInfo(source.authPath);
+	const auto sourceRoot = sourceAuth.path();
+	const auto namePrefix = sourceRoot + u"/temp_"_q;
+	if (source.mode != AccountStorageMode::Legacy
+		|| target.mode != AccountStorageMode::Scoped
+		|| !CanonicalMigrationDirectory(sourceRoot)
+		|| !source.tempPath.startsWith(namePrefix)
+		|| !source.tempPath.endsWith('/')) {
+		return std::nullopt;
+	}
+	const auto name = source.tempPath.mid(namePrefix.size()).chopped(1);
+	if (name.isEmpty() || name.contains('/') || name.contains('\\')
+		|| name.contains(QChar(0))) {
+		return std::nullopt;
+	}
+	const auto legacy = AccountPathsForDataName(sourceRoot, name);
+	const auto targetRoot = QFileInfo(target.authPath).path();
+	const auto targetInfo = QFileInfo(targetRoot);
+	const auto targetParent = targetInfo.path();
+	const auto scoped = ScopedAccountPaths(targetParent, targetInfo.fileName());
+	const auto targetInsideSource = targetParent == sourceRoot
+		|| targetParent.startsWith(sourceRoot + '/');
+	const auto profileRoot = sourceRoot + u"/profile-sets/accounts"_q;
+	if (legacy.authPath != source.authPath
+		|| legacy.basePath != source.basePath
+		|| legacy.databasePath != source.databasePath
+		|| !scoped
+		|| !CanonicalMigrationDirectory(targetParent)
+		|| scoped->authPath != target.authPath
+		|| scoped->basePath != target.basePath
+		|| scoped->databasePath != target.databasePath
+		|| scoped->tempPath != target.tempPath
+		|| !CanonicalMigrationDirectory(QDir::cleanPath(source.basePath))
+		|| (targetInsideSource && targetParent != profileRoot)) {
+		return std::nullopt;
+	}
+	return MigrationPaths{
+		.sourceRoot = sourceRoot,
+		.targetRoot = targetRoot,
+	};
+}
+
+bool HasRecord(const QString &stem) {
+	return Present(QFileInfo(stem + 's'))
+		|| Present(QFileInfo(stem + '0'))
+		|| Present(QFileInfo(stem + '1'));
+}
+
+bool ReadMigrationRecord(
+		const QString &stem,
+		MigrationRecordType type,
+		const MTP::AuthKeyPtr &key,
+		MigrationRecord &record,
+		bool staged = false) {
+	for (const auto suffix : { 's', '0', '1' }) {
+		const auto path = stem + suffix;
+		const auto info = QFileInfo(path);
+		if (!Present(info)) {
+			if (staged && suffix == 's') {
+				return false;
+			}
+			continue;
+		}
+		if ((staged && suffix != 's')
+			|| !info.isFile()
+			|| info.isSymLink()
+			|| info.isJunction()
+			|| info.size() > kMaxMigrationRecordSize) {
+			return false;
+		}
+	}
+
+	const auto split = stem.lastIndexOf('/') + 1;
+	auto file = FileReadDescriptor();
+	if (!ReadFile(
+		file,
+		stem.mid(split),
+		stem.left(split),
+		LegacyBackupPolicy::Preserve)
+		|| file.version <= 0) {
+		return false;
+	}
+	if (type == MigrationRecordType::Map) {
+		auto salt = QByteArray();
+		auto localKey = QByteArray();
+		file.stream >> salt >> localKey;
+		if (!salt.isEmpty() || !localKey.isEmpty()) {
+			return false;
+		}
+	}
+	auto encrypted = QByteArray();
+	file.stream >> encrypted;
+	auto decrypted = EncryptedDescriptor();
+	if (file.stream.status() != QDataStream::Ok
+		|| !file.stream.atEnd()
+		|| !DecryptLocal(decrypted, encrypted, key)) {
+		return false;
+	}
+	record.version = file.version;
+	record.data = std::move(decrypted.data);
+	return true;
+}
+
+bool WriteMigrationRecord(
+		const QString &stem,
+		MigrationRecordType type,
+		const MigrationRecord &record,
+		const MTP::AuthKeyPtr &key) {
+	const auto split = stem.lastIndexOf('/') + 1;
+	auto file = FileWriteDescriptor(stem.mid(split), stem.left(split));
+	if (type == MigrationRecordType::Map) {
+		file.writeData(QByteArray());
+		file.writeData(QByteArray());
+	}
+	auto payload = EncryptedDescriptor();
+	payload.data = record.data;
+	file.writeEncrypted(payload, key);
+	OPENSSL_cleanse(payload.data.data(), size_t(payload.data.size()));
+	return file.finishStaged(record.version);
+}
+
+MigrationResult InspectAuthorization(QDataStream &stream, UserId expectedUser) {
+	auto block = quint32();
+	auto authorization = QByteArray();
+	stream >> block >> authorization;
+	const auto cleanse = gsl::finally([&] {
+		if (!authorization.isEmpty()) {
+			OPENSSL_cleanse(authorization.data(), size_t(authorization.size()));
+		}
+	});
+	if (block != dbiMtpAuthorization
+		|| stream.status() != QDataStream::Ok
+		|| !stream.atEnd()) {
+		return MigrationResult::InvalidSource;
+	}
+	auto auth = QDataStream(authorization);
+	auth.setVersion(QDataStream::Qt_5_1);
+	auto user = qint32();
+	auto mainDc = qint32();
+	auto wideUser = quint64();
+	auth >> user >> mainDc;
+	if (user == -1 && mainDc == -1) {
+		auth >> wideUser >> mainDc;
+	} else if (user > 0) {
+		wideUser = quint64(user);
+	}
+	if (auth.status() != QDataStream::Ok || mainDc <= 0 || !wideUser) {
+		return MigrationResult::InvalidSource;
+	}
+	if (wideUser != expectedUser.bare) {
+		return MigrationResult::IdentityMismatch;
+	}
+
+	auto hasMainKey = false;
+	for (const auto current : { true, false }) {
+		auto count = qint32();
+		auth >> count;
+		if (count < 0
+			|| count > auth.device()->bytesAvailable()
+				/ (sizeof(qint32) + MTP::AuthKey::kSize)) {
+			return MigrationResult::InvalidSource;
+		}
+		for (auto i = 0; i != count; ++i) {
+			auto dc = qint32();
+			auth >> dc;
+			if (dc <= 0 || auth.skipRawData(MTP::AuthKey::kSize)
+				!= MTP::AuthKey::kSize) {
+				return MigrationResult::InvalidSource;
+			}
+			hasMainKey = hasMainKey || (current && dc == mainDc);
+		}
+	}
+	return (hasMainKey && auth.atEnd() && auth.status() == QDataStream::Ok)
+		? MigrationResult::Success
+		: MigrationResult::InvalidSource;
+}
+
+MigrationResult InspectMap(
+		QDataStream &stream,
+		UserId expectedUser,
+		std::map<QString, MigrationRecordType> &files) {
+	const auto keys = [&](int count, MigrationRecordType kind) {
+		for (auto i = 0; i != count; ++i) {
+			auto key = FileKey();
+			stream >> key;
+			if (stream.status() != QDataStream::Ok
+				|| (key && !files.emplace(ToFilePart(key), kind).second)) {
+				return false;
+			}
+		}
+		return true;
+	};
+	auto seen = base::flat_set<quint32>();
+	while (!stream.atEnd()) {
+		auto type = quint32();
+		stream >> type;
+		if (stream.status() != QDataStream::Ok || !seen.emplace(type).second) {
+			return MigrationResult::InvalidSource;
+		}
+		auto ok = true;
+		switch (type) {
+		case lskSelfSerialized: {
+			auto serialized = QByteArray();
+			stream >> serialized;
+			auto self = QDataStream(serialized);
+			self.setVersion(QDataStream::Qt_5_1);
+			auto id = quint64();
+			self >> id;
+			if (self.status() != QDataStream::Ok) {
+				return MigrationResult::InvalidSource;
+			}
+			if (peerToUser(DeserializePeerId(id)) != expectedUser) {
+				return MigrationResult::IdentityMismatch;
+			}
+		} break;
+		case lskDraft:
+		case lskDraftPosition:
+		case lskBotStorages:
+		case lskWalletEngineStorages: {
+			auto count = quint32();
+			stream >> count;
+			if (count > stream.device()->bytesAvailable()
+				/ (sizeof(FileKey) + sizeof(quint32))) {
+				return MigrationResult::InvalidSource;
+			}
+			for (auto i = quint32(0); i != count; ++i) {
+				if (!keys(1, MigrationRecordType::Other)) {
+					return MigrationResult::InvalidSource;
+				}
+				if (type == lskWalletEngineStorages) {
+					auto entry = QString();
+					stream >> entry;
+				} else {
+					auto peer = quint64();
+					stream >> peer;
+				}
+				if (stream.status() != QDataStream::Ok) {
+					return MigrationResult::InvalidSource;
+				}
+			}
+		} break;
+		case lskUserSettings:
+			ok = keys(1, MigrationRecordType::Settings);
+			break;
+		case lskLocations:
+		case lskRecentStickersOld:
+		case lskRecentHashtagsAndBots:
+		case lskSavedGifs:
+		case lskTrustedPeers:
+		case lskFavedStickers:
+		case lskExportSettings:
+		case lskSearchSuggestions:
+		case lskRoundPlaceholder:
+		case lskInlineBotsDownloads:
+		case lskMediaLastPlaybackPositions:
+		case lskPrefs:
+			ok = keys(1, MigrationRecordType::Other);
+			break;
+		case lskStickersKeys:
+			ok = keys(4, MigrationRecordType::Other);
+			break;
+		case lskMasksKeys:
+		case lskCustomEmojiKeys:
+			ok = keys(3, MigrationRecordType::Other);
+			break;
+		default:
+			return MigrationResult::UnsupportedData;
+		}
+		if (!ok || stream.status() != QDataStream::Ok) {
+			return MigrationResult::InvalidSource;
+		}
+	}
+	return MigrationResult::Success;
+}
+
+bool InspectScopedSettings(QDataStream &stream, int32 version) {
+	auto context = ReadSettingsContext();
+	while (!stream.atEnd()) {
+		auto block = quint32();
+		stream >> block;
+		if (block == dbiSessionSettings) {
+			auto settings = QByteArray();
+			stream >> settings;
+			auto header = QDataStream(settings);
+			header.setVersion(QDataStream::Qt_5_1);
+			auto tag = qint32();
+			auto format = qint32();
+			header >> tag >> format;
+			if (tag != -1 || format != 2) {
+				return false;
+			}
+		} else if (block == dbiRecentStickers) {
+			auto stickers = RecentStickerPreload();
+			stream >> stickers;
+		} else if (block != dbiCacheSettings
+			|| !ReadSetting(block, stream, version, context)) {
+			return false;
+		}
+		if (stream.status() != QDataStream::Ok) {
+			return false;
+		}
+	}
+	return true;
+}
+
+MigrationResult InspectMigrationRecord(
+		const MigrationRecord &record,
+		MigrationRecordType type,
+		UserId expectedUser,
+		std::map<QString, MigrationRecordType> &files) {
+	auto stream = QDataStream(record.data);
+	stream.setVersion(QDataStream::Qt_5_1);
+	if (stream.skipRawData(sizeof(quint32)) != sizeof(quint32)) {
+		return MigrationResult::InvalidSource;
+	}
+	switch (type) {
+	case MigrationRecordType::Map:
+		return InspectMap(stream, expectedUser, files);
+	case MigrationRecordType::Authorization:
+		return InspectAuthorization(stream, expectedUser);
+	case MigrationRecordType::Settings:
+		return InspectScopedSettings(stream, record.version)
+			? MigrationResult::Success
+			: MigrationResult::UnsupportedData;
+	case MigrationRecordType::Config: {
+		auto serialized = QByteArray();
+		stream >> serialized;
+		return (stream.status() == QDataStream::Ok
+			&& stream.atEnd()
+			&& MTP::Config::FromSerialized(serialized))
+			? MigrationResult::Success
+			: MigrationResult::InvalidSource;
+	}
+	case MigrationRecordType::Other:
+		return MigrationResult::Success;
+	}
+	Unexpected("migration record type");
+}
+
+bool CheckMigrationInventory(
+		const QString &path,
+		const std::map<QString, MigrationRecordType> &files,
+		bool staged) {
+	const auto directory = QDir(path);
+	if (!CanonicalMigrationDirectory(QDir::cleanPath(path))
+		|| !directory.isReadable()) {
+		return false;
+	}
+	const auto entries = directory.entryList(kMigrationEntries);
+	if (staged && entries.size() != qsizetype(files.size())) {
+		return false;
+	}
+	for (const auto &entry : entries) {
+		const auto suffix = entry.isEmpty() ? QChar() : entry.back();
+		if (entry.isEmpty()
+			|| !files.contains(entry.chopped(1))
+			|| (suffix != 's' && (staged || (suffix != '0' && suffix != '1')))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+MigrationResult CompareMigrationRecord(
+		const MigrationRecord &source,
+		const QString &target,
+		MigrationRecordType type,
+		const MTP::AuthKeyPtr &targetKey,
+		bool write) {
+	if (write && !WriteMigrationRecord(target, type, source, targetKey)) {
+		return MigrationResult::DestinationIo;
+	}
+	auto readback = MigrationRecord();
+	return (ReadMigrationRecord(target, type, targetKey, readback, true)
+		&& source.version == readback.version
+		&& source.data == readback.data)
+		? MigrationResult::Success
+		: MigrationResult::VerificationFailed;
+}
+
+MigrationResult CompareMigrationRecords(
+		const MigrationPaths &paths,
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &sourceKey,
+		const AccountPaths &target,
+		const MTP::AuthKeyPtr &targetKey,
+		UserId expectedUser,
+		bool write) {
+	if (!EmptyMigrationDirectory(source.databasePath)
+		|| !EmptyMigrationDirectory(source.tempPath)
+		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/tdld"_q)
+		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/webview"_q)) {
+		return MigrationResult::UnsupportedData;
+	}
+
+	auto files = std::map<QString, MigrationRecordType>();
+	auto map = MigrationRecord();
+	const auto mapName = u"map"_q;
+	if (!ReadMigrationRecord(
+		source.basePath + mapName,
+		MigrationRecordType::Map,
+		sourceKey,
+		map)) {
+		return MigrationResult::InvalidSource;
+	}
+	const auto mapResult = InspectMigrationRecord(
+		map,
+		MigrationRecordType::Map,
+		expectedUser,
+		files);
+	if (mapResult != MigrationResult::Success) {
+		return mapResult;
+	}
+	files.emplace(mapName, MigrationRecordType::Map);
+	const auto configName = u"config"_q;
+	if (HasRecord(source.basePath + configName)) {
+		files.emplace(configName, MigrationRecordType::Config);
+	}
+	if (!CheckMigrationInventory(source.basePath, files, false)) {
+		return MigrationResult::UnsupportedData;
+	}
+
+	auto auth = MigrationRecord();
+	if (!ReadMigrationRecord(
+		source.authPath,
+		MigrationRecordType::Authorization,
+		sourceKey,
+		auth)) {
+		return MigrationResult::InvalidSource;
+	}
+	const auto authResult = InspectMigrationRecord(
+		auth,
+		MigrationRecordType::Authorization,
+		expectedUser,
+		files);
+	if (authResult != MigrationResult::Success) {
+		return authResult;
+	}
+
+	const auto root = QFileInfo(target.authPath).path();
+	const auto entries = QDir(root).entryList(kMigrationEntries, QDir::Name);
+	const auto expectedEntries = write
+		? QStringList{ u"data"_q }
+		: QStringList{ u"auths"_q, u"data"_q };
+	const auto dataMatches = write
+		? EmptyMigrationDirectory(target.basePath)
+		: CheckMigrationInventory(target.basePath, files, true);
+	if (!CanonicalMigrationDirectory(root)
+		|| !dataMatches
+		|| entries != expectedEntries) {
+		return MigrationResult::VerificationFailed;
+	}
+	const auto authCompared = CompareMigrationRecord(
+		auth,
+		target.authPath,
+		MigrationRecordType::Authorization,
+		targetKey,
+		write);
+	if (authCompared != MigrationResult::Success) {
+		return authCompared;
+	}
+	for (const auto &[name, type] : files) {
+		auto record = MigrationRecord();
+		const auto isMap = (type == MigrationRecordType::Map);
+		if (!isMap && !ReadMigrationRecord(
+			source.basePath + name,
+			type,
+			sourceKey,
+			record)) {
+			return MigrationResult::InvalidSource;
+		}
+		const auto &value = isMap ? map : record;
+		if (!isMap) {
+			const auto checked = InspectMigrationRecord(
+				value,
+				type,
+				expectedUser,
+				files);
+			if (checked != MigrationResult::Success) {
+				return checked;
+			}
+		}
+		const auto compared = CompareMigrationRecord(
+			value,
+			target.basePath + name,
+			type,
+			targetKey,
+			write);
+		if (compared != MigrationResult::Success) {
+			return compared;
+		}
+	}
+	return MigrationResult::Success;
+}
+
 auto EmptyMessageDraftSources()
 -> const base::flat_map<Data::DraftKey, MessageDraftSource> & {
 	static const auto result = base::flat_map<
@@ -155,6 +708,63 @@ auto EmptyMessageDraftSources()
 }
 
 } // namespace
+
+AccountMigrationResult StageLegacyAccount(
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &sourceKey,
+		const AccountPaths &target,
+		const MTP::AuthKeyPtr &targetKey,
+		UserId expectedUser) {
+	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
+		|| !expectedUser) {
+		return MigrationResult::InvalidKeys;
+	}
+	const auto paths = ValidateMigrationPaths(source, target);
+	if (!paths) {
+		return MigrationResult::InvalidPaths;
+	}
+	if (Present(QFileInfo(paths->targetRoot))) {
+		return CompareMigrationRecords(
+			*paths, source, sourceKey, target, targetKey, expectedUser, false);
+	}
+	const auto parent = QFileInfo(paths->targetRoot).absolutePath();
+	auto temporary = QTemporaryDir(parent + u"/.stage-XXXXXX"_q);
+	if (!temporary.isValid() || !QDir(temporary.path()).mkdir(u"data"_q)) {
+		return MigrationResult::DestinationIo;
+	}
+	const auto staged = AccountPaths{
+		.basePath = temporary.path() + u"/data/"_q,
+		.authPath = temporary.path() + u"/auth"_q,
+		.mode = AccountStorageMode::Scoped,
+	};
+	const auto result = CompareMigrationRecords(
+		*paths, source, sourceKey, staged, targetKey, expectedUser, true);
+	if (result != MigrationResult::Success) {
+		return result;
+	}
+	if (!QDir(parent).rename(temporary.path(), paths->targetRoot)) {
+		return MigrationResult::DestinationIo;
+	}
+	temporary.setAutoRemove(false);
+	return VerifyStagedAccount(source, sourceKey, target, targetKey, expectedUser);
+}
+
+AccountMigrationResult VerifyStagedAccount(
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &sourceKey,
+		const AccountPaths &target,
+		const MTP::AuthKeyPtr &targetKey,
+		UserId expectedUser) {
+	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
+		|| !expectedUser) {
+		return MigrationResult::InvalidKeys;
+	}
+	const auto paths = ValidateMigrationPaths(source, target);
+	return paths
+		? CompareMigrationRecords(
+			*paths, source, sourceKey, target, targetKey, expectedUser, false)
+		: MigrationResult::InvalidPaths;
+}
 
 Account::Account(not_null<Main::Account*> owner, const QString &dataName)
 : Account(owner, AccountPathsForDataName(BaseGlobalPath(), dataName)) {

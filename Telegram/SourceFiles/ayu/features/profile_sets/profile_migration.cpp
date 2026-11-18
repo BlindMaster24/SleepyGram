@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/basic_types.h"
 
-#include <openssl/crypto.h>
 #include <openssl/rand.h>
 
 #include <QtCore/QDir>
@@ -24,15 +23,27 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QStringList>
 
 #include <algorithm>
-#include <map>
+#include <cstdio>
 #include <memory>
 #include <set>
 #include <utility>
 
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <io.h>
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace Ayu::ProfileSets {
 namespace {
 
-constexpr auto kManifestVersion = 1;
+constexpr auto kStageManifestVersion = 1;
+constexpr auto kGenerationManifestVersion = 2;
 constexpr auto kWorkspaceMarkerName = ".migration-workspace";
 constexpr auto kWorkspaceMarker = "sleepygram-isolated-migration-workspace-v1\n";
 constexpr auto kWorkspacePrefix = "sleepygram-migration-fixture-";
@@ -43,6 +54,8 @@ constexpr auto kWorkspaceLockName = "migration.lock";
 constexpr auto kPendingManifestName = "migration.manifest.pending";
 constexpr auto kCommittedManifestName = "migration.manifest.committed";
 constexpr auto kStageDirectoryName = "stage";
+constexpr auto kGenerationsDirectoryName = "generations";
+constexpr auto kTemporaryManifestPrefix = ".manifest-";
 constexpr auto kMaximumManifestSize = 4096;
 constexpr auto kMaximumArtifactSize = 80 * 1024 * 1024;
 constexpr auto kMaximumSidecarSize = 88 * 1024 * 1024;
@@ -55,6 +68,7 @@ struct Entry final {
 };
 
 struct Manifest final {
+	int version = kStageManifestVersion;
 	QByteArray transactionId;
 	std::vector<Entry> entries;
 };
@@ -94,9 +108,7 @@ std::optional<MigrationArtifact> ParseArtifactName(const QString &name) {
 	return std::nullopt;
 }
 
-QString ArtifactPath(const QString &root, MigrationArtifact artifact) {
-	const auto directory = QDir(root).filePath(
-		QString::fromLatin1(kStageDirectoryName));
+QString ArtifactPath(const QString &directory, MigrationArtifact artifact) {
 	return QDir(directory).filePath(ArtifactFileName(artifact));
 }
 
@@ -120,6 +132,26 @@ QString Hex(const QByteArray &bytes) {
 	return QString::fromLatin1(bytes.toHex());
 }
 
+QString ArtifactsDirectory(const QString &root, const Manifest &manifest) {
+	if (manifest.version == kStageManifestVersion) {
+		return ManifestPath(root, kStageDirectoryName);
+	}
+	return QDir(ManifestPath(root, kGenerationsDirectoryName)).filePath(
+		Hex(manifest.transactionId));
+}
+
+QString TemporaryManifestPath(const QString &root, const QByteArray &id) {
+	return QDir(ManifestPath(root, kGenerationsDirectoryName)).filePath(
+		QString::fromLatin1(kTemporaryManifestPrefix) + Hex(id));
+}
+
+bool ValidGenerationName(QStringView name) {
+	return name.size() == 2 * kTransactionIdSize
+		&& std::all_of(name.cbegin(), name.cend(), [](QChar ch) {
+			return (ch >= u'0' && ch <= u'9') || (ch >= u'a' && ch <= u'f');
+		});
+}
+
 QByteArray Digest(const QByteArray &bytes) {
 	return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
 }
@@ -139,7 +171,7 @@ QByteArray SerializeManifest(const Manifest &manifest) {
 	}
 	return QJsonDocument(QJsonObject{
 		{ u"format"_q, u"sleepygram-profile-migration"_q },
-		{ u"version"_q, kManifestVersion },
+		{ u"version"_q, manifest.version },
 		{ u"transaction_id"_q, Hex(manifest.transactionId) },
 		{ u"entries"_q, entries },
 	}).toJson(QJsonDocument::Compact);
@@ -180,7 +212,8 @@ bool ParseManifest(
 		return false;
 	}
 	const auto version = object.value(u"version"_q).toDouble();
-	if (version != kManifestVersion) {
+	if (version != kStageManifestVersion
+		&& version != kGenerationManifestVersion) {
 		SetError(error, MigrationError::UnsupportedVersion);
 		return false;
 	}
@@ -193,8 +226,9 @@ bool ParseManifest(
 	if (array.size() != 2) {
 		return false;
 	}
-	auto parsed = Manifest{ .transactionId = id };
+	auto parsed = Manifest{ .version = int(version), .transactionId = id };
 	auto seen = std::set<MigrationArtifact>();
+	auto totalSize = quint64(0);
 	for (const auto &value : array) {
 		if (!value.isObject()) {
 			return false;
@@ -223,14 +257,18 @@ bool ParseManifest(
 			.size = quint64(sizeNumber),
 			.digest = digest,
 		});
+		totalSize += quint64(sizeNumber);
+	}
+	if (totalSize > kMaximumSidecarSize) {
+		SetError(error, MigrationError::TooLarge);
+		return false;
 	}
 	std::sort(parsed.entries.begin(), parsed.entries.end(), [](
 			const Entry &a,
 			const Entry &b) {
 		return a.artifact < b.artifact;
 	});
-	manifest->transactionId = std::move(parsed.transactionId);
-	manifest->entries = std::move(parsed.entries);
+	*manifest = std::move(parsed);
 	SetError(error, MigrationError::None);
 	return true;
 }
@@ -246,22 +284,70 @@ bool WriteAtomic(const QString &path, const QByteArray &bytes) {
 	return file.commit();
 }
 
+bool SyncDirectory(const QString &path) {
+#ifdef Q_OS_WIN
+	return true;
+#else
+	const auto encoded = QFile::encodeName(path);
+	const auto fd = open(
+		encoded.constData(),
+		O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) {
+		return false;
+	}
+	const auto synced = fsync(fd) == 0;
+	close(fd);
+	return synced;
+#endif
+}
+
+bool WriteNewFile(const QString &path, const QByteArray &bytes) {
+	auto file = QFile(path);
+	if (!file.open(QIODevice::WriteOnly | QIODevice::NewOnly)
+		|| file.write(bytes) != bytes.size()
+		|| !file.flush()) {
+		return false;
+	}
+#ifdef Q_OS_WIN
+	const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(file.handle()));
+	return handle != INVALID_HANDLE_VALUE && FlushFileBuffers(handle);
+#else
+	return fsync(file.handle()) == 0;
+#endif
+}
+
+bool PublishManifest(const QString &source, const QString &target) {
+#ifdef Q_OS_WIN
+	return MoveFileExW(
+		reinterpret_cast<const wchar_t*>(source.utf16()),
+		reinterpret_cast<const wchar_t*>(target.utf16()),
+		MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+#else
+	return rename(
+		QFile::encodeName(source).constData(),
+		QFile::encodeName(target).constData()) == 0;
+#endif
+}
+
 std::optional<QByteArray> ReadBounded(
 		const QString &path,
 		qsizetype maximum) {
 	const auto info = QFileInfo(path);
-	if (!info.exists() || !info.isFile() || info.isSymLink()
-		|| info.size() < 1 || info.size() > maximum) {
+	if (!info.exists() || !info.isFile() || info.isSymLink() || info.isJunction()) {
 		return std::nullopt;
 	}
 	auto file = QFile(path);
 	if (!file.open(QIODevice::ReadOnly)) {
 		return std::nullopt;
 	}
+	const auto size = file.size();
+	if (size < 1 || size > maximum) {
+		return std::nullopt;
+	}
 	const auto bytes = file.read(maximum + 1);
 	return (file.error() == QFileDevice::NoError
 			&& file.atEnd()
-			&& bytes.size() == info.size())
+			&& bytes.size() == size)
 		? std::optional<QByteArray>(bytes)
 		: std::nullopt;
 }
@@ -285,14 +371,20 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 		return false;
 	}
 	const auto entries = QDir(root).entryInfoList(
-		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
 	auto allowed = std::set<QString>{
 		QString::fromLatin1(kWorkspaceMarkerName),
 		QString::fromLatin1(kStageDirectoryName),
 		QString::fromLatin1(kPendingManifestName),
 		QString::fromLatin1(kCommittedManifestName),
 		QString::fromLatin1(kWorkspaceLockName),
+		QString::fromLatin1(kGenerationsDirectoryName),
 	};
+	const auto generations = ManifestPath(root, kGenerationsDirectoryName);
+	if (PathPresent(generations)
+		&& CanonicalDirectory(generations) != generations) {
+		return false;
+	}
 	if (profile) {
 		const auto accounts = ManifestPath(root, kAccountsDirectoryName);
 		if (CanonicalDirectory(accounts) != accounts) {
@@ -309,17 +401,15 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 	return true;
 }
 
-bool ValidateStageFiles(const QString &root) {
-	const auto stagePath = QDir(root).filePath(
-		QString::fromLatin1(kStageDirectoryName));
-	if (CanonicalDirectory(stagePath) != stagePath) {
+bool ValidateArtifactFiles(const QString &directory) {
+	if (CanonicalDirectory(directory) != directory) {
 		return false;
 	}
-	const auto entries = QDir(stagePath).entryInfoList(
-		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
+	const auto entries = QDir(directory).entryInfoList(
+		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
 	auto names = QStringList();
 	for (const auto &entry : entries) {
-		if (entry.isSymLink() || !entry.isFile()) {
+		if (entry.isSymLink() || entry.isJunction() || !entry.isFile()) {
 			return false;
 		}
 		names.push_back(entry.fileName());
@@ -342,47 +432,91 @@ std::unique_ptr<QLockFile> LockWorkspace(const QString &root) {
 	return lock->tryLock(0) ? std::move(lock) : nullptr;
 }
 
-std::optional<CommittedMigration> ReadAndVerify(
-		const QString &root,
-		const char *manifestName,
+std::optional<Manifest> PrepareManifest(
+		const std::vector<MigrationInput> &inputs,
+		int version,
 		MigrationError *error) {
-	if (!ValidateStageFiles(root)) {
+	SetError(error, MigrationError::InvalidInput);
+	if (inputs.size() != 2) {
+		return std::nullopt;
+	}
+	auto manifest = Manifest{ .version = version };
+	auto artifacts = std::set<MigrationArtifact>();
+	auto total = qsizetype(0);
+	for (const auto &input : inputs) {
+		const auto size = input.encryptedBytes.size();
+		if (ArtifactName(input.artifact).isEmpty()
+			|| size < 1 || size > kMaximumArtifactSize
+			|| !artifacts.insert(input.artifact).second) {
+			return std::nullopt;
+		}
+		total += size;
+		manifest.entries.push_back({
+			.artifact = input.artifact,
+			.size = quint64(size),
+			.digest = Digest(input.encryptedBytes),
+		});
+	}
+	if (total > kMaximumSidecarSize) {
+		return std::nullopt;
+	}
+	std::sort(manifest.entries.begin(), manifest.entries.end(), [](
+			const Entry &a,
+			const Entry &b) {
+		return a.artifact < b.artifact;
+	});
+	manifest.transactionId = QByteArray(kTransactionIdSize, Qt::Uninitialized);
+	if (RAND_bytes(
+		reinterpret_cast<unsigned char*>(manifest.transactionId.data()),
+		int(manifest.transactionId.size())) != 1) {
+		SetError(error, MigrationError::WorkspaceIo);
+		return std::nullopt;
+	}
+	return manifest;
+}
+
+std::optional<Manifest> ReadManifest(
+		const QByteArray &bytes,
+		bool committed,
+		MigrationError *error) {
+	auto result = Manifest();
+	if (bytes.isEmpty()) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
+	} else if (!ParseManifest(bytes, &result, error)) {
+		return std::nullopt;
+	} else if (!committed && result.version != kStageManifestVersion) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
-	const auto manifestBytes = ReadBounded(
-		ManifestPath(root, manifestName),
-		kMaximumManifestSize);
-	if (!manifestBytes) {
+	return result;
+}
+
+std::optional<CommittedMigration> ReadArtifacts(
+		const QString &root,
+		const Manifest &manifest,
+		MigrationError *error) {
+	const auto directory = ArtifactsDirectory(root, manifest);
+	if (!ValidateArtifactFiles(directory)) {
 		SetError(error, MigrationError::InvalidManifest);
-		return std::nullopt;
-	}
-	auto manifest = Manifest();
-	if (!ParseManifest(*manifestBytes, &manifest, error)) {
 		return std::nullopt;
 	}
 	auto result = CommittedMigration{
 		.transactionId = manifest.transactionId,
 	};
-	auto totalSize = qsizetype(0);
 	for (const auto &entry : manifest.entries) {
-		const auto bytes = ReadBounded(
-			ArtifactPath(root, entry.artifact),
+		auto bytes = ReadBounded(
+			ArtifactPath(directory, entry.artifact),
 			kMaximumArtifactSize);
 		if (!bytes || quint64(bytes->size()) != entry.size
 			|| Digest(*bytes) != entry.digest) {
 			SetError(error, MigrationError::ReadbackFailed);
 			return std::nullopt;
 		}
-		totalSize += bytes->size();
-		if (totalSize > kMaximumSidecarSize) {
-			SetError(error, MigrationError::TooLarge);
-			return std::nullopt;
-		}
 		if (entry.artifact == MigrationArtifact::ProfileVault) {
-			result.profileVault = *bytes;
+			result.profileVault = std::move(*bytes);
 		} else if (entry.artifact == MigrationArtifact::AccountKeyring) {
-			result.accountKeyring = *bytes;
+			result.accountKeyring = std::move(*bytes);
 		} else {
 			SetError(error, MigrationError::InvalidManifest);
 			return std::nullopt;
@@ -394,6 +528,96 @@ std::optional<CommittedMigration> ReadAndVerify(
 	}
 	SetError(error, MigrationError::None);
 	return result;
+}
+
+std::optional<CommittedMigration> ReadAndVerify(
+		const QString &root,
+		const char *manifestName,
+		MigrationError *error) {
+	const auto manifestBytes = ReadBounded(
+		ManifestPath(root, manifestName),
+		kMaximumManifestSize);
+	const auto manifest = ReadManifest(
+		manifestBytes.value_or(QByteArray()),
+		QByteArrayView(manifestName) == kCommittedManifestName,
+		error);
+	return manifest ? ReadArtifacts(root, *manifest, error) : std::nullopt;
+}
+
+std::optional<Manifest> ReadExpectedGeneration(
+		const QString &root,
+		const QByteArray &manifestBytes,
+		const QByteArray &expectedId,
+		MigrationError *error) {
+	if (expectedId.size() != kTransactionIdSize) {
+		SetError(error, MigrationError::InvalidInput);
+		return std::nullopt;
+	}
+	auto manifest = ReadManifest(manifestBytes, true, error);
+	if (!manifest) {
+		return std::nullopt;
+	} else if (manifest->transactionId != expectedId) {
+		SetError(error, MigrationError::StaleGeneration);
+		return std::nullopt;
+	}
+	return ReadArtifacts(root, *manifest, error) ? std::move(manifest) : std::nullopt;
+}
+
+bool RemoveGenerationDirectory(const QString &directory) {
+	if (!PathPresent(directory)) {
+		return true;
+	} else if (CanonicalDirectory(directory) != directory) {
+		return false;
+	}
+	const auto entries = QDir(directory).entryInfoList(
+		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+	for (const auto &entry : entries) {
+		if (entry.isSymLink() || entry.isJunction() || !entry.isFile()
+			|| (entry.fileName()
+					!= ArtifactFileName(MigrationArtifact::ProfileVault)
+				&& entry.fileName()
+					!= ArtifactFileName(MigrationArtifact::AccountKeyring))) {
+			return false;
+		}
+	}
+	for (const auto &entry : entries) {
+		if (!QFile::remove(entry.absoluteFilePath())) {
+			return false;
+		}
+	}
+	return QDir().rmdir(directory);
+}
+
+bool RemoveInactiveGenerations(const QString &root, const Manifest &active) {
+	const auto directory = ManifestPath(root, kGenerationsDirectoryName);
+	if (!PathPresent(directory)) {
+		return active.version == kStageManifestVersion;
+	} else if (CanonicalDirectory(directory) != directory) {
+		return false;
+	}
+	const auto activeName = Hex(active.transactionId);
+	const auto prefix = QLatin1StringView(kTemporaryManifestPrefix);
+	const auto entries = QDir(directory).entryInfoList(
+		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+	for (const auto &entry : entries) {
+		const auto name = entry.fileName();
+		if (active.version == kGenerationManifestVersion && name == activeName) {
+			continue;
+		}
+		if (entry.isSymLink() || entry.isJunction()) {
+			return false;
+		} else if (ValidGenerationName(name)) {
+			if (!RemoveGenerationDirectory(entry.absoluteFilePath())) {
+				return false;
+			}
+		} else if (!entry.isFile()
+			|| !name.startsWith(prefix)
+			|| !ValidGenerationName(QStringView(name).sliced(prefix.size()))
+			|| !QFile::remove(entry.absoluteFilePath())) {
+			return false;
+		}
+	}
+	return SyncDirectory(directory);
 }
 
 } // namespace
@@ -541,6 +765,11 @@ bool MigrationController::Stage(
 	if (!validateWorkspace()) {
 		return false;
 	}
+	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+		&& !PathPresent(ManifestPath(_root, kCommittedManifestName))) {
+		SetError(error, MigrationError::InvalidManifest);
+		return false;
+	}
 	if (QFileInfo::exists(ManifestPath(_root, kCommittedManifestName))
 		|| QFileInfo::exists(ManifestPath(_root, kPendingManifestName))
 		|| QFileInfo::exists(QDir(_root).filePath(
@@ -548,55 +777,24 @@ bool MigrationController::Stage(
 		SetError(error, MigrationError::AlreadyStaged);
 		return false;
 	}
-	if (inputs.size() != 2) {
-		SetError(error, MigrationError::InvalidInput);
-		return false;
-	}
-	auto byArtifact = std::map<MigrationArtifact, QByteArray>();
-	auto totalSize = qsizetype(0);
-	for (const auto &input : inputs) {
-		if (ArtifactName(input.artifact).isEmpty()
-			|| input.encryptedBytes.isEmpty()
-			|| input.encryptedBytes.size() > kMaximumArtifactSize
-			|| !byArtifact.emplace(input.artifact, input.encryptedBytes).second) {
-			SetError(error, MigrationError::InvalidInput);
-			return false;
-		}
-		totalSize += input.encryptedBytes.size();
-	}
-	if (byArtifact.size() != 2 || totalSize > kMaximumSidecarSize) {
-		SetError(error, MigrationError::InvalidInput);
+	const auto manifest = PrepareManifest(inputs, kStageManifestVersion, error);
+	if (!manifest) {
 		return false;
 	}
 	if (!QDir(_root).mkdir(QString::fromLatin1(kStageDirectoryName))) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return false;
 	}
-	auto manifest = Manifest();
-	manifest.transactionId = QByteArray(kTransactionIdSize, Qt::Uninitialized);
-	if (RAND_bytes(
-		reinterpret_cast<unsigned char*>(manifest.transactionId.data()),
-		int(manifest.transactionId.size())) != 1) {
-		OPENSSL_cleanse(manifest.transactionId.data(), manifest.transactionId.size());
-		SetError(error, MigrationError::WorkspaceIo);
-		return false;
-	}
-	for (const auto artifact : {
-			MigrationArtifact::ProfileVault,
-			MigrationArtifact::AccountKeyring,
-		}) {
-		const auto &bytes = byArtifact.at(artifact);
-		manifest.entries.push_back({
-			.artifact = artifact,
-			.size = quint64(bytes.size()),
-			.digest = Digest(bytes),
-		});
-		if (!WriteAtomic(ArtifactPath(_root, artifact), bytes)) {
+	const auto directory = ArtifactsDirectory(_root, *manifest);
+	for (const auto &input : inputs) {
+		if (!WriteAtomic(
+				ArtifactPath(directory, input.artifact),
+				input.encryptedBytes)) {
 			SetError(error, MigrationError::WorkspaceIo);
 			return false;
 		}
 	}
-	const auto pending = SerializeManifest(manifest);
+	const auto pending = SerializeManifest(*manifest);
 	if (pending.isEmpty() || pending.size() > kMaximumManifestSize
 		|| !WriteAtomic(ManifestPath(_root, kPendingManifestName), pending)) {
 		SetError(error, MigrationError::WorkspaceIo);
@@ -628,6 +826,161 @@ std::optional<CommittedMigration> MigrationController::CommitVerified(
 	return commit(verify, error);
 }
 
+std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
+		const QByteArray &expectedTransactionId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error) const {
+	if (!verify) {
+		SetError(error, MigrationError::VerificationRequired);
+		return std::nullopt;
+	}
+	SetError(error, MigrationError::UnsafeWorkspace);
+	if (!validateWorkspace()) {
+		return std::nullopt;
+	}
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return std::nullopt;
+	} else if (!validateWorkspace()) {
+		return std::nullopt;
+	}
+	const auto activePath = ManifestPath(_root, kCommittedManifestName);
+	if (!PathPresent(activePath)) {
+		SetError(error, MigrationError::NotStaged);
+		return std::nullopt;
+	}
+	const auto existing = ReadBounded(activePath, kMaximumManifestSize);
+	if (!ReadExpectedGeneration(
+			_root,
+			existing.value_or(QByteArray()),
+			expectedTransactionId,
+			error)) {
+		return std::nullopt;
+	}
+	const auto manifest = PrepareManifest(
+		inputs,
+		kGenerationManifestVersion,
+		error);
+	if (!manifest) {
+		return std::nullopt;
+	}
+	const auto parent = ManifestPath(_root, kGenerationsDirectoryName);
+	const auto directory = ArtifactsDirectory(_root, *manifest);
+	SetError(error, MigrationError::WorkspaceIo);
+	if (manifest->transactionId == expectedTransactionId
+		|| (!PathPresent(parent)
+			&& !QDir(_root).mkdir(QString::fromLatin1(kGenerationsDirectoryName)))
+		|| CanonicalDirectory(parent) != parent
+		|| !QDir(parent).mkdir(Hex(manifest->transactionId))) {
+		return std::nullopt;
+	}
+	const auto temporary = TemporaryManifestPath(_root, manifest->transactionId);
+	auto published = false;
+	const auto cleanup = gsl::finally([&] {
+		if (!published && CanonicalDirectory(parent) == parent
+			&& ReadBounded(activePath, kMaximumManifestSize) == existing) {
+			QFile::remove(temporary);
+			RemoveGenerationDirectory(directory);
+		}
+	});
+	for (const auto &input : inputs) {
+		if (!WriteNewFile(
+				ArtifactPath(directory, input.artifact),
+				input.encryptedBytes)) {
+			return std::nullopt;
+		}
+	}
+	{
+		const auto staged = ReadArtifacts(_root, *manifest, error);
+		if (!staged) {
+			return std::nullopt;
+		} else if (!verify(*staged)) {
+			SetError(error, MigrationError::VerificationFailed);
+			return std::nullopt;
+		}
+	}
+	auto checked = ReadArtifacts(_root, *manifest, error);
+	if (!checked || !validateWorkspace()) {
+		SetError(error, MigrationError::ReadbackFailed);
+		return std::nullopt;
+	}
+	const auto stillActive = ReadBounded(activePath, kMaximumManifestSize);
+	if (existing != stillActive) {
+		SetError(error, MigrationError::StaleGeneration);
+		return std::nullopt;
+	}
+	const auto next = SerializeManifest(*manifest);
+	if (next.isEmpty() || next.size() > kMaximumManifestSize
+		|| !WriteNewFile(temporary, next)
+		|| !SyncDirectory(directory)
+		|| !SyncDirectory(parent)
+		|| !SyncDirectory(_root)) {
+		SetError(error, MigrationError::WorkspaceIo);
+		return std::nullopt;
+	}
+	if (!PublishManifest(temporary, activePath)) {
+		SetError(error, ReadBounded(activePath, kMaximumManifestSize) == existing
+			? MigrationError::WorkspaceIo
+			: MigrationError::PublicationUncertain);
+		return std::nullopt;
+	}
+	published = true;
+	if (!SyncDirectory(_root)) {
+		SetError(error, MigrationError::PublicationUncertain);
+		return std::nullopt;
+	}
+	SetError(error, MigrationError::None);
+	return checked;
+}
+
+bool MigrationController::RetireInactiveGenerations(
+		const QByteArray &expectedTransactionId,
+		MigrationError *error) const {
+	SetError(error, MigrationError::UnsafeWorkspace);
+	if (!validateWorkspace()) {
+		return false;
+	}
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return false;
+	} else if (!validateWorkspace()) {
+		return false;
+	}
+	const auto activePath = ManifestPath(_root, kCommittedManifestName);
+	if (!PathPresent(activePath)) {
+		SetError(error, MigrationError::NotStaged);
+		return false;
+	}
+	const auto activeBytes = ReadBounded(activePath, kMaximumManifestSize);
+	const auto active = ReadExpectedGeneration(
+		_root,
+		activeBytes.value_or(QByteArray()),
+		expectedTransactionId,
+		error);
+	if (!active) {
+		return false;
+	}
+	if (!SyncDirectory(_root) || !RemoveInactiveGenerations(_root, *active)) {
+		SetError(error, MigrationError::RetirementFailed);
+		return false;
+	}
+	if (active->version == kGenerationManifestVersion) {
+		const auto stage = ManifestPath(_root, kStageDirectoryName);
+		const auto pending = ManifestPath(_root, kPendingManifestName);
+		if (!RemoveGenerationDirectory(stage)
+			|| (PathPresent(pending) && !QFile::remove(pending))
+			|| !SyncDirectory(_root)) {
+			SetError(error, MigrationError::RetirementFailed);
+			return false;
+		}
+	}
+	SetError(error, MigrationError::None);
+	return true;
+}
+
 std::optional<CommittedMigration> MigrationController::commit(
 		const Verifier &verify,
 		MigrationError *error) const {
@@ -642,6 +995,10 @@ std::optional<CommittedMigration> MigrationController::commit(
 	}
 	if (QFileInfo::exists(ManifestPath(_root, kCommittedManifestName))) {
 		return LoadCommitted(error);
+	}
+	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
 	}
 	const auto pendingPath = ManifestPath(_root, kPendingManifestName);
 	const auto pending = ReadBounded(pendingPath, kMaximumManifestSize);
@@ -684,6 +1041,10 @@ MigrationState MigrationController::Recover(MigrationError *error) const {
 			? MigrationState::Committed
 			: MigrationState::Invalid;
 	}
+	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))) {
+		SetError(error, MigrationError::InvalidManifest);
+		return MigrationState::Invalid;
+	}
 	if (QFileInfo::exists(ManifestPath(_root, kPendingManifestName))) {
 		return readManifest(kPendingManifestName, error)
 			? MigrationState::Staged
@@ -700,7 +1061,9 @@ MigrationState MigrationController::Recover(MigrationError *error) const {
 std::optional<CommittedMigration> MigrationController::LoadCommitted(
 		MigrationError *error) const {
 	if (!QFileInfo::exists(ManifestPath(_root, kCommittedManifestName))) {
-		SetError(error, MigrationError::NotStaged);
+		SetError(error, PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+			? MigrationError::InvalidManifest
+			: MigrationError::NotStaged);
 		return std::nullopt;
 	}
 	return readManifest(kCommittedManifestName, error);
