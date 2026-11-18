@@ -83,7 +83,7 @@ int IconPicker::iconAt(QPoint position) const {
 	return -1;
 }
 
-bool IconPicker::event(QEvent *e) {
+bool IconPicker::eventHook(QEvent *e) {
 	if (e->type() == QEvent::ToolTip) {
 		const auto help = static_cast<QHelpEvent*>(e);
 		if (const auto index = iconAt(help->pos()); index >= 0) {
@@ -91,7 +91,7 @@ bool IconPicker::event(QEvent *e) {
 			return true;
 		}
 	}
-	return RpWidget::event(e);
+	return RpWidget::eventHook(e);
 }
 
 void IconPicker::paintEvent(QPaintEvent *e) {

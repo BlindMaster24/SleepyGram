@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_peer_photo.h"
 #include "mainwindow.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/painter.h"
 #include "ui/text/text_utilities.h"
 #include "ui/widgets/labels.h"
 #include "ui/wrap/fade_wrap.h"

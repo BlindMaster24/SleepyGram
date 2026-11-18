@@ -13,7 +13,7 @@ public:
 	explicit IconPicker(QWidget *parent);
 
 protected:
-	bool event(QEvent *e) override;
+	bool eventHook(QEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
 	void keyPressEvent(QKeyEvent *e) override;
