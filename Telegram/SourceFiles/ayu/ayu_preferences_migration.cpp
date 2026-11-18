@@ -455,7 +455,9 @@ std::optional<LegacyPartition> PartitionLegacyPreferences(
 	auto globals = Json::object();
 	auto oldGhost = Json::object();
 	for (const auto &[key, value] : input->items()) {
-		if (key == "ghostModeSettings" || key == "ghostReadState"
+		if (key == "localPremium" && value.is_boolean()) {
+			continue;
+		} else if (key == "ghostModeSettings" || key == "ghostReadState"
 			|| key == "countFilteredUnreadInBadge") {
 			if (!SplitAccountMap(key, value, globals, accounts)) {
 				return std::nullopt;

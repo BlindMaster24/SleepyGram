@@ -89,6 +89,11 @@ void CheckSplit() {
 	Check(older && older->globals.contains("\"useGlobalGhostMode\":true")
 		&& older->globals.contains("\"sendReadMessages\":false"),
 		"historic root ghost preferences keep common-mode behavior");
+	const auto withoutPremium = PartitionLegacyPreferences(
+		R"({"localPremium":true,"showMessageSeconds":true})", kUsers);
+	Check(withoutPremium && !withoutPremium->globals.contains("localPremium")
+		&& withoutPremium->globals.contains("\"showMessageSeconds\":true"),
+		"obsolete local entitlement is ignored during migration");
 }
 
 void CheckRefusals() {
