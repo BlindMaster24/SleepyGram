@@ -9,6 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+#include <QtCore/QLockFile>
+#include <QtCore/QTemporaryDir>
 
 #include <chrono>
 #include <filesystem>
@@ -176,6 +179,74 @@ int RunChecks() {
 		incompleteFixture
 		&& incomplete->Recover(&error) == MigrationState::Incomplete
 		&& !incomplete->LoadCommitted(&error));
+	const auto profile = QTemporaryDir();
+	if (!profile.isValid()) {
+		return 1;
+	}
+	const auto dataDirectory = QDir(profile.path()).filePath(QStringLiteral("tdata"));
+	if (!QDir(profile.path()).mkdir(QStringLiteral("tdata"))) {
+		return 1;
+	}
+	check("probing-an-existing-legacy-profile-is-read-only",
+		MigrationController::ProbeProfileWorkspace(dataDirectory, &error)
+			== MigrationState::Empty
+		&& error == MigrationError::None
+		&& QDir(dataDirectory).isEmpty());
+	const auto live = MigrationController::CreateProfileWorkspace(
+		dataDirectory,
+		&error);
+	check("reserved-profile-workspace-keeps-an-explicit-account-root",
+		live && !live->isIsolatedFixture()
+		&& QFileInfo(live->accountStorageRoot()).isDir()
+		&& !MigrationController::OpenIsolatedFixtureWorkspace(live->workspacePath()));
+	if (!live) {
+		return 1;
+	}
+	{
+		auto lock = QLockFile(QDir(live->workspacePath()).filePath(
+			QStringLiteral("migration.lock")));
+		check("another-owner-cannot-stage-or-commit",
+			lock.tryLock(0)
+			&& !live->Stage(inputs, &error)
+			&& error == MigrationError::WorkspaceBusy
+			&& !live->CommitVerified([](const auto &) { return true; }, &error)
+			&& error == MigrationError::WorkspaceBusy);
+	}
+	check("workspace-can-stage-after-owner-releases-lock",
+		live->Stage(inputs, &error) && error == MigrationError::None);
+	check("production-commit-requires-explicit-verification",
+		!live->Commit(&error) && error == MigrationError::VerificationRequired
+		&& !live->LoadCommitted());
+	check("failing-verifier-does-not-activate-profile",
+		!live->CommitVerified([](const auto &) { return false; }, &error)
+		&& error == MigrationError::VerificationFailed
+		&& live->Recover() == MigrationState::Staged);
+	const auto liveVault = std::filesystem::path(
+		live->workspacePath().toStdString()) / "stage" / "profile-vault.bin";
+	const auto originalVault = ReadFixture(liveVault);
+	check("verification-cannot-publish-a-changed-artifact",
+		!live->CommitVerified([&](const auto &) {
+			return WriteFixture(liveVault, "changed-during-verification");
+		}, &error)
+		&& error == MigrationError::ReadbackFailed
+		&& !live->LoadCommitted());
+	if (!WriteFixture(liveVault, originalVault)) {
+		return 1;
+	}
+	check("verified-profile-commit-is-visible-to-startup",
+		live->CommitVerified([&](const CommittedMigration &files) {
+			return files.profileVault == inputs[0].encryptedBytes
+				&& files.accountKeyring == inputs[1].encryptedBytes;
+		}, &error).has_value()
+		&& MigrationController::ProbeProfileWorkspace(dataDirectory)
+			== MigrationState::Committed);
+	check("corrupt-committed-profile-cannot-look-like-legacy",
+		WriteFixture(
+			std::filesystem::path(live->workspacePath().toStdString())
+				/ "migration.manifest.committed",
+			"damaged")
+		&& MigrationController::ProbeProfileWorkspace(dataDirectory)
+			== MigrationState::Invalid);
 
 	std::printf("%d of %d checks passed.\n", passed, total);
 	return (passed == total) ? 0 : 1;

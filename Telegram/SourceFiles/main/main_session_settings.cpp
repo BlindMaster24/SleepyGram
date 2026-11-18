@@ -204,7 +204,8 @@ QByteArray SessionSettings::serialize() const {
 
 void SessionSettings::addFromSerialized(
 		const QByteArray &serialized,
-		int writerVersion) {
+		int writerVersion,
+		bool importLegacyAppSettings) {
 	if (serialized.isEmpty()) {
 		return;
 	}
@@ -851,7 +852,7 @@ void SessionSettings::addFromSerialized(
 	_stashHintShowsCount = stashHintShowsCount;
 	_pinnedNotificationSuppressions = std::move(pinnedNotificationSuppressions);
 
-	if (version < 2) {
+	if (version < 2 && importLegacyAppSettings) {
 		app.setLastSeenWarningSeen(appLastSeenWarningSeen == 1);
 		for (const auto &[key, value] : appSoundOverrides) {
 			app.setSoundOverride(key, value);

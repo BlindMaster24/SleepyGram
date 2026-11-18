@@ -264,6 +264,7 @@ set(ayugram_files
         ayu/features/profile_sets/account_keyring.h
         ayu/features/profile_sets/profile_vault.cpp
         ayu/features/profile_sets/profile_vault.h
+        ayu/features/profile_sets/profile_vault_password.cpp
         ayu/features/profile_sets/profile_migration.cpp
         ayu/features/profile_sets/profile_migration.h
         ayu/features/profile_sets/account_registry.cpp

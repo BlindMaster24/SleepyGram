@@ -32,7 +32,10 @@ public:
 	SessionSettings();
 
 	[[nodiscard]] QByteArray serialize() const;
-	void addFromSerialized(const QByteArray &serialized, int writerVersion);
+	void addFromSerialized(
+		const QByteArray &serialized,
+		int writerVersion,
+		bool importLegacyAppSettings = true);
 
 	void setSupportSwitch(Support::SwitchSettings value) {
 		_supportSwitch = value;

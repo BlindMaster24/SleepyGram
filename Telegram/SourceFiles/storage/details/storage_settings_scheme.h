@@ -29,6 +29,7 @@ struct ReadSettingsContext {
 
 	// This field is read in ReadSetting.
 	bool legacyHasCustomDayBackground = false;
+	bool importLegacyAppSettings = true;
 
 	// Those fields are written in ReadSetting.
 	MTP::DcOptions fallbackConfigLegacyDcOptions

@@ -12,7 +12,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <algorithm>
 #include <map>
 #include <set>
-#include <type_traits>
 
 #include <QtCore/QDir>
 
@@ -79,37 +78,50 @@ const AccountKey *AccountStoragePlan::keyFor(AccountId id) const {
 }
 
 std::optional<AccountStoragePlan> BuildAccountStoragePlan(
-		QString globalTdataPath,
+		QString rootPath,
 		ProfileVaultAccess &&access,
 		std::vector<AccountStorageBinding> bindings,
 		AccountStoragePlanError *error) {
 	SetError(error, AccountStoragePlanError::InvalidRoot);
-	if (globalTdataPath.isEmpty()
-		|| !QDir::isAbsolutePath(globalTdataPath)
-		|| globalTdataPath.contains(QChar(0))) {
+	if (!QDir::isAbsolutePath(rootPath)
+		|| rootPath.startsWith(':')
+		|| rootPath.contains(QChar(0))) {
 		return std::nullopt;
 	}
-	globalTdataPath = QDir::cleanPath(globalTdataPath);
-	if (!globalTdataPath.endsWith('/')) {
-		globalTdataPath += '/';
-	}
+	rootPath = QDir::cleanPath(rootPath);
 
-	auto keys = std::visit([](auto &grant) {
-		using Grant = std::decay_t<decltype(grant)>;
-		if constexpr (std::is_same_v<Grant, AdminVaultAccess>
-			|| std::is_same_v<Grant, SetVaultAccess>) {
-			return std::move(grant.accounts);
-		} else {
-			return std::vector<AccountKey>();
-		}
-	}, access);
-	auto wipe = KeyWiper{ keys };
-	if (std::holds_alternative<WrongPassword>(access)) {
+	const auto admin = std::get_if<AdminVaultAccess>(&access);
+	const auto set = std::get_if<SetVaultAccess>(&access);
+	if (!admin && !set) {
 		SetError(error, AccountStoragePlanError::WrongPassword);
 		return std::nullopt;
 	}
+	auto keys = std::move(admin ? admin->accounts : set->accounts);
+	auto wipe = KeyWiper{ keys };
 	if (ValidateAccountKeys(keys) != KeyringError::None) {
 		SetError(error, AccountStoragePlanError::InvalidKeys);
+		return std::nullopt;
+	}
+	const auto version = admin ? admin->version : set->version;
+	const auto scoped = (version == kProfileVaultVersion);
+	const auto &locators = admin ? admin->locators : set->locators;
+	SetError(error, AccountStoragePlanError::InvalidBindings);
+	if (scoped) {
+		if (!bindings.empty() || locators.size() != keys.size()) {
+			return std::nullopt;
+		}
+		if (admin) {
+			SetError(error, AccountStoragePlanError::None);
+			return AccountStoragePlan();
+		}
+		bindings.reserve(locators.size());
+		for (const auto &locator : locators) {
+			bindings.push_back({
+				.id = locator.id,
+				.dataName = AccountVaultDataName(locator),
+			});
+		}
+	} else if (version != kLegacyProfileVaultVersion || !locators.empty()) {
 		return std::nullopt;
 	}
 
@@ -133,19 +145,27 @@ std::optional<AccountStoragePlan> BuildAccountStoragePlan(
 			SetError(error, AccountStoragePlanError::MissingBinding);
 			return std::nullopt;
 		}
-		const auto paths = Storage::AccountPathsForDataName(
-			globalTdataPath,
-			binding->second->dataName);
-		if (!targetPaths.insert(paths.basePath).second
-			|| !targetPaths.insert(paths.tempPath).second
-			|| !targetPaths.insert(paths.databasePath).second) {
+		const auto &dataName = binding->second->dataName;
+		auto paths = scoped
+			? Storage::ScopedAccountPaths(rootPath, dataName)
+			: std::optional(Storage::AccountPathsForDataName(
+				rootPath,
+				dataName));
+		if (!paths) {
+			SetError(error, AccountStoragePlanError::InvalidBindings);
+			return std::nullopt;
+		}
+		if (!targetPaths.insert(paths->basePath).second
+			|| !targetPaths.insert(paths->tempPath).second
+			|| !targetPaths.insert(paths->databasePath).second
+			|| !targetPaths.insert(paths->authPath).second) {
 			SetError(error, AccountStoragePlanError::PathCollision);
 			return std::nullopt;
 		}
 		result._targets.push_back({
 			.id = key.id,
-			.dataName = binding->second->dataName,
-			.paths = paths,
+			.dataName = dataName,
+			.paths = std::move(*paths),
 		});
 	}
 	std::ranges::sort(result._targets, {}, &AccountStorageTarget::id);

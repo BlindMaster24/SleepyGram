@@ -18,12 +18,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QJsonArray>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
+#include <QtCore/QLockFile>
 #include <QtCore/QSaveFile>
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QStringList>
 
 #include <algorithm>
 #include <map>
+#include <memory>
 #include <set>
 #include <utility>
 
@@ -34,6 +36,10 @@ constexpr auto kManifestVersion = 1;
 constexpr auto kWorkspaceMarkerName = ".migration-workspace";
 constexpr auto kWorkspaceMarker = "sleepygram-isolated-migration-workspace-v1\n";
 constexpr auto kWorkspacePrefix = "sleepygram-migration-fixture-";
+constexpr auto kProfileDirectoryName = "profile-sets";
+constexpr auto kProfileMarker = "sleepygram-profile-migration-workspace-v1\n";
+constexpr auto kAccountsDirectoryName = "accounts";
+constexpr auto kWorkspaceLockName = "migration.lock";
 constexpr auto kPendingManifestName = "migration.manifest.pending";
 constexpr auto kCommittedManifestName = "migration.manifest.committed";
 constexpr auto kStageDirectoryName = "stage";
@@ -96,6 +102,18 @@ QString ArtifactPath(const QString &root, MigrationArtifact artifact) {
 
 QString ManifestPath(const QString &root, const char *name) {
 	return QDir(root).filePath(QString::fromLatin1(name));
+}
+
+QString CanonicalDirectory(const QString &path) {
+	const auto info = QFileInfo(path);
+	return (info.isDir() && !info.isSymLink() && !info.isJunction())
+		? info.canonicalFilePath()
+		: QString();
+}
+
+bool PathPresent(const QString &path) {
+	const auto info = QFileInfo(path);
+	return info.exists() || info.isSymLink() || info.isJunction();
 }
 
 QString Hex(const QByteArray &bytes) {
@@ -240,18 +258,16 @@ std::optional<QByteArray> ReadBounded(
 	if (!file.open(QIODevice::ReadOnly)) {
 		return std::nullopt;
 	}
-	const auto bytes = file.readAll();
-	return (file.error() == QFileDevice::NoError && bytes.size() == info.size())
+	const auto bytes = file.read(maximum + 1);
+	return (file.error() == QFileDevice::NoError
+			&& file.atEnd()
+			&& bytes.size() == info.size())
 		? std::optional<QByteArray>(bytes)
 		: std::nullopt;
 }
 
-bool ValidateWorkspaceRoot(const QString &root) {
-	const auto rootInfo = QFileInfo(root);
-	if (!rootInfo.exists() || !rootInfo.isDir() || rootInfo.isSymLink()) {
-		return false;
-	}
-	const auto canonicalRoot = rootInfo.canonicalFilePath();
+bool ValidateFixtureRoot(const QString &root) {
+	const auto canonicalRoot = CanonicalDirectory(root);
 	const auto rootCanonicalInfo = QFileInfo(canonicalRoot);
 	const auto expectedParent = QFileInfo(QDir::tempPath()).canonicalFilePath();
 	return !canonicalRoot.isEmpty()
@@ -260,27 +276,33 @@ bool ValidateWorkspaceRoot(const QString &root) {
 			QString::fromLatin1(kWorkspacePrefix));
 }
 
-bool ValidateRootEntries(const QString &root) {
-	const auto info = QFileInfo(root);
-	if (!info.exists() || !info.isDir() || info.isSymLink()) {
-		return false;
-	}
+bool ValidateRootEntries(const QString &root, bool profile) {
 	const auto marker = ReadBounded(
 		ManifestPath(root, kWorkspaceMarkerName),
 		128);
-	if (!marker || *marker != QByteArray(kWorkspaceMarker)) {
+	const auto expectedMarker = profile ? kProfileMarker : kWorkspaceMarker;
+	if (!marker || *marker != QByteArray(expectedMarker)) {
 		return false;
 	}
 	const auto entries = QDir(root).entryInfoList(
 		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden);
-	const auto allowed = std::set<QString>{
+	auto allowed = std::set<QString>{
 		QString::fromLatin1(kWorkspaceMarkerName),
 		QString::fromLatin1(kStageDirectoryName),
 		QString::fromLatin1(kPendingManifestName),
 		QString::fromLatin1(kCommittedManifestName),
+		QString::fromLatin1(kWorkspaceLockName),
 	};
+	if (profile) {
+		const auto accounts = ManifestPath(root, kAccountsDirectoryName);
+		if (CanonicalDirectory(accounts) != accounts) {
+			return false;
+		}
+		allowed.emplace(QString::fromLatin1(kAccountsDirectoryName));
+	}
 	for (const auto &entry : entries) {
-		if (entry.isSymLink() || !allowed.contains(entry.fileName())) {
+		if (entry.isSymLink() || entry.isJunction()
+			|| !allowed.contains(entry.fileName())) {
 			return false;
 		}
 	}
@@ -290,8 +312,7 @@ bool ValidateRootEntries(const QString &root) {
 bool ValidateStageFiles(const QString &root) {
 	const auto stagePath = QDir(root).filePath(
 		QString::fromLatin1(kStageDirectoryName));
-	const auto info = QFileInfo(stagePath);
-	if (!info.exists() || !info.isDir() || info.isSymLink()) {
+	if (CanonicalDirectory(stagePath) != stagePath) {
 		return false;
 	}
 	const auto entries = QDir(stagePath).entryInfoList(
@@ -315,13 +336,17 @@ bool ValidateStageFiles(const QString &root) {
 	return true;
 }
 
+std::unique_ptr<QLockFile> LockWorkspace(const QString &root) {
+	auto lock = std::make_unique<QLockFile>(ManifestPath(root, kWorkspaceLockName));
+	lock->setStaleLockTime(0);
+	return lock->tryLock(0) ? std::move(lock) : nullptr;
+}
+
 std::optional<CommittedMigration> ReadAndVerify(
 		const QString &root,
 		const char *manifestName,
 		MigrationError *error) {
-	if (!ValidateWorkspaceRoot(root)
-		|| !ValidateRootEntries(root)
-		|| !ValidateStageFiles(root)) {
+	if (!ValidateStageFiles(root)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -373,8 +398,86 @@ std::optional<CommittedMigration> ReadAndVerify(
 
 } // namespace
 
-MigrationController::MigrationController(QString root)
-: _root(std::move(root)) {
+MigrationController::MigrationController(QString root, QString profileDataDirectory)
+: _root(std::move(root))
+, _profileDataDirectory(std::move(profileDataDirectory)) {
+}
+
+std::optional<MigrationController> MigrationController::CreateProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error) {
+	SetError(error, MigrationError::UnsafeWorkspace);
+	const auto parent = CanonicalDirectory(dataDirectory);
+	if (parent.isEmpty()) {
+		return std::nullopt;
+	}
+	const auto root = ManifestPath(parent, kProfileDirectoryName);
+	if (PathPresent(root)) {
+		return std::nullopt;
+	}
+	if (!QDir(parent).mkdir(QString::fromLatin1(kProfileDirectoryName))
+		|| CanonicalDirectory(root) != root
+		|| !QDir(root).mkdir(QString::fromLatin1(kAccountsDirectoryName))
+		|| !WriteAtomic(
+			ManifestPath(root, kWorkspaceMarkerName),
+			QByteArray(kProfileMarker))) {
+		SetError(error, MigrationError::WorkspaceIo);
+		return std::nullopt;
+	}
+	return OpenProfileWorkspace(parent, error);
+}
+
+std::optional<MigrationController> MigrationController::OpenProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error) {
+	SetError(error, MigrationError::UnsafeWorkspace);
+	const auto parent = CanonicalDirectory(dataDirectory);
+	if (parent.isEmpty()) {
+		return std::nullopt;
+	}
+	auto result = MigrationController(
+		ManifestPath(parent, kProfileDirectoryName),
+		parent);
+	if (!result.validateWorkspace()) {
+		return std::nullopt;
+	}
+	SetError(error, MigrationError::None);
+	return result;
+}
+
+MigrationState MigrationController::ProbeProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error) {
+	const auto parent = CanonicalDirectory(dataDirectory);
+	if (parent.isEmpty()) {
+		SetError(error, MigrationError::UnsafeWorkspace);
+		return MigrationState::Invalid;
+	}
+	if (!PathPresent(ManifestPath(parent, kProfileDirectoryName))) {
+		SetError(error, MigrationError::None);
+		return MigrationState::Empty;
+	}
+	const auto workspace = OpenProfileWorkspace(parent, error);
+	return workspace ? workspace->Recover(error) : MigrationState::Invalid;
+}
+
+bool MigrationController::validateWorkspace() const {
+	const auto profile = !_profileDataDirectory.isEmpty();
+	const auto validRoot = profile
+		? (CanonicalDirectory(_root) == _root
+			&& CanonicalDirectory(_profileDataDirectory) == _profileDataDirectory)
+		: ValidateFixtureRoot(_root);
+	return validRoot && ValidateRootEntries(_root, profile);
+}
+
+std::optional<CommittedMigration> MigrationController::readManifest(
+		const char *name,
+		MigrationError *error) const {
+	if (!validateWorkspace()) {
+		SetError(error, MigrationError::UnsafeWorkspace);
+		return std::nullopt;
+	}
+	return ReadAndVerify(_root, name, error);
 }
 
 std::optional<MigrationController>
@@ -388,20 +491,21 @@ MigrationController::CreateIsolatedFixtureWorkspace(
 	const auto name = QFileInfo(absolute).fileName();
 	if (parent.isEmpty() || parent != temp
 		|| !name.startsWith(QString::fromLatin1(kWorkspacePrefix))
-		|| QFileInfo::exists(absolute)) {
+		|| PathPresent(absolute)) {
 		return std::nullopt;
 	}
 	if (!QDir(parent).mkdir(name)) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return std::nullopt;
 	}
-	const auto markerPath = ManifestPath(absolute, kWorkspaceMarkerName);
+	const auto root = QDir(parent).filePath(name);
+	const auto markerPath = ManifestPath(root, kWorkspaceMarkerName);
 	if (!WriteAtomic(markerPath, QByteArray(kWorkspaceMarker))) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return std::nullopt;
 	}
 	SetError(error, MigrationError::None);
-	return MigrationController(absolute);
+	return MigrationController(root);
 }
 
 std::optional<MigrationController>
@@ -410,7 +514,7 @@ MigrationController::OpenIsolatedFixtureWorkspace(
 		MigrationError *error) {
 	SetError(error, MigrationError::UnsafeWorkspace);
 	const auto absolute = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
-	if (!ValidateWorkspaceRoot(absolute)) {
+	if (!ValidateFixtureRoot(absolute)) {
 		return std::nullopt;
 	}
 	const auto markerPath = ManifestPath(absolute, kWorkspaceMarkerName);
@@ -419,21 +523,22 @@ MigrationController::OpenIsolatedFixtureWorkspace(
 		return std::nullopt;
 	}
 	SetError(error, MigrationError::None);
-	return MigrationController(absolute);
+	return MigrationController(CanonicalDirectory(absolute));
 }
 
 bool MigrationController::Stage(
 		const std::vector<MigrationInput> &inputs,
 		MigrationError *error) const {
 	SetError(error, MigrationError::UnsafeWorkspace);
-	if (!ValidateWorkspaceRoot(_root)
-		|| !ValidateRootEntries(_root)) {
+	if (!validateWorkspace()) {
 		return false;
 	}
-	const auto marker = ReadBounded(
-		ManifestPath(_root, kWorkspaceMarkerName),
-		128);
-	if (!marker || *marker != QByteArray(kWorkspaceMarker)) {
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return false;
+	}
+	if (!validateWorkspace()) {
 		return false;
 	}
 	if (QFileInfo::exists(ManifestPath(_root, kCommittedManifestName))
@@ -497,7 +602,7 @@ bool MigrationController::Stage(
 		SetError(error, MigrationError::WorkspaceIo);
 		return false;
 	}
-	if (!ReadAndVerify(_root, kPendingManifestName, error)) {
+	if (!readManifest(kPendingManifestName, error)) {
 		return false;
 	}
 	SetError(error, MigrationError::None);
@@ -506,19 +611,60 @@ bool MigrationController::Stage(
 
 std::optional<CommittedMigration> MigrationController::Commit(
 		MigrationError *error) const {
+	if (!_profileDataDirectory.isEmpty()) {
+		SetError(error, MigrationError::VerificationRequired);
+		return std::nullopt;
+	}
+	return commit({}, error);
+}
+
+std::optional<CommittedMigration> MigrationController::CommitVerified(
+		const Verifier &verify,
+		MigrationError *error) const {
+	if (!verify) {
+		SetError(error, MigrationError::VerificationRequired);
+		return std::nullopt;
+	}
+	return commit(verify, error);
+}
+
+std::optional<CommittedMigration> MigrationController::commit(
+		const Verifier &verify,
+		MigrationError *error) const {
+	if (!validateWorkspace()) {
+		SetError(error, MigrationError::UnsafeWorkspace);
+		return std::nullopt;
+	}
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return std::nullopt;
+	}
 	if (QFileInfo::exists(ManifestPath(_root, kCommittedManifestName))) {
 		return LoadCommitted(error);
 	}
-	const auto staged = ReadAndVerify(_root, kPendingManifestName, error);
+	const auto pendingPath = ManifestPath(_root, kPendingManifestName);
+	const auto pending = ReadBounded(pendingPath, kMaximumManifestSize);
+	const auto staged = readManifest(kPendingManifestName, error);
 	if (!staged) {
 		if (!QFileInfo::exists(ManifestPath(_root, kPendingManifestName))) {
 			SetError(error, MigrationError::NotStaged);
 		}
 		return std::nullopt;
 	}
-	const auto pendingPath = ManifestPath(_root, kPendingManifestName);
-	const auto pending = ReadBounded(pendingPath, kMaximumManifestSize);
-	if (!pending || !WriteAtomic(
+	if (verify && !verify(*staged)) {
+		SetError(error, MigrationError::VerificationFailed);
+		return std::nullopt;
+	}
+	const auto checked = readManifest(kPendingManifestName, error);
+	if (!pending || !checked || checked->transactionId != staged->transactionId
+		|| checked->profileVault != staged->profileVault
+		|| checked->accountKeyring != staged->accountKeyring
+		|| pending != ReadBounded(pendingPath, kMaximumManifestSize)) {
+		SetError(error, MigrationError::ReadbackFailed);
+		return std::nullopt;
+	}
+	if (!WriteAtomic(
 			ManifestPath(_root, kCommittedManifestName),
 			*pending)) {
 		SetError(error, MigrationError::WorkspaceIo);
@@ -529,7 +675,7 @@ std::optional<CommittedMigration> MigrationController::Commit(
 
 MigrationState MigrationController::Recover(MigrationError *error) const {
 	SetError(error, MigrationError::None);
-	if (!ValidateWorkspaceRoot(_root) || !ValidateRootEntries(_root)) {
+	if (!validateWorkspace()) {
 		SetError(error, MigrationError::UnsafeWorkspace);
 		return MigrationState::Invalid;
 	}
@@ -539,7 +685,7 @@ MigrationState MigrationController::Recover(MigrationError *error) const {
 			: MigrationState::Invalid;
 	}
 	if (QFileInfo::exists(ManifestPath(_root, kPendingManifestName))) {
-		return ReadAndVerify(_root, kPendingManifestName, error)
+		return readManifest(kPendingManifestName, error)
 			? MigrationState::Staged
 			: MigrationState::Invalid;
 	}
@@ -557,11 +703,21 @@ std::optional<CommittedMigration> MigrationController::LoadCommitted(
 		SetError(error, MigrationError::NotStaged);
 		return std::nullopt;
 	}
-	return ReadAndVerify(_root, kCommittedManifestName, error);
+	return readManifest(kCommittedManifestName, error);
 }
 
 QString MigrationController::workspacePath() const {
 	return _root;
+}
+
+QString MigrationController::accountStorageRoot() const {
+	return (!_profileDataDirectory.isEmpty() && validateWorkspace())
+		? ManifestPath(_root, kAccountsDirectoryName)
+		: QString();
+}
+
+bool MigrationController::isIsolatedFixture() const {
+	return _profileDataDirectory.isEmpty();
 }
 
 } // namespace Ayu::ProfileSets

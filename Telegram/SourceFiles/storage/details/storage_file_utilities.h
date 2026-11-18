@@ -110,10 +110,16 @@ private:
 
 };
 
+enum class LegacyBackupPolicy : uchar {
+	RemoveAfterRead,
+	Preserve,
+};
+
 bool ReadFile(
 	FileReadDescriptor &result,
 	const QString &name,
-	const QString &basePath);
+	const QString &basePath,
+	LegacyBackupPolicy backups = LegacyBackupPolicy::RemoveAfterRead);
 
 bool DecryptLocal(
 	EncryptedDescriptor &result,
@@ -124,13 +130,15 @@ bool ReadEncryptedFile(
 	FileReadDescriptor &result,
 	const QString &name,
 	const QString &basePath,
-	const MTP::AuthKeyPtr &key);
+	const MTP::AuthKeyPtr &key,
+	LegacyBackupPolicy backups = LegacyBackupPolicy::RemoveAfterRead);
 
 bool ReadEncryptedFile(
 	FileReadDescriptor &result,
 	const FileKey &fkey,
 	const QString &basePath,
-	const MTP::AuthKeyPtr &key);
+	const MTP::AuthKeyPtr &key,
+	LegacyBackupPolicy backups = LegacyBackupPolicy::RemoveAfterRead);
 
 void ScheduleRemoveFiles(std::vector<QString> paths);
 void ScheduleRemoveFolder(const QString &path);

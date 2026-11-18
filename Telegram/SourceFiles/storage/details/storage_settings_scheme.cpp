@@ -419,7 +419,10 @@ bool ReadSetting(
 		stream >> v;
 		if (!CheckStreamStatus(stream)) return false;
 
-		context.sessionSettings().addFromSerialized(v, version);
+		context.sessionSettings().addFromSerialized(
+			v,
+			version,
+			context.importLegacyAppSettings);
 	} break;
 
 	case dbiWorkModeOld: {

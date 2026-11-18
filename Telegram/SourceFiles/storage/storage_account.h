@@ -76,6 +76,7 @@ struct WalletEngineValue {
 class Account final {
 public:
 	Account(not_null<Main::Account*> owner, const QString &dataName);
+	Account(not_null<Main::Account*> owner, AccountPaths paths);
 	~Account();
 
 	[[nodiscard]] StartResult legacyStart(const QByteArray &passcode);
@@ -248,11 +249,6 @@ public:
 	void reset();
 
 private:
-	Account(
-		not_null<Main::Account*> owner,
-		const QString &dataName,
-		AccountPaths paths);
-
 	enum class ReadMapResult {
 		Success,
 		IncorrectPasscode,
@@ -341,11 +337,12 @@ private:
 		std::string_view key);
 
 	const not_null<Main::Account*> _owner;
-	const QString _dataName;
-	const FileKey _dataNameKey = 0;
+	const AccountStorageMode _storageMode = AccountStorageMode::Legacy;
 	const QString _basePath;
 	const QString _tempPath;
 	const QString _databasePath;
+	const QString _authBasePath;
+	const QString _authFileName;
 
 	MTP::AuthKeyPtr _localKey;
 
@@ -407,6 +404,7 @@ private:
 	bool _mediaLastPlaybackPositionsRead = false;
 
 	std::vector<std::pair<DocumentId, crl::time>> _mediaLastPlaybackPosition;
+	QVector<QPair<uint64, ushort>> _scopedRecentStickers;
 
 	Webview::StorageId _webviewStorageIdBots;
 	Webview::StorageId _webviewStorageIdOther;

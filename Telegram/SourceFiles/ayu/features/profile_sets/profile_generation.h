@@ -68,6 +68,9 @@ public:
 	[[nodiscard]] ProfileGenerationAccess access() const {
 		return _access;
 	}
+	[[nodiscard]] const Metadata *adminMetadata() const {
+		return _adminMetadata ? &*_adminMetadata : nullptr;
+	}
 	void Close();
 
 private:
@@ -86,13 +89,23 @@ private:
 	OpenedProfileGeneration(
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
-		std::vector<Fn<void()>> closeAdapters);
+		std::vector<Fn<void()>> closeAdapters,
+		std::optional<Metadata> adminMetadata = std::nullopt);
 
 	AccountStoragePlan _plan;
 	ProfileGenerationAccess _access;
 	std::vector<Fn<void()>> _closeAdapters;
+	std::optional<Metadata> _adminMetadata;
 	bool _closed = false;
+
 };
+
+[[nodiscard]] std::optional<OpenedProfileGeneration>
+OpenCommittedProfileGeneration(
+	const MigrationController &sidecar,
+	DerivedCredential credential,
+	StartProfileAccount startAccount,
+	ProfileGenerationError *error = nullptr);
 
 // Bindings must come from the current verified account observation.
 [[nodiscard]] std::optional<OpenedProfileGeneration>

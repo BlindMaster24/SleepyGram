@@ -9,7 +9,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/basic_types.h"
 
 #include <QtCore/QCoreApplication>
-#include <QtCore/QEventLoop>
 
 #include <cstdio>
 #include <utility>
@@ -65,27 +64,21 @@ Metadata MetadataFixture() {
 	};
 }
 
-DerivedCredential Derive(
-		const QString &password,
-		const QByteArray &salt,
-		KdfParameters kdf) {
-	auto result = DerivedCredential();
-	auto loop = QEventLoop();
-	DeriveProfileVaultCredential(
-		salt,
-		kdf,
-		password,
-		[&](DerivedCredential credential) {
-			result = std::move(credential);
-			loop.quit();
-		});
-	loop.exec();
-	return result;
+std::vector<AccountVaultLocator> LocatorsFixture() {
+	return {
+		{ .id = { 4, 1 }, .value = QByteArray(kAccountVaultLocatorSize, 'X') },
+		{ .id = { 4, 2 }, .value = QByteArray(kAccountVaultLocatorSize, 'Y') },
+	};
+}
+
+DerivedCredential DeriveFixtureCredential(char marker) {
+	return details::ProfileVaultCredentialFromKdfOutput(QByteArray(256, marker));
 }
 
 std::optional<ProfileVault> CreateFixture(
 		Metadata metadata,
-		ProfileVaultError *error) {
+		ProfileVaultError *error,
+		std::vector<AccountVaultLocator> locators = LocatorsFixture()) {
 	const auto accounts = std::vector<AccountKey>{
 		{ .id = { 4, 1 }, .key = QByteArray(kAccountKeySize, 'A') },
 		{ .id = { 4, 2 }, .key = QByteArray(kAccountKeySize, 'B') },
@@ -98,9 +91,32 @@ std::optional<ProfileVault> CreateFixture(
 	return SealProfileVault(
 		metadata,
 		accounts,
+		locators,
 		Credential(0xFFFFFFFF),
 		grants,
 		error);
+}
+
+QByteArray LegacyVaultFixture() {
+	// v1, with deterministic synthetic data and independent verifier and key.
+	return QByteArray::fromBase64(
+		"U1BHVgAAAAF2dnZ2dnZ2dnZ2dnZ2dnZ2AAAAEHNzc3Nzc3Nzc3Nzc3Nzc3MAAAACAABAAAAA"
+		"AAEAAAAB/////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEBAQEBAQEBAQEBAQAAAIw"
+		"pqW28L2BpgisHrXnbDZ3ZTeTLzCNucRw+/QfWlzRurV9TIkb+aBfA2nGFyNKdb4sauM3hWof"
+		"CHzNqaPI/nX6UG8fTre3Mhitoa76+gcNQ7UPmHFemjp1uCw3epOHEoFamFrrHETZJUAx3IMS"
+		"S+C+8/tjrBppy7ooqckqPn9B/zNTdhnHI/o3q9Fxio3nTwKzoHTHcJhMLOjhwfAwkAS96VqG"
+		"rHh3p90Un686rq4QRXLqLa0b9o6oLgxEh5Nj+ME5FWO5q10UKbiMnVW0S0FqoPqvdWMK3Tv8"
+		"MO7huVivPVVgRhkVHdp9hRAlcR6S09CwQWpJOORQLAtT23Wi7i9wH+ohCvHZEcSpyrQMZ8hB"
+		"/wMkCYdJMZfhyomZVI47BGHBv1GxL9OYNIg44+GOoH6h/B8/TkccjY2SHzTpbclwv71GN/KG"
+		"a9u1G+GERG7pmUqn1ExxvEPw4f9GHE25ZQ+MODr6hOXHFRIYr6zJAO27FhBcC3oEJm6j5ZNo"
+		"sf5SCt0XdkRTcViw12INzfIL0f5iNSdpas57y3B3a9gfNlQdLrKeNJ7Li4YD4nKnHH0YCjMq"
+		"o5FxociDbMQd6jI/TPNbTZPEV32aF4bbetUeChsYLjcFyIaylmWFb1ta1LI43tOzmgCnl7RB"
+		"EHSj9IrdQS5gUwjOCKRJQMbSrJmcp6Q/R5zpa8Ud+hZT7DqHBp82Ucia/FOW3GSWlyNwy/GU"
+		"lJksEcQVamBj/hdkye4O8GOQjZEAAAABAAAAAAAAAAEAAAAAAAAAAQEAAAAAAAAAAAAAAAAA"
+		"AAAAAAAAAAAAAAAAAAAAAAAAAgICAgICAgICAgICAAAAhL21d7LwKOCy9PjmX9dv5H7O7uqH"
+		"OsoZaPW+MN5BAAebUpDmw7p3Fdx3qY6vEHPKLvVOGBigCLanY6zPybeSxmTo+3Qhk45MHrcy"
+		"4aVqtd7bnPqZJimeLkVozbLCrLqCfvNHa5QBS9dH11HBOYlSosb81Pwdh3VilHUEqZ0x/fp8"
+		"3WDvQQ==");
 }
 
 int RunChecks() {
@@ -163,6 +179,7 @@ int RunChecks() {
 	const auto serialized = SerializeProfileVault(*vault, &error);
 	const auto parsed = ParseProfileVault(serialized, &error);
 	check("versioned-vault-round-trip", parsed.has_value()
+		&& parsed->version == kProfileVaultVersion
 		&& error == ProfileVaultError::None);
 	if (!parsed) {
 		return 1;
@@ -172,46 +189,127 @@ int RunChecks() {
 		*parsed,
 		Credential(0xFFFFFFFF),
 		&error);
-	check("admin-password-opens-metadata-and-all-keys",
+	const auto locators = LocatorsFixture();
+	check("admin-password-opens-metadata-all-keys-and-locators",
 		std::holds_alternative<AdminVaultAccess>(admin)
 		&& std::get<AdminVaultAccess>(admin).accounts.size() == 2
+		&& std::get<AdminVaultAccess>(admin).locators == locators
 		&& std::get<AdminVaultAccess>(admin).metadata == metadata);
 
 	const auto work = OpenProfileVault(*parsed, Credential(1), &error);
-	check("set-password-opens-only-member-keys",
+	check("set-password-opens-only-member-keys-and-locators",
 		std::holds_alternative<SetVaultAccess>(work)
 		&& std::get<SetVaultAccess>(work).id == SetId{ 1, 1 }
 		&& std::get<SetVaultAccess>(work).accounts.size() == 1
+		&& std::get<SetVaultAccess>(work).locators
+			== std::vector<AccountVaultLocator>{ locators.front() }
 		&& std::get<SetVaultAccess>(work).accounts.front().id == AccountId{ 4, 1 });
 
 	const auto empty = OpenProfileVault(*parsed, Credential(3), &error);
 	check("empty-set-opens-with-no-account-keys",
 		std::holds_alternative<SetVaultAccess>(empty)
 		&& std::get<SetVaultAccess>(empty).id == SetId{ 1, 3 }
-		&& std::get<SetVaultAccess>(empty).accounts.empty());
+		&& std::get<SetVaultAccess>(empty).accounts.empty()
+		&& std::get<SetVaultAccess>(empty).locators.empty());
 
 	const auto wrong = OpenProfileVault(*parsed, Credential(777), &error);
 	check("wrong-password-yields-no-keys",
 		std::holds_alternative<WrongPassword>(wrong)
 		&& error == ProfileVaultError::WrongPassword);
 
+	auto duplicateLocators = LocatorsFixture();
+	duplicateLocators[0].value = duplicateLocators[1].value;
+	check("seal-rejects-duplicate-or-mismatched-locators",
+		!CreateFixture(metadata, &error, duplicateLocators)
+		&& !CreateFixture(metadata, &error, { locators.front() })
+		&& error == ProfileVaultError::MetadataMismatch);
+
+	auto updatedMetadata = metadata;
+	updatedMetadata.sets[0].name = u"Updated"_q;
+	updatedMetadata.sets[0].accounts = { { 4, 2 } };
+	const auto membership = UpdateProfileVault(
+		*parsed,
+		Credential(0xFFFFFFFF),
+		updatedMetadata,
+		{},
+		&error);
+	const auto movedGrant = membership
+		? OpenProfileVault(*membership, Credential(1), &error)
+		: ProfileVaultAccess(WrongPassword());
+	const auto moved = std::get_if<SetVaultAccess>(&movedGrant);
+	check("master-updates-membership-without-set-passwords",
+		membership
+		&& membership->id == parsed->id
+		&& membership->grants[0] != parsed->grants[0]
+		&& membership->grants[1] == parsed->grants[1]
+		&& membership->grants[2] == parsed->grants[2]
+		&& moved && moved->accounts.size() == 1
+		&& moved->accounts.front().id == locators.back().id
+		&& moved->locators == std::vector<AccountVaultLocator>{ locators.back() });
+	if (!membership) {
+		return 1;
+	}
+
+	updatedMetadata.sets[0].verifier = Verifier(5);
+	updatedMetadata.sets.pop_back();
+	updatedMetadata.sets.push_back({
+		.id = { 1, 4 },
+		.name = u"New"_q,
+		.verifier = Verifier(6),
+		.accounts = { { 4, 1 } },
+	});
+	const auto updated = UpdateProfileVault(
+		*membership,
+		Credential(0xFFFFFFFF),
+		updatedMetadata,
+		{
+			{ .id = { 1, 1 }, .credential = Credential(5) },
+			{ .id = { 1, 4 }, .credential = Credential(6) },
+		},
+		&error);
+	const auto updatedBytes = updated
+		? SerializeProfileVault(*updated, &error)
+		: QByteArray();
+	const auto updatedReadback = ParseProfileVault(updatedBytes, &error);
+	if (!updatedReadback) {
+		check("updated-vault-round-trip", false);
+		return 1;
+	}
+	const auto rotatedGrant = OpenProfileVault(*updatedReadback, Credential(5));
+	const auto newGrant = OpenProfileVault(*updatedReadback, Credential(6));
+	const auto rotated = std::get_if<SetVaultAccess>(&rotatedGrant);
+	const auto added = std::get_if<SetVaultAccess>(&newGrant);
+	check("master-resets-adds-and-removes-grants-with-stable-identity",
+		updatedReadback->id == parsed->id
+		&& updatedReadback->grants[1] == parsed->grants[1]
+		&& rotated && moved && rotated->accounts == moved->accounts
+		&& rotated->locators == moved->locators
+		&& added && added->locators
+			== std::vector<AccountVaultLocator>{ locators.front() }
+		&& std::holds_alternative<WrongPassword>(
+			OpenProfileVault(*updatedReadback, Credential(1)))
+		&& std::holds_alternative<WrongPassword>(
+			OpenProfileVault(*updatedReadback, Credential(3))));
+	check("set-password-cannot-authorize-a-vault-update",
+		!UpdateProfileVault(*parsed, Credential(1), metadata, {}, &error)
+		&& error == ProfileVaultError::WrongPassword);
+	check("changed-passcode-requires-matching-replacement-credential",
+		!UpdateProfileVault(
+			*membership,
+			Credential(0xFFFFFFFF),
+			updatedMetadata,
+			{},
+			&error)
+		&& error == ProfileVaultError::MetadataMismatch);
+
 	auto passwordMetadata = MetadataFixture();
-	const auto adminCredential = Derive(
-		u"admin passphrase"_q,
-		passwordMetadata.verifierSalt,
-		passwordMetadata.verifierKdf);
-	const auto workCredential = Derive(
-		u"work passphrase"_q,
-		passwordMetadata.verifierSalt,
-		passwordMetadata.verifierKdf);
-	const auto sharedCredential = Derive(
-		u"shared passphrase"_q,
-		passwordMetadata.verifierSalt,
-		passwordMetadata.verifierKdf);
-	const auto emptyCredential = Derive(
-		u"empty passphrase"_q,
-		passwordMetadata.verifierSalt,
-		passwordMetadata.verifierKdf);
+	const auto adminCredential = DeriveFixtureCredential('A');
+	const auto workCredential = DeriveFixtureCredential('W');
+	const auto sharedCredential = DeriveFixtureCredential('S');
+	const auto emptyCredential = DeriveFixtureCredential('E');
+	check("public-verifier-is-distinct-from-private-credential-key",
+		adminCredential.valid() && adminCredential.verifier != adminCredential.key
+		&& workCredential.valid() && workCredential.verifier != workCredential.key);
 	passwordMetadata.masterVerifier = adminCredential.verifier;
 	passwordMetadata.sets[0].verifier = workCredential.verifier;
 	passwordMetadata.sets[1].verifier = sharedCredential.verifier;
@@ -234,22 +332,16 @@ int RunChecks() {
 	const auto actualPasswordAccess = passwordVault
 		? OpenProfileVault(
 			*passwordVault,
-			Derive(
-				u"work passphrase"_q,
-				passwordMetadata.verifierSalt,
-				passwordMetadata.verifierKdf),
+			DeriveFixtureCredential('W'),
 			&error)
 		: ProfileVaultAccess(WrongPassword());
 	const auto actualWrongPasswordAccess = passwordVault
 		? OpenProfileVault(
 			*passwordVault,
-			Derive(
-				u"not the password"_q,
-				passwordMetadata.verifierSalt,
-				passwordMetadata.verifierKdf),
+			DeriveFixtureCredential('N'),
 			&error)
 		: ProfileVaultAccess(WrongPassword());
-	check("password-kdf-routes-to-authorized-grant-only",
+	check("credential-derived-from-kdf-output-routes-only-to-its-grant",
 		passwordVault
 		&& std::holds_alternative<SetVaultAccess>(actualPasswordAccess)
 		&& std::get<SetVaultAccess>(actualPasswordAccess).id == SetId{ 1, 1 }
@@ -279,6 +371,16 @@ int RunChecks() {
 		&& std::get<WrongPassword>(graftedSet) == WrongPassword()
 		&& std::holds_alternative<WrongPassword>(graftedAdmin)
 		&& error == ProfileVaultError::MetadataMismatch);
+
+	auto foreign = CreateFixture(metadata, &error);
+	if (foreign) {
+		foreign->grants[0] = parsed->grants[0];
+	}
+	check("same-credentials-do-not-transfer-grants-between-vaults",
+		foreign && foreign->id != parsed->id
+		&& std::holds_alternative<WrongPassword>(
+			OpenProfileVault(*foreign, Credential(1), &error))
+		&& error == ProfileVaultError::AuthenticationFailed);
 
 	auto large = Metadata();
 	large.verifierSalt = metadata.verifierSalt;
@@ -310,8 +412,32 @@ int RunChecks() {
 		&& ParseProfileVault(largeSerialized, &error).has_value()
 		&& largeVault->grants.size() == 1000);
 
+	const auto legacyBytes = LegacyVaultFixture();
+	const auto legacy = ParseProfileVault(legacyBytes, &error);
+	const auto legacyAdmin = legacy
+		? OpenProfileVault(*legacy, Credential(0xFFFFFFFF), &error)
+		: ProfileVaultAccess(WrongPassword());
+	const auto legacyGrant = legacy
+		? OpenProfileVault(*legacy, Credential(1), &error)
+		: ProfileVaultAccess(WrongPassword());
+	const auto legacySet = std::get_if<SetVaultAccess>(&legacyGrant);
+	check("legacy-vault-fixture-remains-readable-with-no-locators",
+		legacy && legacy->version == kLegacyProfileVaultVersion
+		&& std::holds_alternative<AdminVaultAccess>(legacyAdmin)
+		&& legacySet && legacySet->accounts.size() == 1
+		&& legacySet->accounts.front().id == AccountId{ 4, 1 }
+		&& legacySet->locators.empty());
+	check("legacy-vault-fixture-rejects-in-place-update",
+		legacy && !UpdateProfileVault(
+			*legacy,
+			Credential(0xFFFFFFFF),
+			metadata,
+			{},
+			&error)
+		&& error == ProfileVaultError::UnsupportedVersion);
+
 	auto altered = serialized;
-	altered[7] = char(2);
+	altered[7] = char(3);
 	check("unknown-vault-version-rejected",
 		!ParseProfileVault(altered, &error)
 		&& error == ProfileVaultError::UnsupportedVersion);

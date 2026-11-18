@@ -84,20 +84,6 @@ struct AccessWiper final {
 	}
 };
 
-const std::vector<AccountKey> *AccountsForAccess(
-		const ProfileVaultAccess &access) {
-	return std::visit([](const auto &value)
-		-> const std::vector<AccountKey>* {
-		using Value = std::decay_t<decltype(value)>;
-		if constexpr (std::is_same_v<Value, AdminVaultAccess>
-			|| std::is_same_v<Value, SetVaultAccess>) {
-			return &value.accounts;
-		} else {
-			return nullptr;
-		}
-	}, access);
-}
-
 bool ValidateMappings(
 		const AccountRegistry &registry,
 		const std::vector<ProfileGenerationAccountBinding> &mappings) {
@@ -144,34 +130,22 @@ bool ValidateMappings(
 }
 
 bool AdminAccessMatchesKeyring(
-		const ProfileVaultAccess &access,
+		const AdminVaultAccess &access,
 		const std::vector<AccountKey> &keyring) {
-	const auto granted = AccountsForAccess(access);
-	if (!granted || !std::holds_alternative<AdminVaultAccess>(access)
-		|| granted->size() != keyring.size()) {
+	if (access.accounts.size() != keyring.size()) {
 		return false;
 	}
 	auto byId = std::map<AccountId, const AccountKey*>();
 	for (const auto &key : keyring) {
 		byId.emplace(key.id, &key);
 	}
-	for (const auto &key : *granted) {
+	for (const auto &key : access.accounts) {
 		const auto i = byId.find(key.id);
 		if (i == end(byId) || !EqualKey(i->second->key, key.key)) {
 			return false;
 		}
 	}
 	return true;
-}
-
-ProfileGenerationAccess AccessFor(const ProfileVaultAccess &access) {
-	if (std::holds_alternative<AdminVaultAccess>(access)) {
-		return { .role = ProfileGenerationRole::Master };
-	}
-	return {
-		.role = ProfileGenerationRole::Set,
-		.setId = std::get<SetVaultAccess>(access).id,
-	};
 }
 
 void CloseAdapters(std::vector<Fn<void()>> &adapters) {
@@ -186,10 +160,12 @@ void CloseAdapters(std::vector<Fn<void()>> &adapters) {
 OpenedProfileGeneration::OpenedProfileGeneration(
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
-		std::vector<Fn<void()>> closeAdapters)
+		std::vector<Fn<void()>> closeAdapters,
+		std::optional<Metadata> adminMetadata)
 : _plan(std::move(plan))
 , _access(access)
-, _closeAdapters(std::move(closeAdapters)) {
+, _closeAdapters(std::move(closeAdapters))
+, _adminMetadata(std::move(adminMetadata)) {
 }
 
 OpenedProfileGeneration::OpenedProfileGeneration(
@@ -197,6 +173,7 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 : _plan(std::move(other._plan))
 , _access(other._access)
 , _closeAdapters(std::move(other._closeAdapters))
+, _adminMetadata(std::move(other._adminMetadata))
 , _closed(std::exchange(other._closed, true)) {
 }
 
@@ -210,7 +187,25 @@ void OpenedProfileGeneration::Close() {
 	}
 	CloseAdapters(_closeAdapters);
 	_plan.Clear();
+	_adminMetadata.reset();
 	_closed = true;
+}
+
+std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
+		const MigrationController &sidecar,
+		DerivedCredential credential,
+		StartProfileAccount startAccount,
+		ProfileGenerationError *error) {
+	return OpenCommittedProfileGeneration(
+		sidecar,
+		{},
+		std::move(credential),
+		{},
+		{},
+		{},
+		{},
+		std::move(startAccount),
+		error);
 }
 
 std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
@@ -243,14 +238,19 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 		SetError(error, ProfileGenerationError::InvalidVault);
 		return std::nullopt;
 	}
-	if (ValidateAccountRegistry(registry) != RegistryError::None
-		|| registry.environmentId != environmentId) {
-		SetError(error, ProfileGenerationError::InvalidRegistry);
-		return std::nullopt;
-	}
-	if (!ValidateMappings(registry, mappings)) {
-		SetError(error, ProfileGenerationError::InvalidMappings);
-		return std::nullopt;
+	const auto legacy = (vault->version == kLegacyProfileVaultVersion);
+	if (legacy) {
+		if (!sidecar.isIsolatedFixture()) {
+			SetError(error, ProfileGenerationError::InvalidVault);
+			return std::nullopt;
+		} else if (ValidateAccountRegistry(registry) != RegistryError::None
+			|| registry.environmentId != environmentId) {
+			SetError(error, ProfileGenerationError::InvalidRegistry);
+			return std::nullopt;
+		} else if (!ValidateMappings(registry, mappings)) {
+			SetError(error, ProfileGenerationError::InvalidMappings);
+			return std::nullopt;
+		}
 	}
 	auto access = OpenProfileVault(*vault, credential, &vaultError);
 	if (std::holds_alternative<WrongPassword>(access)) {
@@ -261,47 +261,47 @@ std::optional<OpenedProfileGeneration> OpenCommittedProfileGeneration(
 		return std::nullopt;
 	}
 	auto accessWiper = AccessWiper{ access };
-	const auto route = AccessFor(access);
-	const auto granted = AccountsForAccess(access);
-	if (!granted || std::any_of(granted->cbegin(), granted->cend(),
-		[&](const AccountKey &key) {
-			return std::none_of(mappings.cbegin(), mappings.cend(),
-				[&](const ProfileGenerationAccountBinding &mapping) {
-					return mapping.id == key.id;
-				});
-		})) {
-		SetError(error, ProfileGenerationError::InvalidMappings);
-		return std::nullopt;
+	if (const auto admin = std::get_if<AdminVaultAccess>(&access)) {
+		if (getAdminKeyringWrappingKey) {
+			auto wrappingKey = getAdminKeyringWrappingKey();
+			if (!wrappingKey) {
+				SetError(error, ProfileGenerationError::InvalidKeyring);
+				return std::nullopt;
+			}
+			auto wrappingKeyWiper = WrappingKeyWiper{ *wrappingKey };
+			auto keyring = OpenAccountKeyring(
+				committed->accountKeyring,
+				*wrappingKey);
+			if (!keyring) {
+				SetError(error, ProfileGenerationError::InvalidKeyring);
+				return std::nullopt;
+			}
+			auto keyringWiper = KeysWiper{ *keyring };
+			if (!AdminAccessMatchesKeyring(*admin, *keyring)) {
+				SetError(error, ProfileGenerationError::KeyMismatch);
+				return std::nullopt;
+			}
+		}
+		SetError(error, ProfileGenerationError::None);
+		return OpenedProfileGeneration(
+			AccountStoragePlan(),
+			{ .role = ProfileGenerationRole::Master },
+			{},
+			std::move(admin->metadata));
 	}
-	if (route.role == ProfileGenerationRole::Master
-		&& getAdminKeyringWrappingKey) {
-		auto wrappingKey = getAdminKeyringWrappingKey();
-		if (!wrappingKey) {
-			SetError(error, ProfileGenerationError::InvalidKeyring);
-			return std::nullopt;
-		}
-		auto wrappingKeyWiper = WrappingKeyWiper{ *wrappingKey };
-		auto keyringError = KeyringError::Malformed;
-		auto keyring = OpenAccountKeyring(
-			committed->accountKeyring,
-			*wrappingKey,
-			&keyringError);
-		if (!keyring) {
-			SetError(error, ProfileGenerationError::InvalidKeyring);
-			return std::nullopt;
-		}
-		auto keyringWiper = KeysWiper{ *keyring };
-		if (ValidateAccountKeys(*keyring) != KeyringError::None
-			|| !AdminAccessMatchesKeyring(access, *keyring)) {
-			SetError(error, ProfileGenerationError::KeyMismatch);
-			return std::nullopt;
-		}
-	}
+	const auto route = ProfileGenerationAccess{
+		.role = ProfileGenerationRole::Set,
+		.setId = std::get<SetVaultAccess>(access).id,
+	};
 	auto planError = AccountStoragePlanError::InvalidRoot;
 	auto bindings = std::vector<AccountStorageBinding>();
-	bindings.reserve(mappings.size());
-	for (const auto &mapping : mappings) {
-		bindings.push_back({ .id = mapping.id, .dataName = mapping.dataName });
+	if (legacy) {
+		bindings.reserve(mappings.size());
+		for (const auto &mapping : mappings) {
+			bindings.push_back({ .id = mapping.id, .dataName = mapping.dataName });
+		}
+	} else {
+		globalTdataPath = sidecar.accountStorageRoot();
 	}
 	auto plan = BuildAccountStoragePlan(
 		std::move(globalTdataPath),

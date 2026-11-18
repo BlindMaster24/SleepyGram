@@ -11,9 +11,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Ayu::ProfileSets {
 
-inline constexpr auto kProfileVaultVersion = quint32(1);
+inline constexpr auto kLegacyProfileVaultVersion = quint32(1);
+inline constexpr auto kProfileVaultVersion = quint32(2);
 inline constexpr auto kProfileVaultKeySize = 32;
 inline constexpr auto kProfileVaultIdSize = 16;
+inline constexpr auto kAccountVaultLocatorSize = 16;
 
 struct DerivedCredential final {
 	QByteArray verifier;
@@ -27,9 +29,26 @@ struct DerivedCredential final {
 	}
 };
 
+namespace details {
+
+[[nodiscard]] bool ValidProfileVaultSalt(const QByteArray &salt);
+[[nodiscard]] DerivedCredential ProfileVaultCredentialFromKdfOutput(
+	QByteArrayView material);
+
+} // namespace details
+
 struct SetGrantCredential final {
 	SetId id;
 	DerivedCredential credential;
+};
+
+struct AccountVaultLocator final {
+	AccountId id;
+	QByteArray value;
+
+	friend inline bool operator==(
+		const AccountVaultLocator&,
+		const AccountVaultLocator&) = default;
 };
 
 struct SealedSetGrant final {
@@ -55,11 +74,15 @@ struct ProfileVault final {
 struct AdminVaultAccess final {
 	Metadata metadata;
 	std::vector<AccountKey> accounts;
+	std::vector<AccountVaultLocator> locators;
+	quint32 version = kProfileVaultVersion;
 };
 
 struct SetVaultAccess final {
 	SetId id;
 	std::vector<AccountKey> accounts;
+	std::vector<AccountVaultLocator> locators;
+	quint32 version = kProfileVaultVersion;
 };
 
 using ProfileVaultAccess = std::variant<
@@ -83,6 +106,9 @@ enum class ProfileVaultError : uchar {
 };
 
 [[nodiscard]] bool ValidProfileVaultKdf(KdfParameters kdf);
+[[nodiscard]] std::optional<AccountVaultLocator> NewAccountVaultLocator(
+	AccountId id);
+[[nodiscard]] QString AccountVaultDataName(const AccountVaultLocator &locator);
 void DeriveProfileVaultCredential(
 	QByteArray salt,
 	KdfParameters kdf,
@@ -93,6 +119,20 @@ void DeriveProfileVaultCredential(
 	const std::vector<AccountKey> &accounts,
 	const DerivedCredential &admin,
 	const std::vector<SetGrantCredential> &grants,
+	ProfileVaultError *error = nullptr);
+[[nodiscard]] std::optional<ProfileVault> SealProfileVault(
+	const Metadata &metadata,
+	const std::vector<AccountKey> &accounts,
+	const std::vector<AccountVaultLocator> &locators,
+	const DerivedCredential &admin,
+	const std::vector<SetGrantCredential> &grants,
+	ProfileVaultError *error = nullptr);
+// A replacement credential is required for each added set or changed passcode.
+[[nodiscard]] std::optional<ProfileVault> UpdateProfileVault(
+	const ProfileVault &vault,
+	const DerivedCredential &admin,
+	const Metadata &metadata,
+	const std::vector<SetGrantCredential> &replacementCredentials,
 	ProfileVaultError *error = nullptr);
 [[nodiscard]] ProfileVaultAccess OpenProfileVault(
 	const ProfileVault &vault,

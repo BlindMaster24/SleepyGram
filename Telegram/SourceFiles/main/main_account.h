@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Storage {
 class Account;
 class Domain;
+struct AccountPaths;
 enum class StartResult : uchar;
 } // namespace Storage
 
@@ -32,6 +33,7 @@ class AppConfig;
 class Account final : public base::has_weak_ptr {
 public:
 	Account(not_null<Domain*> domain, const QString &dataName, int index);
+	Account(not_null<Domain*> domain, Storage::AccountPaths paths);
 	~Account();
 
 	[[nodiscard]] Domain &domain() const {

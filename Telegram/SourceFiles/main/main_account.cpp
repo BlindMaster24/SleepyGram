@@ -52,6 +52,11 @@ Account::Account(not_null<Domain*> domain, const QString &dataName, int index)
 	ComposeDataString(dataName, index))) {
 }
 
+Account::Account(not_null<Domain*> domain, Storage::AccountPaths paths)
+: _domain(domain)
+, _local(std::make_unique<Storage::Account>(this, std::move(paths))) {
+}
+
 Account::~Account() {
 	if (const auto session = maybeSession()) {
 		session->saveSettingsNowIfNeeded();

@@ -75,18 +75,30 @@ std::optional<ProfileVault> FixtureVault() {
 				.name = u"Empty"_q,
 				.verifier = Verifier(2),
 			},
+			{
+				.id = { 1, 3 },
+				.name = u"Other"_q,
+				.verifier = Verifier(3),
+				.accounts = { { 4, 1 }, { 4, 2 } },
+			},
 		},
 	};
 	const auto accounts = std::vector<AccountKey>{
 		{ .id = { 4, 1 }, .key = QByteArray(kAccountKeySize, 'K') },
+		{ .id = { 4, 2 }, .key = QByteArray(kAccountKeySize, 'J') },
 	};
 	return SealProfileVault(
 		metadata,
 		accounts,
+		{
+			{ .id = { 4, 1 }, .value = QByteArray(kAccountVaultLocatorSize, 'a') },
+			{ .id = { 4, 2 }, .value = QByteArray(kAccountVaultLocatorSize, 'b') },
+		},
 		Credential(0xFFFFFFFF),
 		{
 			{ .id = { 1, 1 }, .credential = Credential(1) },
 			{ .id = { 1, 2 }, .credential = Credential(2) },
+			{ .id = { 1, 3 }, .credential = Credential(3) },
 		});
 }
 
@@ -140,8 +152,10 @@ int RunChecks() {
 	std::memcpy(&legacyKey, digest.constData(), sizeof(legacyKey));
 	const auto pathPrefix = globalPath + '/';
 	check("legacy-path-relative-shape-stable-across-portable-roots",
-		legacyA.dataNameKey == legacyB.dataNameKey
+		legacyA.mode == Storage::AccountStorageMode::Legacy
+		&& legacyA.dataNameKey == legacyB.dataNameKey
 		&& legacyA.dataNameKey == legacyKey
+		&& legacyA.authPath == pathPrefix + LegacyFilePart(legacyKey)
 		&& legacyA.basePath == pathPrefix + LegacyFilePart(legacyKey) + '/'
 		&& legacyA.tempPath == pathPrefix + "temp_" + legacyName + '/'
 		&& legacyA.databasePath == pathPrefix + "user_" + legacyName + '/'
@@ -152,6 +166,23 @@ int RunChecks() {
 		&& legacyA.databasePath.mid(globalPath.size())
 			== legacyB.databasePath.mid(otherGlobalPath.size())
 		&& !QFileInfo::exists(globalPath));
+
+	const auto scopedRoot = temporary.path() + u"/profiles"_q;
+	const auto locator = QString(32, QLatin1Char('a'));
+	const auto scoped = Storage::ScopedAccountPaths(scopedRoot, locator);
+	const auto scopedBase = scopedRoot + '/' + locator + '/';
+	check("scoped-account-paths-use-an-independent-auth-file",
+		scoped && scoped->mode == Storage::AccountStorageMode::Scoped
+		&& scoped->authPath == scopedBase + u"auth"_q
+		&& scoped->basePath == scopedBase + u"data/"_q
+		&& scoped->tempPath == scopedBase + u"temp/"_q
+		&& scoped->databasePath == scopedBase + u"user/"_q
+		&& !QFileInfo::exists(scopedRoot));
+	check("scoped-account-paths-reject-noncanonical-locator",
+		!Storage::ScopedAccountPaths(scopedRoot, locator.toUpper())
+		&& !Storage::ScopedAccountPaths(scopedRoot, u"../outside"_q)
+		&& !Storage::ScopedAccountPaths(u"relative"_q, locator)
+		&& !Storage::ScopedAccountPaths(u":/resource"_q, locator));
 
 	const auto vault = FixtureVault();
 	check("vault-fixture-created", vault.has_value());
@@ -167,12 +198,16 @@ int RunChecks() {
 	auto plan = BuildAccountStoragePlan(
 		root,
 		OpenProfileVault(*vault, Credential(1)),
-		bindings,
+		{},
 		&error);
 	check("verified-set-builds-only-granted-profile",
 		plan && error == AccountStoragePlanError::None
 		&& plan->targets().size() == 1
 		&& plan->targetFor({ 4, 1 })
+		&& plan->targetFor({ 4, 1 })->paths.mode
+			== Storage::AccountStorageMode::Scoped
+		&& plan->targetFor({ 4, 1 })->dataName
+			== u"61616161616161616161616161616161"_q
 		&& plan->keyFor({ 4, 1 })
 		&& plan->keyFor({ 4, 1 })->key == QByteArray(kAccountKeySize, 'K')
 		&& !plan->targetFor({ 4, 2 })
@@ -184,9 +219,23 @@ int RunChecks() {
 
 	const auto allowedPath = plan->targetFor({ 4, 1 })->paths.basePath
 		+ u"fixture.dat"_q;
-	const auto ungrantedPath = Storage::AccountPathsForDataName(
+	const auto ungranted = BuildAccountStoragePlan(
 		root,
-		u"profile_4_2"_q).basePath + u"fixture.dat"_q;
+		OpenProfileVault(*vault, Credential(3)),
+		{},
+		&error);
+	if (!ungranted
+		|| !ungranted->targetFor({ 4, 1 })
+		|| !ungranted->targetFor({ 4, 2 })) {
+		return 1;
+	}
+	check("overlapping-sets-use-the-same-account-storage",
+		plan->targetFor({ 4, 1 })->paths.authPath
+			== ungranted->targetFor({ 4, 1 })->paths.authPath
+		&& plan->targetFor({ 4, 1 })->paths.basePath
+			== ungranted->targetFor({ 4, 1 })->paths.basePath);
+	const auto ungrantedPath = ungranted->targetFor({ 4, 2 })->paths.basePath
+		+ u"fixture.dat"_q;
 	const auto wroteFixtures = WriteFixture(allowedPath)
 		&& WriteFixture(ungrantedPath);
 	const auto openForAccount = [&](AccountId id) {
@@ -199,13 +248,16 @@ int RunChecks() {
 	};
 	check("only-granted-profile-fixture-opens",
 		wroteFixtures
+		&& allowedPath != ungrantedPath
+		&& plan->targetFor({ 4, 1 })->paths.authPath
+			!= ungranted->targetFor({ 4, 2 })->paths.authPath
 		&& openForAccount({ 4, 1 })
 		&& !openForAccount({ 4, 2 }));
 
 	auto emptyPlan = BuildAccountStoragePlan(
 		root,
 		OpenProfileVault(*vault, Credential(2)),
-		bindings,
+		{},
 		&error);
 	check("empty-set-produces-empty-plan",
 		emptyPlan && error == AccountStoragePlanError::None
@@ -213,28 +265,57 @@ int RunChecks() {
 		&& !emptyPlan->targetFor({ 4, 1 })
 		&& !emptyPlan->targetFor({ 4, 2 }));
 
-	auto missingBinding = BuildAccountStoragePlan(
+	auto masterPlan = BuildAccountStoragePlan(
 		root,
-		OpenProfileVault(*vault, Credential(1)),
+		OpenProfileVault(*vault, Credential(0xFFFFFFFF)),
 		{},
 		&error);
-	check("missing-registry-binding-fails-closed",
-		!missingBinding
-		&& error == AccountStoragePlanError::MissingBinding);
+	check("master-access-does-not-yield-account-targets",
+		masterPlan && error == AccountStoragePlanError::None
+		&& masterPlan->targets().empty()
+		&& !masterPlan->keyFor({ 4, 1 }));
 
 	auto invalidBinding = BuildAccountStoragePlan(
 		root,
 		OpenProfileVault(*vault, Credential(1)),
-		{{ .id = { 4, 1 }, .dataName = u"../outside"_q }},
+		bindings,
 		&error);
-	check("unsafe-data-name-fails-closed",
+	check("scoped-access-refuses-external-bindings",
 		!invalidBinding
 		&& error == AccountStoragePlanError::InvalidBindings);
+
+	auto invalidGrant = OpenProfileVault(*vault, Credential(1));
+	std::get<SetVaultAccess>(invalidGrant).locators.clear();
+	auto missingLocator = BuildAccountStoragePlan(
+		root,
+		std::move(invalidGrant),
+		{},
+		&error);
+	check("scoped-access-missing-locator-fails-closed",
+		!missingLocator && error == AccountStoragePlanError::InvalidBindings);
+
+	auto legacyPlan = BuildAccountStoragePlan(
+		root,
+		SetVaultAccess{
+			.id = { 1, 1 },
+			.accounts = {
+				{ .id = { 4, 1 }, .key = QByteArray(kAccountKeySize, 'K') },
+			},
+			.version = kLegacyProfileVaultVersion,
+		},
+		bindings,
+		&error);
+	check("legacy-access-continues-to-use-legacy-binding",
+		legacyPlan && error == AccountStoragePlanError::None
+		&& legacyPlan->targetFor({ 4, 1 })
+		&& legacyPlan->targetFor({ 4, 1 })->paths.mode
+			== Storage::AccountStorageMode::Legacy
+		&& legacyPlan->targetFor({ 4, 1 })->dataName == bindings[0].dataName);
 
 	auto wrongPassword = BuildAccountStoragePlan(
 		root,
 		OpenProfileVault(*vault, Credential(9)),
-		bindings,
+		{},
 		&error);
 	check("wrong-password-access-cannot-produce-plan",
 		!wrongPassword

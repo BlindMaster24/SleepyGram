@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QString>
 #include <QtCore/QtGlobal>
 
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -53,10 +54,26 @@ enum class MigrationError : uchar {
 	UnsupportedVersion,
 	ReadbackFailed,
 	TooLarge,
+	WorkspaceBusy,
+	VerificationRequired,
+	VerificationFailed,
 };
 
 class MigrationController final {
 public:
+	using Verifier = std::function<bool(const CommittedMigration&)>;
+
+	[[nodiscard]] static std::optional<MigrationController>
+	CreateProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error = nullptr);
+	[[nodiscard]] static std::optional<MigrationController> OpenProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error = nullptr);
+	[[nodiscard]] static MigrationState ProbeProfileWorkspace(
+		const QString &dataDirectory,
+		MigrationError *error = nullptr);
+
 	[[nodiscard]] static std::optional<MigrationController>
 	CreateIsolatedFixtureWorkspace(
 		QString path,
@@ -71,16 +88,31 @@ public:
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> Commit(
 		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<CommittedMigration> CommitVerified(
+		const Verifier &verify,
+		MigrationError *error = nullptr) const;
 	[[nodiscard]] MigrationState Recover(
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<CommittedMigration> LoadCommitted(
 		MigrationError *error = nullptr) const;
 
 	[[nodiscard]] QString workspacePath() const;
+	[[nodiscard]] QString accountStorageRoot() const;
+	[[nodiscard]] bool isIsolatedFixture() const;
 
 private:
-	explicit MigrationController(QString root);
+	explicit MigrationController(QString root, QString profileDataDirectory = {});
+	[[nodiscard]] bool validateWorkspace() const;
+	[[nodiscard]] std::optional<CommittedMigration> readManifest(
+		const char *name,
+		MigrationError *error) const;
+	[[nodiscard]] std::optional<CommittedMigration> commit(
+		const Verifier &verify,
+		MigrationError *error) const;
+
 	QString _root;
+	QString _profileDataDirectory;
+
 };
 
 } // namespace Ayu::ProfileSets

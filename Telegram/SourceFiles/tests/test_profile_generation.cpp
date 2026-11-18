@@ -36,25 +36,15 @@ DerivedCredential Credential(quint32 value) {
 	};
 }
 
-VerifiedRegistryIdentity Identity(quint64 value) {
-	auto bytes = QByteArray(8, Qt::Uninitialized);
-	for (auto i = 0; i != 8; ++i) {
-		bytes[i] = char(value >> ((7 - i) * 8));
-	}
-	return { .kind = RegistryIdentityKind::ServerUserId, .value = bytes };
-}
-
 struct Fixture final {
 	QByteArray vault;
 	QByteArray keyring;
 	QByteArray keyringWrappingKey;
-	QByteArray environmentId;
-	AccountRegistry registry;
-	std::vector<ProfileGenerationAccountBinding> mappings;
+	std::vector<AccountVaultLocator> locators;
+	Metadata metadata;
 };
 
 std::optional<Fixture> MakeFixture() {
-	const auto environmentId = QByteArray(16, 'E');
 	const auto accountOne = AccountKey{
 		.id = { 4, 1 },
 		.key = QByteArray(kAccountKeySize, 'A'),
@@ -67,6 +57,7 @@ std::optional<Fixture> MakeFixture() {
 	const auto master = Credential(0xFFFFFFFF);
 	const auto set = Credential(1);
 	const auto empty = Credential(2);
+	const auto shared = Credential(3);
 	const auto metadata = Metadata{
 		.verifierSalt = QByteArray(kVerifierSaltSize, 'S'),
 		.verifierKdf = {
@@ -88,15 +79,27 @@ std::optional<Fixture> MakeFixture() {
 				.name = u"Empty"_q,
 				.verifier = empty.verifier,
 			},
+			{
+				.id = { 1, 3 },
+				.name = u"Shared"_q,
+				.verifier = shared.verifier,
+				.accounts = { accountOne.id, accountTwo.id },
+			},
 		},
+	};
+	const auto locators = std::vector<AccountVaultLocator>{
+		{ .id = accountOne.id, .value = QByteArray(kAccountVaultLocatorSize, 'X') },
+		{ .id = accountTwo.id, .value = QByteArray(kAccountVaultLocatorSize, 'Y') },
 	};
 	const auto vault = SealProfileVault(
 		metadata,
 		accounts,
+		locators,
 		master,
 		{
 			{ .id = { 1, 1 }, .credential = set },
 			{ .id = { 1, 2 }, .credential = empty },
+			{ .id = { 1, 3 }, .credential = shared },
 		});
 	if (!vault) {
 		return std::nullopt;
@@ -112,48 +115,12 @@ std::optional<Fixture> MakeFixture() {
 	if (vaultBytes.isEmpty() || keyringBytes.isEmpty()) {
 		return std::nullopt;
 	}
-	const auto identityOne = Identity(101);
-	const auto identityTwo = Identity(202);
-	auto registry = NewAccountRegistry(environmentId);
-	if (!registry) {
-		return std::nullopt;
-	}
-	registry->entries = {
-		{
-			.id = accountOne.id,
-			.legacyDataNameHash = AccountRegistryDataNameHash(u"profile_one"_q),
-			.slot = 0,
-			.identityFingerprints = { RegistryIdentityFingerprint(identityOne) },
-			.retired = false,
-		},
-		{
-			.id = accountTwo.id,
-			.legacyDataNameHash = AccountRegistryDataNameHash(u"profile_two"_q),
-			.slot = 1,
-			.identityFingerprints = { RegistryIdentityFingerprint(identityTwo) },
-			.retired = false,
-		},
-	};
 	return Fixture{
 		.vault = vaultBytes,
 		.keyring = keyringBytes,
 		.keyringWrappingKey = wrappingKey,
-		.environmentId = environmentId,
-		.registry = std::move(*registry),
-		.mappings = {
-			{
-				.id = accountOne.id,
-				.dataName = u"profile_one"_q,
-				.slot = 0,
-				.identities = { identityOne },
-			},
-			{
-				.id = accountTwo.id,
-				.dataName = u"profile_two"_q,
-				.slot = 1,
-				.identities = { identityTwo },
-			},
-		},
+		.locators = locators,
+		.metadata = metadata,
 	};
 }
 
@@ -174,17 +141,14 @@ int RunChecks() {
 	if (!fixture) {
 		return 1;
 	}
-	auto temporary = QTemporaryDir(
-		QDir::tempPath() + u"/sleepygram-migration-fixture-XXXXXX"_q);
-	if (!temporary.isValid() || !QDir().rmdir(temporary.path())) {
-		check("isolated-fixture-workspace-created", false);
+	auto temporary = QTemporaryDir();
+	if (!temporary.isValid() || !QDir(temporary.path()).mkdir(u"tdata"_q)) {
+		check("temporary-tdata-created", false);
 		return 1;
 	}
-	MigrationError migrationError = MigrationError::None;
-	auto sidecar = MigrationController::CreateIsolatedFixtureWorkspace(
-		temporary.path(),
-		&migrationError);
-	check("isolated-fixture-workspace-created", sidecar.has_value());
+	const auto tdata = QDir(temporary.path()).filePath(u"tdata"_q);
+	const auto sidecar = MigrationController::CreateProfileWorkspace(tdata);
+	check("temporary-profile-workspace-created", sidecar.has_value());
 	if (!sidecar) {
 		return 1;
 	}
@@ -197,212 +161,144 @@ int RunChecks() {
 			.artifact = MigrationArtifact::AccountKeyring,
 			.encryptedBytes = fixture->keyring,
 		},
-	}, &migrationError));
-	const auto globalTdataPath = temporary.path()
-		+ u"-unused-profile-root/tdata"_q;
+	}));
 	auto adapterCalls = std::vector<AccountId>();
 	auto closeCalls = std::vector<AccountId>();
-	auto adminKeyRequests = 0;
-	auto adapter = StartProfileAccount(
+	const auto grantedPath = Storage::ScopedAccountPaths(
+		sidecar->accountStorageRoot(),
+		AccountVaultDataName(fixture->locators[0]));
+	const auto adapter = StartProfileAccount(
 		[&](const AccountStorageTarget &target, const AccountKey &key)
 		-> std::optional<Fn<void()>> {
 			adapterCalls.push_back(target.id);
-			if (target.id == AccountId{ 4, 1 }
-				&& key.key != QByteArray(kAccountKeySize, 'A')) {
+			if (!grantedPath || target.paths.authPath != grantedPath->authPath
+				|| target.id != AccountId{ 4, 1 } || key.id != target.id
+				|| key.key != QByteArray(kAccountKeySize, 'A')) {
 				return std::nullopt;
 			}
 			return Fn<void()>([&, id = target.id] {
 				closeCalls.push_back(id);
 			});
 		});
-	ProfileGenerationError generationError = ProfileGenerationError::None;
-	auto beforeCommit = OpenCommittedProfileGeneration(
+	auto error = ProfileGenerationError::None;
+	const auto beforeCommit = OpenCommittedProfileGeneration(
 		*sidecar,
-		[&]() -> std::optional<QByteArray> {
-			++adminKeyRequests;
-			return fixture->keyringWrappingKey;
-		},
 		Credential(1),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
 		adapter,
-		&generationError);
+		&error);
 	check("uncommitted-sidecar-does-not-start-adapters",
-		!beforeCommit
-		&& generationError == ProfileGenerationError::NotCommitted
-		&& adapterCalls.empty()
-		&& adminKeyRequests == 0
-		&& !QFileInfo::exists(globalTdataPath));
-	const auto committed = sidecar->Commit(&migrationError);
+		!beforeCommit && error == ProfileGenerationError::NotCommitted
+		&& adapterCalls.empty());
+	const auto committed = sidecar->CommitVerified([&](const auto &files) {
+		return files.profileVault == fixture->vault
+			&& files.accountKeyring == fixture->keyring;
+	});
 	check("sidecar-committed", committed.has_value());
 	if (!committed) {
 		return 1;
 	}
 	auto granted = OpenCommittedProfileGeneration(
 		*sidecar,
-		[&]() -> std::optional<QByteArray> {
-			++adminKeyRequests;
-			return fixture->keyringWrappingKey;
-		},
 		Credential(1),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
 		adapter,
-		&generationError);
-	check("set-unlock-starts-only-granted-account",
-		granted
-		&& generationError == ProfileGenerationError::None
+		&error);
+	check("set-unlock-starts-only-account-at-granted-locator",
+		granted && error == ProfileGenerationError::None
 		&& granted->access().role == ProfileGenerationRole::Set
 		&& granted->access().setId == SetId{ 1, 1 }
+		&& !granted->adminMetadata()
 		&& granted->plan().targets().size() == 1
 		&& granted->plan().targets().front().id == AccountId{ 4, 1 }
-		&& adapterCalls == std::vector<AccountId>{ { 4, 1 } }
-		&& adminKeyRequests == 0
-		&& !QFileInfo::exists(globalTdataPath));
+		&& granted->plan().targets().front().dataName
+			== AccountVaultDataName(fixture->locators[0])
+		&& adapterCalls == std::vector<AccountId>{ { 4, 1 } });
 	if (!granted) {
 		return 1;
 	}
 	granted->Close();
 	check("generation-close-calls-adapter-cleanup", closeCalls
 		== std::vector<AccountId>{ { 4, 1 } });
-	auto emptyCalls = 0;
-	auto empty = OpenCommittedProfileGeneration(
+
+	const auto empty = OpenCommittedProfileGeneration(
 		*sidecar,
-		[&]() -> std::optional<QByteArray> {
-			++adminKeyRequests;
-			return fixture->keyringWrappingKey;
-		},
 		Credential(2),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
-		[&](const AccountStorageTarget&, const AccountKey&)
-		-> std::optional<Fn<void()>> {
-			++emptyCalls;
-			return Fn<void()>([] {});
-		},
-		&generationError);
-	check("empty-set-opens-without-adapter-or-admin-keyring",
-		empty && empty->access().role == ProfileGenerationRole::Set
+		{},
+		&error);
+	check("empty-set-opens-without-an-adapter-or-administrative-data",
+		empty && error == ProfileGenerationError::None
+		&& empty->access().role == ProfileGenerationRole::Set
 		&& empty->access().setId == SetId{ 1, 2 }
 		&& empty->plan().targets().empty()
-		&& emptyCalls == 0
-		&& adminKeyRequests == 0);
-	auto adminStarted = std::vector<AccountId>();
-	auto adminClosed = std::vector<AccountId>();
+		&& !empty->adminMetadata());
+
 	auto master = OpenCommittedProfileGeneration(
 		*sidecar,
-		[&]() -> std::optional<QByteArray> {
-			++adminKeyRequests;
-			return fixture->keyringWrappingKey;
-		},
 		Credential(0xFFFFFFFF),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
-		[&](const AccountStorageTarget &target, const AccountKey&)
-		-> std::optional<Fn<void()>> {
-			adminStarted.push_back(target.id);
-			return Fn<void()>([&, id = target.id] {
-				adminClosed.push_back(id);
-			});
-		},
-		&generationError);
-	check("master-unlock-verifies-sidecar-keyring-and-starts-all",
-		master
+		adapter,
+		&error);
+	check("master-unlock-returns-metadata-without-account-startup",
+		master && error == ProfileGenerationError::None
 		&& master->access().role == ProfileGenerationRole::Master
-		&& master->plan().targets().size() == 2
-		&& adminKeyRequests == 1
-		&& adminStarted == std::vector<AccountId>{ { 4, 1 }, { 4, 2 } });
+		&& !master->access().setId
+		&& master->plan().targets().empty()
+		&& master->adminMetadata() && *master->adminMetadata() == fixture->metadata
+		&& adapterCalls.size() == 1);
 	if (!master) {
 		return 1;
 	}
 	master->Close();
-	check("master-close-rolls-back-in-reverse-order", adminClosed
-		== std::vector<AccountId>{ { 4, 2 }, { 4, 1 } });
-	auto wrongKeyringCalls = 0;
-	auto wrongAdminKey = OpenCommittedProfileGeneration(
+	check("master-close-clears-metadata-without-closing-accounts",
+		!master->adminMetadata() && closeCalls.size() == 1);
+
+	auto adminKeyRequests = 0;
+	const auto wrongAdminKey = OpenCommittedProfileGeneration(
 		*sidecar,
 		[&]() -> std::optional<QByteArray> {
 			++adminKeyRequests;
-			return QByteArray(kAccountKeyringWrappingKeySize, 'X');
+			return QByteArray(kAccountKeyringWrappingKeySize, 'Z');
 		},
 		Credential(0xFFFFFFFF),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
-		[&](const AccountStorageTarget&, const AccountKey&)
-		-> std::optional<Fn<void()>> {
-			++wrongKeyringCalls;
-			return Fn<void()>([] {});
-		},
-		&generationError);
+		{},
+		{},
+		{},
+		{},
+		adapter,
+		&error);
 	check("master-keyring-mismatch-fails-before-adapter",
-		!wrongAdminKey
-		&& generationError == ProfileGenerationError::InvalidKeyring
-		&& wrongKeyringCalls == 0
-		&& adminKeyRequests == 2);
-	auto wrongPasswordCalls = 0;
-	auto rejectedPassword = OpenCommittedProfileGeneration(
+		!wrongAdminKey && error == ProfileGenerationError::InvalidKeyring
+		&& adapterCalls.size() == 1 && adminKeyRequests == 1);
+
+	const auto ignoredLegacyRoot = QDir(temporary.path()).filePath(u"other"_q);
+	const auto scoped = OpenCommittedProfileGeneration(
 		*sidecar,
 		[&]() -> std::optional<QByteArray> {
 			++adminKeyRequests;
 			return fixture->keyringWrappingKey;
 		},
-		Credential(999),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
-		[&](const AccountStorageTarget&, const AccountKey&)
-		-> std::optional<Fn<void()>> {
-			++wrongPasswordCalls;
-			return Fn<void()>([] {});
-		},
-		&generationError);
-	check("wrong-password-never-requests-admin-key-or-starts-account",
-		!rejectedPassword
-		&& generationError == ProfileGenerationError::WrongPassword
-		&& wrongPasswordCalls == 0
-		&& adminKeyRequests == 2);
-	auto mappingCalls = 0;
-	auto invalidMappings = fixture->mappings;
-	invalidMappings[0].dataName = u"other_account"_q;
-	auto badMapping = OpenCommittedProfileGeneration(
-		*sidecar,
-		{},
 		Credential(1),
-		fixture->registry,
-		fixture->environmentId,
-		invalidMappings,
-		globalTdataPath,
-		[&](const AccountStorageTarget&, const AccountKey&)
-		-> std::optional<Fn<void()>> {
-			++mappingCalls;
-			return Fn<void()>([] {});
-		},
-		&generationError);
-	check("legacy-mapping-mismatch-fails-before-adapter",
-		!badMapping
-		&& generationError == ProfileGenerationError::InvalidMappings
-		&& mappingCalls == 0);
+		{},
+		{},
+		{ { .id = { 4, 1 }, .dataName = u"untrusted"_q } },
+		ignoredLegacyRoot,
+		adapter,
+		&error);
+	check("scoped-startup-does-not-consume-legacy-mappings-or-admin-key",
+		scoped && error == ProfileGenerationError::None && adminKeyRequests == 1
+		&& !QFileInfo::exists(ignoredLegacyRoot) && adapterCalls.size() == 2);
+	const auto rejectedPassword = OpenCommittedProfileGeneration(
+		*sidecar,
+		Credential(999),
+		adapter,
+		&error);
+	check("wrong-password-never-starts-account",
+		!rejectedPassword && error == ProfileGenerationError::WrongPassword
+		&& adapterCalls.size() == 2);
+
 	auto startOrder = std::vector<AccountId>();
 	auto partialCloseOrder = std::vector<AccountId>();
-	auto partialFailure = OpenCommittedProfileGeneration(
+	const auto partialFailure = OpenCommittedProfileGeneration(
 		*sidecar,
-		{},
-		Credential(0xFFFFFFFF),
-		fixture->registry,
-		fixture->environmentId,
-		fixture->mappings,
-		globalTdataPath,
+		Credential(3),
 		[&](const AccountStorageTarget &target, const AccountKey &)
 		-> std::optional<Fn<void()>> {
 			startOrder.push_back(target.id);
@@ -413,10 +309,9 @@ int RunChecks() {
 				partialCloseOrder.push_back(id);
 			});
 		},
-		&generationError);
+		&error);
 	check("partial-adapter-failure-rolls-back-started-accounts",
-		!partialFailure
-		&& generationError == ProfileGenerationError::StartFailed
+		!partialFailure && error == ProfileGenerationError::StartFailed
 		&& startOrder == std::vector<AccountId>{ { 4, 1 }, { 4, 2 } }
 		&& partialCloseOrder == std::vector<AccountId>{ { 4, 1 } });
 	std::printf("%d/%d checks passed\n", passed, total);

@@ -157,21 +157,17 @@ auto EmptyMessageDraftSources()
 } // namespace
 
 Account::Account(not_null<Main::Account*> owner, const QString &dataName)
-: Account(owner, dataName, AccountPathsForDataName(
-	BaseGlobalPath(),
-	dataName)) {
+: Account(owner, AccountPathsForDataName(BaseGlobalPath(), dataName)) {
 }
 
-Account::Account(
-		not_null<Main::Account*> owner,
-		const QString &dataName,
-		AccountPaths paths)
+Account::Account(not_null<Main::Account*> owner, AccountPaths paths)
 : _owner(owner)
-, _dataName(dataName)
-, _dataNameKey(paths.dataNameKey)
+, _storageMode(paths.mode)
 , _basePath(std::move(paths.basePath))
 , _tempPath(std::move(paths.tempPath))
 , _databasePath(std::move(paths.databasePath))
+, _authBasePath(paths.authPath.left(paths.authPath.lastIndexOf('/') + 1))
+, _authFileName(paths.authPath.mid(_authBasePath.size()))
 , _cacheTotalSizeLimit(Database::Settings().totalSizeLimit)
 , _cacheBigFileTotalSizeLimit(Database::Settings().totalSizeLimit)
 , _cacheTotalTimeLimit(Database::Settings().totalTimeLimit)
@@ -180,6 +176,8 @@ Account::Account(
 , _writePrefsTimer([=] { writePrefs(); })
 , _writeLocationsTimer([=] { writeLocations(); })
 , _writeSearchSuggestionsTimer([=] { writeSearchSuggestions(); }) {
+	Expects(!_authBasePath.isEmpty());
+	Expects(!_authFileName.isEmpty());
 }
 
 Account::~Account() {
@@ -204,6 +202,8 @@ QString Account::supportModePath() const {
 }
 
 StartResult Account::legacyStart(const QByteArray &passcode) {
+	Expects(_storageMode == AccountStorageMode::Legacy);
+
 	const auto result = readMapWith(MTP::AuthKeyPtr(), passcode);
 	if (result == ReadMapResult::Failed) {
 		Assert(_localKey == nullptr);
@@ -231,6 +231,9 @@ void Account::startAdded(MTP::AuthKeyPtr localKey) {
 }
 
 void Account::clearLegacyFiles() {
+	if (_storageMode == AccountStorageMode::Scoped) {
+		return;
+	}
 	const auto weak = base::make_weak(_owner);
 	ClearLegacyFiles(_basePath, [weak, this](
 			FnMut<void(base::flat_set<QString>&&)> then) {
@@ -309,7 +312,10 @@ Account::ReadMapResult Account::readMapWith(
 	auto ms = crl::now();
 
 	FileReadDescriptor mapData;
-	if (!ReadFile(mapData, u"map"_q, _basePath)) {
+	const auto backups = (_storageMode == AccountStorageMode::Scoped)
+		? LegacyBackupPolicy::Preserve
+		: LegacyBackupPolicy::RemoveAfterRead;
+	if (!ReadFile(mapData, u"map"_q, _basePath, backups)) {
 		return ReadMapResult::Failed;
 	}
 	LOG(("App Info: reading map..."));
@@ -591,7 +597,8 @@ Account::ReadMapResult Account::readMapWith(
 	if (_locationsKey) {
 		readLocations();
 	}
-	if (_legacyBackgroundKeyDay || _legacyBackgroundKeyNight) {
+	if (_storageMode == AccountStorageMode::Legacy
+		&& (_legacyBackgroundKeyDay || _legacyBackgroundKeyNight)) {
 		Local::moveLegacyBackground(
 			_basePath,
 			_localKey,
@@ -848,12 +855,17 @@ void Account::reset() {
 	_cacheBigFileTotalSizeLimit = Database::Settings().totalSizeLimit;
 	_cacheBigFileTotalTimeLimit = Database::Settings().totalTimeLimit;
 	_mediaLastPlaybackPosition.clear();
+	_scopedRecentStickers.clear();
 
 	const auto wvbots = _webviewStorageIdBots.path;
 	const auto wvother = _webviewStorageIdOther.path;
-	const auto wvclear = [](Webview::StorageId &storageId) {
-		Webview::ClearStorageDataByToken(
-			base::take(storageId).token.toStdString());
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
+	const auto wvclear = [=](Webview::StorageId &storageId) {
+		const auto token = base::take(storageId).token;
+		if (legacy
+			|| (!token.isEmpty() && token != Webview::LegacyStorageIdToken())) {
+			Webview::ClearStorageDataByToken(token.toStdString());
+		}
 	};
 	wvclear(_webviewStorageIdBots);
 	wvclear(_webviewStorageIdOther);
@@ -866,6 +878,7 @@ void Account::reset() {
 		base = _basePath,
 		temp = _tempPath,
 		names = std::move(names),
+		legacy,
 		wvbots,
 		wvother
 	] {
@@ -877,7 +890,9 @@ void Account::reset() {
 				QFile::remove(base + name);
 			}
 		}
-		QDir(LegacyTempDirectory()).removeRecursively();
+		if (legacy) {
+			QDir(LegacyTempDirectory()).removeRecursively();
+		}
 		if (!wvbots.isEmpty()) {
 			QDir(wvbots).removeRecursively();
 		}
@@ -1078,8 +1093,11 @@ void Account::writeSessionSettings(Main::SessionSettings *stored) {
 		? userDataInstance->serialize()
 		: QByteArray();
 
-	auto recentStickers = cRecentStickersPreload();
-	if (recentStickers.isEmpty() && _owner->sessionExists()) {
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
+	auto recentStickers = legacy
+		? cRecentStickersPreload()
+		: _scopedRecentStickers;
+	if (legacy && recentStickers.isEmpty() && _owner->sessionExists()) {
 		const auto &stickers = _owner->session().data().stickers();
 		recentStickers.reserve(stickers.getRecentPack().size());
 		for (const auto &pair : std::as_const(stickers.getRecentPack())) {
@@ -1115,11 +1133,18 @@ ReadSettingsContext Account::prepareReadSettingsContext() const {
 }
 
 std::unique_ptr<Main::SessionSettings> Account::readSessionSettings() {
-	ReadSettingsContext context;
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
+	auto context = ReadSettingsContext{ .importLegacyAppSettings = legacy };
 	FileReadDescriptor userSettings;
-	if (!ReadEncryptedFile(userSettings, _settingsKey, _basePath, _localKey)) {
+	const auto backups = legacy
+		? LegacyBackupPolicy::RemoveAfterRead
+		: LegacyBackupPolicy::Preserve;
+	if (!ReadEncryptedFile(userSettings, _settingsKey, _basePath, _localKey, backups)) {
 		LOG(("App Info: could not read encrypted user settings..."));
 
+		if (!legacy) {
+			return nullptr;
+		}
 		Local::readOldUserSettings(true, context);
 		auto result = applyReadContext(std::move(context));
 
@@ -1130,24 +1155,36 @@ std::unique_ptr<Main::SessionSettings> Account::readSessionSettings() {
 
 	LOG(("App Info: reading encrypted user settings..."));
 	_readingUserSettings = true;
+	auto recentStickers = RecentStickerPreload();
 	while (!userSettings.stream.atEnd()) {
-		quint32 blockId;
+		auto blockId = quint32();
 		userSettings.stream >> blockId;
-		if (!CheckStreamStatus(userSettings.stream)) {
-			_readingUserSettings = false;
-			writeSessionSettings();
-			return nullptr;
+		auto read = CheckStreamStatus(userSettings.stream);
+		if (read && !legacy && blockId == dbiRecentStickers) {
+			userSettings.stream >> recentStickers;
+			read = CheckStreamStatus(userSettings.stream);
+		} else if (read) {
+			read = (legacy
+					|| blockId == dbiCacheSettings
+					|| blockId == dbiSessionSettings)
+				&& ReadSetting(
+					blockId,
+					userSettings.stream,
+					userSettings.version,
+					context);
 		}
-
-		if (!ReadSetting(blockId, userSettings.stream, userSettings.version, context)) {
+		if (!read) {
 			_readingUserSettings = false;
-			writeSessionSettings();
+			if (legacy) {
+				writeSessionSettings();
+			}
 			return nullptr;
 		}
 	}
 	_readingUserSettings = false;
 	LOG(("App Info: encrypted user settings read."));
 
+	_scopedRecentStickers = std::move(recentStickers);
 	auto result = applyReadContext(std::move(context));
 	if (context.legacyRead) {
 		writeSessionSettings(result.get());
@@ -1157,7 +1194,9 @@ std::unique_ptr<Main::SessionSettings> Account::readSessionSettings() {
 
 std::unique_ptr<Main::SessionSettings> Account::applyReadContext(
 		ReadSettingsContext &&context) {
-	ApplyReadFallbackConfig(context);
+	if (_storageMode == AccountStorageMode::Legacy) {
+		ApplyReadFallbackConfig(context);
+	}
 
 	if (context.cacheTotalSizeLimit) {
 		_cacheTotalSizeLimit = context.cacheTotalSizeLimit;
@@ -1196,18 +1235,22 @@ void Account::writeMtpData() {
 	const auto serialized = _owner->serializeMtpAuthorization();
 	const auto size = sizeof(quint32) + Serialize::bytearraySize(serialized);
 
-	FileWriteDescriptor mtp(ToFilePart(_dataNameKey), BaseGlobalPath());
+	FileWriteDescriptor mtp(_authFileName, _authBasePath);
 	EncryptedDescriptor data(size);
 	data.stream << quint32(dbiMtpAuthorization) << serialized;
 	mtp.writeEncrypted(data, _localKey);
 }
 
 void Account::readMtpData() {
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
 	auto context = prepareReadSettingsContext();
 
 	FileReadDescriptor mtp;
-	if (!ReadEncryptedFile(mtp, ToFilePart(_dataNameKey), BaseGlobalPath(), _localKey)) {
-		if (_localKey) {
+	const auto backups = legacy
+		? LegacyBackupPolicy::RemoveAfterRead
+		: LegacyBackupPolicy::Preserve;
+	if (!ReadEncryptedFile(mtp, _authFileName, _authBasePath, _localKey, backups)) {
+		if (legacy && _localKey) {
 			Local::readOldMtpData(true, context);
 			applyReadContext(std::move(context));
 			writeMtpData();
@@ -1217,14 +1260,15 @@ void Account::readMtpData() {
 
 	LOG(("App Info: reading encrypted mtp data..."));
 	while (!mtp.stream.atEnd()) {
-		quint32 blockId;
+		auto blockId = quint32();
 		mtp.stream >> blockId;
-		if (!CheckStreamStatus(mtp.stream)) {
-			return writeMtpData();
-		}
-
-		if (!ReadSetting(blockId, mtp.stream, mtp.version, context)) {
-			return writeMtpData();
+		if (!CheckStreamStatus(mtp.stream)
+			|| (!legacy && blockId != dbiMtpAuthorization)
+			|| !ReadSetting(blockId, mtp.stream, mtp.version, context)) {
+			if (legacy) {
+				writeMtpData();
+			}
+			return;
 		}
 	}
 	applyReadContext(std::move(context));
@@ -3558,9 +3602,11 @@ void Account::clearPeerTrustedPayForMessage(PeerId peerId) {
 }
 
 void Account::enforceModernStorageIdBots() {
-	if (_webviewStorageIdBots.token.isEmpty()) {
-		_webviewStorageIdBots.token = QByteArray::fromStdString(
-			Webview::GenerateStorageToken());
+	auto &token = _webviewStorageIdBots.token;
+	if (token.isEmpty()
+		|| (_storageMode == AccountStorageMode::Scoped
+			&& token == Webview::LegacyStorageIdToken())) {
+		token = QByteArray::fromStdString(Webview::GenerateStorageToken());
 		writeMapDelayed();
 	}
 }
@@ -3569,7 +3615,10 @@ Webview::StorageId Account::resolveStorageIdBots() {
 	if (!_webviewStorageIdBots) {
 		auto &token = _webviewStorageIdBots.token;
 		const auto legacy = Webview::LegacyStorageIdToken();
-		if (token.isEmpty()) {
+		const auto scoped = (_storageMode == AccountStorageMode::Scoped);
+		if (scoped) {
+			enforceModernStorageIdBots();
+		} else if (token.isEmpty()) {
 			auto legacyTaken = false;
 			const auto &list = _owner->domain().accounts();
 			for (const auto &[index, account] : list) {
@@ -3586,7 +3635,7 @@ Webview::StorageId Account::resolveStorageIdBots() {
 				: legacy;
 			writeMapDelayed();
 		}
-		_webviewStorageIdBots.path = (token == legacy)
+		_webviewStorageIdBots.path = (!scoped && token == legacy)
 			? (BaseGlobalPath() + u"webview"_q)
 			: (_databasePath + u"wvbots"_q);
 	}
@@ -3595,9 +3644,11 @@ Webview::StorageId Account::resolveStorageIdBots() {
 
 Webview::StorageId Account::resolveStorageIdOther() {
 	if (!_webviewStorageIdOther) {
-		if (_webviewStorageIdOther.token.isEmpty()) {
-			_webviewStorageIdOther.token = QByteArray::fromStdString(
-				Webview::GenerateStorageToken());
+		auto &token = _webviewStorageIdOther.token;
+		if (token.isEmpty()
+			|| (_storageMode == AccountStorageMode::Scoped
+				&& token == Webview::LegacyStorageIdToken())) {
+			token = QByteArray::fromStdString(Webview::GenerateStorageToken());
 			writeMapDelayed();
 		}
 		_webviewStorageIdOther.path = _databasePath + u"wvother"_q;

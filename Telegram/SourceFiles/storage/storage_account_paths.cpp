@@ -8,6 +8,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_account_paths.h"
 
 #include <QtCore/QCryptographicHash>
+#include <QtCore/QDir>
+#include <algorithm>
 #include <cstring>
 
 namespace Storage {
@@ -48,6 +50,30 @@ AccountPaths AccountPathsForDataName(
 		.basePath = base + filePart + '/',
 		.tempPath = base + "temp_" + dataName + '/',
 		.databasePath = base + "user_" + dataName + '/',
+		.authPath = base + filePart,
+	};
+}
+
+std::optional<AccountPaths> ScopedAccountPaths(
+		const QString &root,
+		const QString &locator) {
+	if (!QDir::isAbsolutePath(root)
+		|| root.startsWith(':')
+		|| root.contains(QChar(0))
+		|| locator.size() != 32
+		|| !std::ranges::all_of(locator, [](QChar ch) {
+			return (ch >= QLatin1Char('0') && ch <= QLatin1Char('9'))
+				|| (ch >= QLatin1Char('a') && ch <= QLatin1Char('f'));
+		})) {
+		return std::nullopt;
+	}
+	const auto base = QDir(QDir::cleanPath(root)).filePath(locator) + '/';
+	return AccountPaths{
+		.basePath = base + "data/",
+		.tempPath = base + "temp/",
+		.databasePath = base + "user/",
+		.authPath = base + "auth",
+		.mode = AccountStorageMode::Scoped,
 	};
 }
 

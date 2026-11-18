@@ -7,11 +7,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/profile_vault.h"
 
-#include "base/openssl_help.h"
-#include "crl/crl_async.h"
-#include "mtproto/mtproto_auth_key.h"
-#include "storage/details/storage_file_utilities.h"
-
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -47,12 +42,22 @@ constexpr auto kScrypt = quint32(2);
 
 constexpr char kVaultEnvelopeContext[]
 	= "SleepyGram profile-vault envelope v1";
-constexpr auto kVerifierContext = "SleepyGram account-set credential v1";
-constexpr auto kEncryptionContext = "SleepyGram profile-vault grant key v1";
-constexpr auto kAdminContext = "SleepyGram profile-vault admin grant v1";
-constexpr auto kSetContext = "SleepyGram profile-vault set grant v1";
+constexpr char kVerifierContext[] = "SleepyGram account-set verifier v2";
+constexpr char kCredentialContext[] = "SleepyGram account-set credential v2";
+constexpr char kEncryptionContext[] = "SleepyGram profile-vault grant key v2";
+constexpr char kAdminContext[] = "SleepyGram profile-vault admin keyring v2";
+constexpr char kSetKeyringContext[] = "SleepyGram profile-vault set keyring v2";
+// v1 truncated the derivation context using the 64-bit pointer size.
+constexpr auto kLegacyContextSize = 7;
 constexpr auto kAdminPayloadContext = quint32(1);
 constexpr auto kSetPayloadContext = quint32(2);
+constexpr auto kLocatorRecordSize = 16 + kAccountVaultLocatorSize;
+constexpr auto kGrantKeyRecordSize = 16 + kProfileVaultKeySize;
+
+using AccountKeysById = std::map<AccountId, const AccountKey*>;
+using LocatorsById = std::map<AccountId, const AccountVaultLocator*>;
+using CredentialsById = std::map<SetId, const DerivedCredential*>;
+using GrantKeys = std::map<SetId, QByteArray>;
 
 struct SealedBlob final {
 	QByteArray nonce;
@@ -127,17 +132,29 @@ bool AllZero(const QByteArray &bytes) {
 	});
 }
 
+bool ValidLocator(const AccountVaultLocator &locator) {
+	return locator.id && locator.value.size() == kAccountVaultLocatorSize
+		&& !AllZero(locator.value);
+}
+
+QByteArray RandomBytes(int size) {
+	auto result = QByteArray(size, Qt::Uninitialized);
+	if (RAND_bytes(reinterpret_cast<unsigned char*>(result.data()), size)
+		!= 1 || AllZero(result)) {
+		OPENSSL_cleanse(result.data(), result.size());
+		result.clear();
+	}
+	return result;
+}
+
 bool ValidCredential(const DerivedCredential &credential) {
 	return credential.valid()
 		&& !AllZero(credential.verifier)
-		&& !AllZero(credential.key);
+		&& !AllZero(credential.key)
+		&& !EqualSecret(credential.verifier, credential.key);
 }
 
-bool ValidSalt(const QByteArray &salt) {
-	return salt.size() >= 8 && salt.size() <= 64;
-}
-
-QByteArray Digest(const QByteArray &context, const QByteArray &data) {
+QByteArray Digest(QByteArrayView context, QByteArrayView data) {
 	auto hash = QCryptographicHash(QCryptographicHash::Sha256);
 	hash.addData(context);
 	hash.addData(data);
@@ -160,13 +177,15 @@ QByteArray HmacSha256(const QByteArray &key, const QByteArray &data) {
 
 QByteArray GrantKey(
 		const DerivedCredential &credential,
-		const QByteArray &vaultId,
+		const ProfileVault &vault,
 		quint32 role,
 		SetId setId) {
 	auto input = QByteArray();
-	input.reserve(int(sizeof(kEncryptionContext) - 1) + vaultId.size() + 20);
-	input.append(kEncryptionContext, int(sizeof(kEncryptionContext) - 1));
-	input.append(vaultId);
+	const auto legacy = (vault.version == kLegacyProfileVaultVersion);
+	input.append(kEncryptionContext, legacy
+		? kLegacyContextSize
+		: int(sizeof(kEncryptionContext) - 1));
+	input.append(vault.id);
 	AppendUint32(input, role);
 	AppendUint64(input, setId.high);
 	AppendUint64(input, setId.low);
@@ -340,16 +359,34 @@ bool Seal(
 QByteArray SerializeAdminPayload(
 		const Metadata &metadata,
 		const QByteArray &keyring,
-		const QByteArray &manifest) {
+		const QByteArray &manifest,
+		const std::vector<AccountVaultLocator> &locators,
+		const GrantKeys &grantKeys) {
 	const auto metadataBytes = SerializeMetadataPayload(metadata);
 	if (metadataBytes.isEmpty() || manifest.size() != kVerifierSize) {
 		return {};
 	}
 	auto result = QByteArray();
+	result.reserve(
+		5 * 4 + metadataBytes.size() + keyring.size() + manifest.size()
+		+ qsizetype(locators.size()) * kLocatorRecordSize
+		+ qsizetype(grantKeys.size()) * kGrantKeyRecordSize);
 	AppendUint32(result, kAdminPayloadContext);
 	AppendBytes(result, metadataBytes);
 	AppendBytes(result, keyring);
 	AppendBytes(result, manifest);
+	AppendUint32(result, quint32(locators.size() * kLocatorRecordSize));
+	for (const auto &locator : locators) {
+		AppendUint64(result, locator.id.high);
+		AppendUint64(result, locator.id.low);
+		result.append(locator.value);
+	}
+	AppendUint32(result, quint32(grantKeys.size() * kGrantKeyRecordSize));
+	for (const auto &[id, key] : grantKeys) {
+		AppendUint64(result, id.high);
+		AppendUint64(result, id.low);
+		result.append(key);
+	}
 	return result;
 }
 
@@ -372,10 +409,13 @@ struct ParsedAdminPayload final {
 	Metadata metadata;
 	QByteArray keyring;
 	QByteArray manifest;
+	QByteArray locators;
+	QByteArray grantKeys;
 };
 
 std::optional<ParsedAdminPayload> ParseAdminPayload(
-		const QByteArray &payload) {
+		const QByteArray &payload,
+		bool legacy) {
 	if (payload.size() < 12
 		|| payload.size() > kMaximumVaultSize
 		|| ReadUint32(payload.constData()) != kAdminPayloadContext) {
@@ -383,37 +423,57 @@ std::optional<ParsedAdminPayload> ParseAdminPayload(
 	}
 	auto offset = qsizetype(4);
 	auto metadataBytes = QByteArray();
-	auto keyring = QByteArray();
-	auto manifest = QByteArray();
+	auto result = ParsedAdminPayload();
 	if (!TakeBytes(payload, &offset, kMaximumVaultSize, &metadataBytes)
-		|| !TakeBytes(payload, &offset, kMaximumVaultSize, &keyring)
-		|| !TakeBytes(payload, &offset, kVerifierSize, &manifest)
-		|| offset != payload.size()) {
+		|| !TakeBytes(payload, &offset, kMaximumVaultSize, &result.keyring)
+		|| !TakeBytes(payload, &offset, kVerifierSize, &result.manifest)
+		|| (!legacy
+			&& (!TakeBytes(payload, &offset, kMaximumVaultSize, &result.locators)
+				|| !TakeBytes(
+					payload,
+					&offset,
+					kMaximumVaultSize,
+					&result.grantKeys)))
+		|| offset != payload.size() || result.keyring.isEmpty()) {
+		OPENSSL_cleanse(result.grantKeys.data(), result.grantKeys.size());
 		return std::nullopt;
 	}
 	auto error = ValidationError::Malformed;
-	const auto metadata = ParseMetadataPayload(metadataBytes, &error);
-	if (!metadata || keyring.isEmpty()) {
+	auto metadata = ParseMetadataPayload(metadataBytes, &error);
+	if (!metadata) {
+		OPENSSL_cleanse(result.grantKeys.data(), result.grantKeys.size());
 		return std::nullopt;
 	}
-	return ParsedAdminPayload{
-		*metadata,
-		std::move(keyring),
-		std::move(manifest),
-	};
+	result.metadata = std::move(*metadata);
+	return result;
 }
 
-QByteArray SerializeSetPayload(SetId id, const QByteArray &keyring) {
+QByteArray SerializeSetPayload(
+		SetId id,
+		const QByteArray &keyring,
+		const std::vector<AccountVaultLocator> &locators) {
 	auto result = QByteArray();
 	AppendUint32(result, kSetPayloadContext);
 	AppendUint64(result, id.high);
 	AppendUint64(result, id.low);
 	AppendBytes(result, keyring);
+	for (const auto &locator : locators) {
+		AppendUint64(result, locator.id.high);
+		AppendUint64(result, locator.id.low);
+		result.append(locator.value);
+	}
 	return result;
 }
 
-std::optional<std::pair<SetId, QByteArray>> ParseSetPayload(
-		const QByteArray &payload) {
+struct ParsedSetPayload final {
+	SetId id;
+	QByteArray keyring;
+	QByteArray locators;
+};
+
+std::optional<ParsedSetPayload> ParseSetPayload(
+		const QByteArray &payload,
+		bool legacy) {
 	if (payload.size() < 24
 		|| payload.size() > kMaximumVaultSize
 		|| ReadUint32(payload.constData()) != kSetPayloadContext) {
@@ -426,11 +486,15 @@ std::optional<std::pair<SetId, QByteArray>> ParseSetPayload(
 	auto offset = qsizetype(20);
 	auto keyring = QByteArray();
 	if (!id || !TakeBytes(payload, &offset, kMaximumVaultSize, &keyring)
-		|| offset != payload.size()
+		|| (legacy && offset != payload.size())
 		|| keyring.isEmpty()) {
 		return std::nullopt;
 	}
-	return std::pair(id, std::move(keyring));
+	return ParsedSetPayload{
+		id,
+		std::move(keyring),
+		payload.mid(offset),
+	};
 }
 
 QByteArray SetAad(
@@ -448,11 +512,13 @@ QByteArray AdminAad(const ProfileVault &vault) {
 }
 
 ProfileVaultError ValidateVault(const ProfileVault &vault) {
-	if (vault.version != kProfileVaultVersion) {
+	if (vault.version != kProfileVaultVersion
+		&& vault.version != kLegacyProfileVaultVersion) {
 		return ProfileVaultError::UnsupportedVersion;
 	} else if (vault.id.size() != kProfileVaultIdSize || AllZero(vault.id)) {
 		return ProfileVaultError::InvalidVaultId;
-	} else if (!ValidSalt(vault.salt) || !ValidProfileVaultKdf(vault.kdf)) {
+	} else if (!details::ValidProfileVaultSalt(vault.salt)
+		|| !ValidProfileVaultKdf(vault.kdf)) {
 		return ProfileVaultError::InvalidKdf;
 	} else if (vault.adminVerifier.size() != kVerifierSize
 		|| vault.adminNonce.size() != kNonceSize
@@ -461,8 +527,12 @@ ProfileVaultError ValidateVault(const ProfileVault &vault) {
 	} else if (vault.grants.size() > kMaximumGrantCount) {
 		return ProfileVaultError::TooLarge;
 	}
-	auto estimatedSize = qsizetype(8 + kProfileVaultIdSize + 4 + 16 + 32 + 12 + 4 + 4);
+	auto estimatedSize = qsizetype(
+		8 + kProfileVaultIdSize + 4 + 16 + kVerifierSize + kNonceSize + 4 + 4);
 	estimatedSize += vault.salt.size() + vault.adminCiphertext.size();
+	if (estimatedSize > kMaximumVaultSize) {
+		return ProfileVaultError::TooLarge;
+	}
 	for (const auto &grant : vault.grants) {
 		estimatedSize += kMinimumSerializedGrantSize
 			+ grant.ciphertext.size() - kTagSize;
@@ -534,18 +604,24 @@ std::optional<SealedSetGrant> FindGrant(
 	return std::nullopt;
 }
 
-QByteArray KeyringKey(
+QByteArray CredentialKeyringKey(
 		const DerivedCredential &credential,
-		const QByteArray &vaultId,
-		quint32 role,
+		const ProfileVault &vault,
 		SetId setId) {
-	const auto roleContext = (role == kAdminPayloadContext)
-		? QByteArray(kAdminContext, int(sizeof(kAdminContext) - 1))
-		: QByteArray(kSetContext, int(sizeof(kSetContext) - 1));
-	auto input = roleContext + vaultId;
+	const auto legacy = (vault.version == kLegacyProfileVaultVersion);
+	auto input = QByteArray(kAdminContext, legacy
+		? kLegacyContextSize
+		: int(sizeof(kAdminContext) - 1));
+	input.append(vault.id);
 	AppendUint64(input, setId.high);
 	AppendUint64(input, setId.low);
 	return HmacSha256(credential.key, input);
+}
+
+QByteArray SetKeyringKey(const QByteArray &grantKey) {
+	return HmacSha256(
+		grantKey,
+		QByteArray(kSetKeyringContext, int(sizeof(kSetKeyringContext) - 1)));
 }
 
 void CleanseAccountKeys(std::vector<AccountKey> &accounts) {
@@ -554,6 +630,333 @@ void CleanseAccountKeys(std::vector<AccountKey> &accounts) {
 			OPENSSL_cleanse(account.key.data(), account.key.size());
 		}
 	}
+}
+
+void CleanseGrantKeys(GrantKeys &keys) {
+	for (auto &entry : keys) {
+		auto &key = entry.second;
+		OPENSSL_cleanse(key.data(), key.size());
+	}
+}
+
+LocatorsById IndexLocators(
+		const std::vector<AccountVaultLocator> &locators) {
+	auto result = LocatorsById();
+	auto values = std::set<QByteArray>();
+	for (const auto &locator : locators) {
+		if (!ValidLocator(locator)
+			|| !values.insert(locator.value).second
+			|| !result.emplace(locator.id, &locator).second) {
+			return {};
+		}
+	}
+	return result;
+}
+
+bool AccountLocatorsMatch(
+		const std::vector<AccountKey> &accounts,
+		const LocatorsById &locators) {
+	return accounts.size() == locators.size()
+		&& std::all_of(
+			accounts.cbegin(),
+			accounts.cend(),
+			[&](const AccountKey &account) {
+				return locators.contains(account.id);
+			});
+}
+
+std::optional<std::vector<AccountVaultLocator>> ParseLocators(
+		const QByteArray &serialized,
+		const std::vector<AccountKey> &accounts) {
+	if (serialized.size() != qsizetype(accounts.size()) * kLocatorRecordSize) {
+		return std::nullopt;
+	}
+	auto result = std::vector<AccountVaultLocator>();
+	result.reserve(accounts.size());
+	for (auto offset = qsizetype(0); offset < serialized.size();
+			offset += kLocatorRecordSize) {
+		const auto data = serialized.constData() + offset;
+		result.push_back({
+			.id = { ReadUint64(data), ReadUint64(data + 8) },
+			.value = serialized.mid(offset + 16, kAccountVaultLocatorSize),
+		});
+	}
+	return AccountLocatorsMatch(accounts, IndexLocators(result))
+		? std::optional(std::move(result))
+		: std::nullopt;
+}
+
+bool ParseGrantKeys(
+		const QByteArray &serialized,
+		const Metadata &metadata,
+		GrantKeys &result) {
+	if (serialized.size() != qsizetype(metadata.sets.size())
+		* kGrantKeyRecordSize) {
+		return false;
+	}
+	for (auto offset = qsizetype(0); offset < serialized.size();
+			offset += kGrantKeyRecordSize) {
+		const auto data = serialized.constData() + offset;
+		const auto id = SetId{ ReadUint64(data), ReadUint64(data + 8) };
+		if (!id || result.contains(id)) {
+			return false;
+		}
+		auto key = serialized.mid(offset + 16, kProfileVaultKeySize);
+		if (AllZero(key)) {
+			OPENSSL_cleanse(key.data(), key.size());
+			return false;
+		}
+		result.emplace(id, std::move(key));
+	}
+	return std::all_of(
+		metadata.sets.cbegin(),
+		metadata.sets.cend(),
+		[&](const AccountSet &set) { return result.contains(set.id); });
+}
+
+std::optional<AdminVaultAccess> OpenAdminVault(
+		const ProfileVault &vault,
+		const DerivedCredential &credential,
+		GrantKeys &grantKeys,
+		ProfileVaultError *error) {
+	SetError(error, ProfileVaultError::WrongPassword);
+	if (!EqualSecret(credential.verifier, vault.adminVerifier)) {
+		return std::nullopt;
+	}
+	auto wrapKey = GrantKey(credential, vault, kAdminPayloadContext, {});
+	auto plaintext = OpenAesGcm(
+		wrapKey,
+		vault.adminNonce,
+		AdminAad(vault),
+		vault.adminCiphertext);
+	OPENSSL_cleanse(wrapKey.data(), wrapKey.size());
+	SetError(error, ProfileVaultError::AuthenticationFailed);
+	if (plaintext.isEmpty()) {
+		return std::nullopt;
+	}
+	const auto wipePlaintext = gsl::finally([&] {
+		OPENSSL_cleanse(plaintext.data(), plaintext.size());
+	});
+	const auto legacy = (vault.version == kLegacyProfileVaultVersion);
+	auto parsed = ParseAdminPayload(plaintext, legacy);
+	SetError(error, ProfileVaultError::MetadataMismatch);
+	if (!parsed) {
+		return std::nullopt;
+	}
+	const auto wipeGrantKeys = gsl::finally([&] {
+		OPENSSL_cleanse(parsed->grantKeys.data(), parsed->grantKeys.size());
+	});
+	if (!MetadataMatchesVault(parsed->metadata, vault)
+		|| !EqualSecret(parsed->manifest, GrantManifest(vault.grants))
+		|| (!legacy && !ParseGrantKeys(
+			parsed->grantKeys,
+			parsed->metadata,
+			grantKeys))) {
+		return std::nullopt;
+	}
+	auto keyringKey = CredentialKeyringKey(credential, vault, {});
+	auto accounts = OpenAccountKeyring(parsed->keyring, keyringKey);
+	OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
+	if (!accounts) {
+		return std::nullopt;
+	}
+	auto locators = legacy
+		? std::optional(std::vector<AccountVaultLocator>())
+		: ParseLocators(parsed->locators, *accounts);
+	if (!locators || !AccountMembershipsExist(parsed->metadata, *accounts)) {
+		CleanseAccountKeys(*accounts);
+		return std::nullopt;
+	}
+	SetError(error, ProfileVaultError::None);
+	return AdminVaultAccess{
+		.metadata = std::move(parsed->metadata),
+		.accounts = std::move(*accounts),
+		.locators = std::move(*locators),
+		.version = vault.version,
+	};
+}
+
+std::optional<SealedSetGrant> SealSetGrant(
+		const ProfileVault &vault,
+		const AccountSet &set,
+		const AccountKeysById &accounts,
+		const LocatorsById &locators,
+		const QByteArray &grantKey) {
+	auto subset = std::vector<AccountKey>();
+	auto scopedLocators = std::vector<AccountVaultLocator>();
+	subset.reserve(set.accounts.size());
+	scopedLocators.reserve(set.accounts.size());
+	for (const auto id : set.accounts) {
+		subset.push_back(*accounts.at(id));
+		scopedLocators.push_back(*locators.at(id));
+	}
+	auto keyringKey = SetKeyringKey(grantKey);
+	const auto keyring = SealAccountKeyring(subset, keyringKey);
+	OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
+	CleanseAccountKeys(subset);
+	if (keyring.isEmpty()) {
+		return std::nullopt;
+	}
+	auto plaintext = SerializeSetPayload(set.id, keyring, scopedLocators);
+	auto sealed = SealedBlob();
+	auto grant = SealedSetGrant{ .id = set.id, .verifier = set.verifier };
+	const auto ok = Seal(grantKey, SetAad(vault, grant), plaintext, &sealed);
+	OPENSSL_cleanse(plaintext.data(), plaintext.size());
+	if (!ok) {
+		return std::nullopt;
+	}
+	grant.nonce = std::move(sealed.nonce);
+	grant.ciphertext = std::move(sealed.ciphertext);
+	return grant;
+}
+
+bool SealAdminGrant(
+		ProfileVault &vault,
+		const Metadata &metadata,
+		const DerivedCredential &admin,
+		const std::vector<AccountKey> &accounts,
+		const std::vector<AccountVaultLocator> &locators,
+		const GrantKeys &grantKeys) {
+	auto keyringKey = CredentialKeyringKey(admin, vault, {});
+	const auto keyring = SealAccountKeyring(accounts, keyringKey);
+	OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
+	if (keyring.isEmpty()) {
+		return false;
+	}
+	auto plaintext = SerializeAdminPayload(
+		metadata,
+		keyring,
+		GrantManifest(vault.grants),
+		locators,
+		grantKeys);
+	auto wrapKey = GrantKey(admin, vault, kAdminPayloadContext, {});
+	auto sealed = SealedBlob();
+	const auto ok = !plaintext.isEmpty()
+		&& Seal(wrapKey, AdminAad(vault), plaintext, &sealed);
+	OPENSSL_cleanse(plaintext.data(), plaintext.size());
+	OPENSSL_cleanse(wrapKey.data(), wrapKey.size());
+	if (ok) {
+		vault.adminNonce = std::move(sealed.nonce);
+		vault.adminCiphertext = std::move(sealed.ciphertext);
+	}
+	return ok;
+}
+
+std::optional<ProfileVault> RewriteVault(
+		const Metadata &metadata,
+		const std::vector<AccountKey> &accounts,
+		const std::vector<AccountVaultLocator> &locators,
+		const DerivedCredential &admin,
+		const std::vector<SetGrantCredential> &replacements,
+		const ProfileVault *previous,
+		const Metadata *previousMetadata,
+		const GrantKeys &previousKeys,
+		ProfileVaultError *error) {
+	SetError(error, ProfileVaultError::InvalidKdf);
+	if (!ValidProfileVaultKdf(metadata.verifierKdf)) {
+		return std::nullopt;
+	}
+	SetError(error, ProfileVaultError::MetadataMismatch);
+	const auto locatorsById = IndexLocators(locators);
+	if (Validate(metadata) != ValidationError::None
+		|| !details::ValidProfileVaultSalt(metadata.verifierSalt)
+		|| !ValidCredential(admin)
+		|| !EqualSecret(admin.verifier, metadata.masterVerifier)
+		|| (previous && (metadata.verifierSalt != previous->salt
+			|| metadata.verifierKdf != previous->kdf))
+		|| ValidateAccountKeys(accounts) != KeyringError::None
+		|| !AccountMembershipsExist(metadata, accounts)
+		|| locatorsById.size() != locators.size()
+		|| !AccountLocatorsMatch(accounts, locatorsById)) {
+		return std::nullopt;
+	}
+	auto supplied = CredentialsById();
+	for (const auto &grant : replacements) {
+		if (!grant.id || !ValidCredential(grant.credential)
+			|| !supplied.emplace(grant.id, &grant.credential).second) {
+			SetError(error, ProfileVaultError::InvalidGrant);
+			return std::nullopt;
+		}
+	}
+	auto vault = ProfileVault{
+		.id = previous ? previous->id : RandomBytes(kProfileVaultIdSize),
+		.salt = metadata.verifierSalt,
+		.kdf = metadata.verifierKdf,
+		.adminVerifier = admin.verifier,
+	};
+	if (vault.id.isEmpty()) {
+		SetError(error, ProfileVaultError::RandomFailure);
+		return std::nullopt;
+	}
+	auto accountKeys = AccountKeysById();
+	for (const auto &account : accounts) {
+		accountKeys.emplace(account.id, &account);
+	}
+	auto previousSets = std::map<SetId, const AccountSet*>();
+	auto previousGrants = std::map<SetId, const SealedSetGrant*>();
+	if (previous) {
+		for (const auto &set : previousMetadata->sets) {
+			previousSets.emplace(set.id, &set);
+		}
+		for (const auto &grant : previous->grants) {
+			previousGrants.emplace(grant.id, &grant);
+		}
+	}
+	auto grantKeys = GrantKeys();
+	const auto wipe = gsl::finally([&] { CleanseGrantKeys(grantKeys); });
+	auto bytes = qsizetype(0);
+	for (const auto &set : metadata.sets) {
+		const auto old = previousSets.find(set.id);
+		const auto retain = (old != end(previousSets))
+			&& EqualSecret(old->second->verifier, set.verifier);
+		const auto it = supplied.find(set.id);
+		const auto replacementMatches = it != end(supplied)
+			&& EqualSecret(it->second->verifier, set.verifier);
+		if ((retain && it != end(supplied)) || (!retain && !replacementMatches)) {
+			SetError(error, ProfileVaultError::MetadataMismatch);
+			return std::nullopt;
+		}
+		auto &key = grantKeys[set.id];
+		if (retain) {
+			key = previousKeys.at(set.id);
+		} else {
+			key = GrantKey(*it->second, vault, kSetPayloadContext, set.id);
+			supplied.erase(it);
+		}
+		if (key.size() != kProfileVaultKeySize || AllZero(key)) {
+			SetError(error, ProfileVaultError::InvalidGrant);
+			return std::nullopt;
+		}
+		if (retain && old->second->accounts == set.accounts) {
+			vault.grants.push_back(*previousGrants.at(set.id));
+		} else {
+			auto grant = SealSetGrant(vault, set, accountKeys, locatorsById, key);
+			if (!grant) {
+				SetError(error, ProfileVaultError::InvalidGrant);
+				return std::nullopt;
+			}
+			vault.grants.push_back(std::move(*grant));
+		}
+		bytes += kMinimumSerializedGrantSize
+			+ vault.grants.back().ciphertext.size() - kTagSize;
+		if (bytes > kMaximumVaultSize) {
+			SetError(error, ProfileVaultError::TooLarge);
+			return std::nullopt;
+		}
+	}
+	if (!supplied.empty()) {
+		SetError(error, ProfileVaultError::InvalidGrant);
+		return std::nullopt;
+	}
+	if (!SealAdminGrant(vault, metadata, admin, accounts, locators, grantKeys)) {
+		SetError(error, ProfileVaultError::InvalidGrant);
+		return std::nullopt;
+	}
+	const auto validation = ValidateVault(vault);
+	SetError(error, validation);
+	return (validation == ProfileVaultError::None)
+		? std::optional(std::move(vault))
+		: std::nullopt;
 }
 
 } // namespace
@@ -576,61 +979,32 @@ bool ValidProfileVaultKdf(KdfParameters parameters) {
 	return false;
 }
 
-void DeriveProfileVaultCredential(
-		QByteArray salt,
-		KdfParameters parameters,
-		QString password,
-		Fn<void(DerivedCredential)> done) {
-	if (!ValidSalt(salt) || !ValidProfileVaultKdf(parameters)
-		|| password.isEmpty() || password.size() > 1024) {
-		password.fill(QChar(0));
-		done({});
-		return;
+std::optional<AccountVaultLocator> NewAccountVaultLocator(AccountId id) {
+	auto value = id ? RandomBytes(kAccountVaultLocatorSize) : QByteArray();
+	return value.isEmpty()
+		? std::nullopt
+		: std::optional(AccountVaultLocator{ id, std::move(value) });
+}
+
+QString AccountVaultDataName(const AccountVaultLocator &locator) {
+	return ValidLocator(locator)
+		? QString::fromLatin1(locator.value.toHex())
+		: QString();
+}
+
+bool details::ValidProfileVaultSalt(const QByteArray &salt) {
+	return salt.size() >= 8 && salt.size() <= 64;
+}
+
+DerivedCredential details::ProfileVaultCredentialFromKdfOutput(
+		QByteArrayView material) {
+	if (material.isEmpty()) {
+		return {};
 	}
-	auto passwordBytes = password.toUtf8();
-	password.fill(QChar(0));
-	if (passwordBytes.size() > 4096) {
-		OPENSSL_cleanse(passwordBytes.data(), passwordBytes.size());
-		done({});
-		return;
-	}
-	crl::async([
-			passwordBytes = std::move(passwordBytes),
-			salt = std::move(salt),
-			parameters,
-			done = std::move(done)]() mutable {
-		auto credential = DerivedCredential();
-		const auto kdf = Storage::details::PasscodeKdf{
-			.kind = parameters.kind,
-			.memory = parameters.memory,
-			.time = parameters.time,
-			.parallel = parameters.parallel,
-		};
-		const auto key = Storage::details::CreatePasscodeKey(
-			passwordBytes,
-			salt,
-			kdf);
-		if (key) {
-			auto material = QByteArray(
-				reinterpret_cast<const char*>(key->data().data()),
-				int(key->data().size()));
-			credential.verifier = Digest(
-				QByteArray(kVerifierContext, int(sizeof(kVerifierContext) - 1)),
-				material);
-			credential.key = Digest(
-				QByteArray(kEncryptionContext, int(sizeof(kEncryptionContext) - 1)),
-				material);
-			OPENSSL_cleanse(material.data(), material.size());
-		}
-		if (!passwordBytes.isEmpty()) {
-			OPENSSL_cleanse(passwordBytes.data(), passwordBytes.size());
-		}
-		crl::on_main([
-				credential = std::move(credential),
-				done = std::move(done)]() mutable {
-			done(std::move(credential));
-		});
-	});
+	return {
+		.verifier = Digest(kVerifierContext, material),
+		.key = Digest(kCredentialContext, material),
+	};
 }
 
 std::optional<ProfileVault> SealProfileVault(
@@ -639,137 +1013,74 @@ std::optional<ProfileVault> SealProfileVault(
 		const DerivedCredential &admin,
 		const std::vector<SetGrantCredential> &grants,
 		ProfileVaultError *error) {
-	SetError(error, ProfileVaultError::MetadataMismatch);
-	if (!ValidProfileVaultKdf(metadata.verifierKdf)) {
-		SetError(error, ProfileVaultError::InvalidKdf);
-		return std::nullopt;
-	}
-	if (Validate(metadata) != ValidationError::None
-		|| !ValidSalt(metadata.verifierSalt)
-		|| !ValidCredential(admin)
-		|| !EqualSecret(admin.verifier, metadata.masterVerifier)
-		|| ValidateAccountKeys(accounts) != KeyringError::None
-		|| grants.size() != metadata.sets.size()) {
-		return std::nullopt;
-	}
-	if (!AccountMembershipsExist(metadata, accounts)) {
-		return std::nullopt;
-	}
-	auto supplied = std::map<SetId, const DerivedCredential*>();
-	for (const auto &grant : grants) {
-		if (!grant.id || !ValidCredential(grant.credential)
-			|| !supplied.emplace(grant.id, &grant.credential).second) {
-			SetError(error, ProfileVaultError::InvalidGrant);
-			return std::nullopt;
-		}
-	}
-	for (const auto &set : metadata.sets) {
-		const auto i = supplied.find(set.id);
-		if (i == end(supplied)
-			|| !EqualSecret(i->second->verifier, set.verifier)) {
-			SetError(error, ProfileVaultError::MetadataMismatch);
-			return std::nullopt;
-		}
-	}
-	auto vault = ProfileVault();
-	vault.salt = metadata.verifierSalt;
-	vault.kdf = metadata.verifierKdf;
-	vault.adminVerifier = admin.verifier;
-	vault.id = QByteArray(kProfileVaultIdSize, Qt::Uninitialized);
-	if (RAND_bytes(
-		reinterpret_cast<unsigned char*>(vault.id.data()),
-		int(vault.id.size())) != 1 || AllZero(vault.id)) {
-		OPENSSL_cleanse(vault.id.data(), vault.id.size());
-		SetError(error, ProfileVaultError::RandomFailure);
-		return std::nullopt;
-	}
-	auto byId = std::map<AccountId, const AccountKey*>();
+	auto locators = std::vector<AccountVaultLocator>();
+	locators.reserve(accounts.size());
 	for (const auto &account : accounts) {
-		byId.emplace(account.id, &account);
-	}
-	for (const auto &set : metadata.sets) {
-		const auto credential = supplied.at(set.id);
-		auto subset = std::vector<AccountKey>();
-		subset.reserve(set.accounts.size());
-		for (const auto id : set.accounts) {
-			subset.push_back(*byId.at(id));
-		}
-		auto keyringKey = KeyringKey(
-			*credential,
-			vault.id,
-			kSetPayloadContext,
-			set.id);
-		const auto keyring = SealAccountKeyring(subset, keyringKey);
-		OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
-		CleanseAccountKeys(subset);
-		if (keyring.isEmpty()) {
-			SetError(error, ProfileVaultError::InvalidGrant);
+		auto locator = NewAccountVaultLocator(account.id);
+		if (!locator) {
+			SetError(error, ProfileVaultError::RandomFailure);
 			return std::nullopt;
 		}
-		auto plaintext = SerializeSetPayload(set.id, keyring);
-		auto sealed = SealedBlob();
-		auto grant = SealedSetGrant{
-			.id = set.id,
-			.verifier = set.verifier,
-		};
-		auto setWrapKey = GrantKey(
-			*credential,
-			vault.id,
-			kSetPayloadContext,
-			set.id);
-		const auto setSealed = Seal(
-			setWrapKey,
-			SetAad(vault, grant),
-			plaintext,
-			&sealed);
-		OPENSSL_cleanse(setWrapKey.data(), setWrapKey.size());
-		if (!setSealed) {
-			OPENSSL_cleanse(plaintext.data(), plaintext.size());
-			SetError(error, ProfileVaultError::InvalidGrant);
-			return std::nullopt;
-		}
-		OPENSSL_cleanse(plaintext.data(), plaintext.size());
-		grant.nonce = std::move(sealed.nonce);
-		grant.ciphertext = std::move(sealed.ciphertext);
-		vault.grants.push_back(std::move(grant));
+		locators.push_back(std::move(*locator));
 	}
-	auto adminKeyringKey = KeyringKey(
-		admin,
-		vault.id,
-		kAdminPayloadContext,
-		{});
-	const auto allKeyring = SealAccountKeyring(accounts, adminKeyringKey);
-	OPENSSL_cleanse(adminKeyringKey.data(), adminKeyringKey.size());
-	if (allKeyring.isEmpty()) {
-		SetError(error, ProfileVaultError::InvalidGrant);
-		return std::nullopt;
-	}
-	auto adminPlaintext = SerializeAdminPayload(
+	return SealProfileVault(metadata, accounts, locators, admin, grants, error);
+}
+
+std::optional<ProfileVault> SealProfileVault(
+		const Metadata &metadata,
+		const std::vector<AccountKey> &accounts,
+		const std::vector<AccountVaultLocator> &locators,
+		const DerivedCredential &admin,
+		const std::vector<SetGrantCredential> &grants,
+		ProfileVaultError *error) {
+	return RewriteVault(
 		metadata,
-		allKeyring,
-		GrantManifest(vault.grants));
-	auto adminWrapKey = GrantKey(
+		accounts,
+		locators,
 		admin,
-		vault.id,
-		kAdminPayloadContext,
-		{});
-	auto sealedAdmin = SealedBlob();
-	const auto adminSealed = !adminPlaintext.isEmpty()
-		&& Seal(
-			adminWrapKey,
-			AdminAad(vault),
-			adminPlaintext,
-			&sealedAdmin);
-	OPENSSL_cleanse(adminPlaintext.data(), adminPlaintext.size());
-	OPENSSL_cleanse(adminWrapKey.data(), adminWrapKey.size());
-	if (!adminSealed) {
-		SetError(error, ProfileVaultError::InvalidGrant);
+		grants,
+		nullptr,
+		nullptr,
+		{},
+		error);
+}
+
+std::optional<ProfileVault> UpdateProfileVault(
+		const ProfileVault &vault,
+		const DerivedCredential &admin,
+		const Metadata &metadata,
+		const std::vector<SetGrantCredential> &replacementCredentials,
+		ProfileVaultError *error) {
+	const auto validation = ValidateVault(vault);
+	if (validation != ProfileVaultError::None) {
+		SetError(error, validation);
+		return std::nullopt;
+	} else if (vault.version != kProfileVaultVersion) {
+		SetError(error, ProfileVaultError::UnsupportedVersion);
+		return std::nullopt;
+	} else if (!ValidCredential(admin)) {
+		SetError(error, ProfileVaultError::InvalidCredential);
 		return std::nullopt;
 	}
-	vault.adminNonce = std::move(sealedAdmin.nonce);
-	vault.adminCiphertext = std::move(sealedAdmin.ciphertext);
-	SetError(error, ProfileVaultError::None);
-	return vault;
+	auto keys = GrantKeys();
+	const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); });
+	auto opened = OpenAdminVault(vault, admin, keys, error);
+	if (!opened) {
+		return std::nullopt;
+	}
+	const auto wipeAccounts = gsl::finally([&] {
+		CleanseAccountKeys(opened->accounts);
+	});
+	return RewriteVault(
+		metadata,
+		opened->accounts,
+		opened->locators,
+		admin,
+		replacementCredentials,
+		&vault,
+		&opened->metadata,
+		keys,
+		error);
 }
 
 ProfileVaultAccess OpenProfileVault(
@@ -786,68 +1097,27 @@ ProfileVaultAccess OpenProfileVault(
 		return WrongPassword();
 	}
 	if (EqualSecret(credential.verifier, vault.adminVerifier)) {
-		auto adminWrapKey = GrantKey(
-			credential,
-			vault.id,
-			kAdminPayloadContext,
-			{});
-		auto plaintext = OpenAesGcm(
-			adminWrapKey,
-			vault.adminNonce,
-			AdminAad(vault),
-			vault.adminCiphertext);
-		OPENSSL_cleanse(adminWrapKey.data(), adminWrapKey.size());
-		if (plaintext.isEmpty()) {
-			SetError(error, ProfileVaultError::AuthenticationFailed);
-			return WrongPassword();
-		}
-		const auto cleanse = gsl::finally([&] {
-			OPENSSL_cleanse(plaintext.data(), plaintext.size());
-		});
-		const auto parsed = ParseAdminPayload(plaintext);
-		if (!parsed
-			|| !MetadataMatchesVault(parsed->metadata, vault)
-			|| !EqualSecret(parsed->manifest, GrantManifest(vault.grants))) {
-			SetError(error, ProfileVaultError::MetadataMismatch);
-			return WrongPassword();
-		}
-		auto keyringKey = KeyringKey(
-			credential,
-			vault.id,
-			kAdminPayloadContext,
-			{});
-		KeyringError keyringError = KeyringError::Malformed;
-		auto accounts = OpenAccountKeyring(
-			parsed->keyring,
-			keyringKey,
-			&keyringError);
-		OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
-		if (!accounts || !AccountMembershipsExist(parsed->metadata, *accounts)) {
-			SetError(error, ProfileVaultError::MetadataMismatch);
-			return WrongPassword();
-		}
-		SetError(error, ProfileVaultError::None);
-		return AdminVaultAccess{
-			parsed->metadata,
-			std::move(*accounts),
-		};
+		auto keys = GrantKeys();
+		const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); });
+		auto opened = OpenAdminVault(vault, credential, keys, error);
+		return opened
+			? ProfileVaultAccess(std::move(*opened))
+			: ProfileVaultAccess(WrongPassword());
 	}
 	const auto grant = FindGrant(vault, credential.verifier);
 	if (!grant) {
 		SetError(error, ProfileVaultError::WrongPassword);
 		return WrongPassword();
 	}
-	auto setWrapKey = GrantKey(
-		credential,
-		vault.id,
-		kSetPayloadContext,
-		grant->id);
+	auto grantKey = GrantKey(credential, vault, kSetPayloadContext, grant->id);
+	const auto wipeGrantKey = gsl::finally([&] {
+		OPENSSL_cleanse(grantKey.data(), grantKey.size());
+	});
 	auto plaintext = OpenAesGcm(
-		setWrapKey,
+		grantKey,
 		grant->nonce,
 		SetAad(vault, *grant),
 		grant->ciphertext);
-	OPENSSL_cleanse(setWrapKey.data(), setWrapKey.size());
 	if (plaintext.isEmpty()) {
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
@@ -855,35 +1125,44 @@ ProfileVaultAccess OpenProfileVault(
 	const auto cleanse = gsl::finally([&] {
 		OPENSSL_cleanse(plaintext.data(), plaintext.size());
 	});
-	const auto parsed = ParseSetPayload(plaintext);
-	if (!parsed || parsed->first != grant->id) {
+	const auto legacy = (vault.version == kLegacyProfileVaultVersion);
+	const auto parsed = ParseSetPayload(plaintext, legacy);
+	if (!parsed || parsed->id != grant->id) {
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
 	}
-	auto keyringKey = KeyringKey(
-		credential,
-		vault.id,
-		kSetPayloadContext,
-		grant->id);
-	KeyringError keyringError = KeyringError::Malformed;
-	auto accounts = OpenAccountKeyring(
-		parsed->second,
-		keyringKey,
-		&keyringError);
+	auto keyringKey = legacy
+		? CredentialKeyringKey(credential, vault, grant->id)
+		: SetKeyringKey(grantKey);
+	auto accounts = OpenAccountKeyring(parsed->keyring, keyringKey);
 	OPENSSL_cleanse(keyringKey.data(), keyringKey.size());
 	if (!accounts) {
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
 	}
+	auto locators = legacy
+		? std::optional(std::vector<AccountVaultLocator>())
+		: ParseLocators(parsed->locators, *accounts);
+	if (!locators) {
+		CleanseAccountKeys(*accounts);
+		SetError(error, ProfileVaultError::AuthenticationFailed);
+		return WrongPassword();
+	}
 	SetError(error, ProfileVaultError::None);
-	return SetVaultAccess{ grant->id, std::move(*accounts) };
+	return SetVaultAccess{
+		.id = grant->id,
+		.accounts = std::move(*accounts),
+		.locators = std::move(*locators),
+		.version = vault.version,
+	};
 }
 
 QByteArray SerializeProfileVault(
 		const ProfileVault &vault,
 		ProfileVaultError *error) {
-	SetError(error, ValidateVault(vault));
-	if (ValidateVault(vault) != ProfileVaultError::None) {
+	const auto validation = ValidateVault(vault);
+	SetError(error, validation);
+	if (validation != ProfileVaultError::None) {
 		return {};
 	}
 	auto result = QByteArray();
@@ -933,7 +1212,8 @@ std::optional<ProfileVault> ParseProfileVault(
 	}
 	auto vault = ProfileVault();
 	vault.version = ReadUint32(data + 4);
-	if (vault.version != kProfileVaultVersion) {
+	if (vault.version != kProfileVaultVersion
+		&& vault.version != kLegacyProfileVaultVersion) {
 		SetError(error, ProfileVaultError::UnsupportedVersion);
 		return std::nullopt;
 	}

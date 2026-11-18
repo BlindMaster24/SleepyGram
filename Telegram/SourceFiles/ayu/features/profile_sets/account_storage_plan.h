@@ -66,7 +66,7 @@ private:
 // Pass the access result directly from OpenProfileVault; this variant is not
 // an unforgeable capability on its own.
 [[nodiscard]] std::optional<AccountStoragePlan> BuildAccountStoragePlan(
-	QString globalTdataPath,
+	QString rootPath,
 	ProfileVaultAccess &&access,
 	std::vector<AccountStorageBinding> bindings,
 	AccountStoragePlanError *error = nullptr);
