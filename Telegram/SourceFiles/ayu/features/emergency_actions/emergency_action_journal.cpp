@@ -998,6 +998,34 @@ std::optional<std::vector<OperationId>> FileJournalStore::operationIds() {
 	return result;
 }
 
+std::optional<EmergencyActionJournal> FileJournalStore::latestReset(const InstallationId &installation) const {
+	auto result = std::optional<EmergencyActionJournal>();
+	auto newest = std::filesystem::file_time_type::min();
+	auto error = std::error_code();
+	auto i = std::filesystem::directory_iterator(_directory, error);
+	const auto end = std::filesystem::directory_iterator();
+	while (!error && i != end) {
+		const auto &path = i->path();
+		if (path.extension() == kJournalExtension && std::filesystem::is_regular_file(i->symlink_status(error))) {
+			const auto written = i->last_write_time(error);
+			if (!error && written >= newest) {
+				auto journal = DecodeJournal(ReadBytes(path, kMaxJournalBytes));
+				if (journal && journal->installationId == installation
+					&& journal->action == EmergencyAction::ResetAccountData && LocalCleanupComplete(*journal)
+					&& path.filename() == JournalFilename(journal->operationId)
+					&& (!result || written > newest || journal->operationId > result->operationId)) {
+					newest = written;
+					result = std::move(journal);
+				}
+			}
+		}
+		if (!error) {
+			i.increment(error);
+		}
+	}
+	return !error ? result : std::nullopt;
+}
+
 JournalCreateResult FileJournalStore::createAtomically(
 		const OperationId &operationId,
 		std::span<const std::byte> bytes) {

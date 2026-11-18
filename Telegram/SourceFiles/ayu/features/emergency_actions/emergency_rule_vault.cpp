@@ -110,10 +110,10 @@ bool Hash(std::span<const uint8_t> input, std::span<uint8_t, kKeyBytes> result) 
 		EVP_sha256(), nullptr) == 1 && size == result.size();
 }
 
-bool DeriveSlotKey(std::span<const uint8_t> key, bool master, Key &result) {
-	const auto label = master
-		? std::string_view("SleepyGram emergency rule management v1")
-		: std::string_view("SleepyGram emergency rule credential v1");
+bool DeriveKey(
+		std::span<const uint8_t> key,
+		std::string_view label,
+		std::span<uint8_t, kKeyBytes> result) {
 	auto size = 0U;
 	return ValidKey(key)
 		&& HMAC(
@@ -122,9 +122,40 @@ bool DeriveSlotKey(std::span<const uint8_t> key, bool master, Key &result) {
 			int(key.size()),
 			reinterpret_cast<const uint8_t*>(label.data()),
 			label.size(),
-			result.data.data(),
+			result.data(),
 			&size)
-		&& size == result.data.size();
+		&& size == result.size();
+}
+
+bool DeriveSlotKey(std::span<const uint8_t> key, bool master, Key &result) {
+	const auto label = master
+		? std::string_view("SleepyGram emergency rule management v1")
+		: std::string_view("SleepyGram emergency rule credential v1");
+	return DeriveKey(key, label, result.data);
+}
+
+bool DeriveCapsuleKey(
+		std::span<const uint8_t, kKeyBytes> slotKey,
+		std::span<uint8_t, kKeyBytes> result) {
+	return DeriveKey(
+		slotKey,
+		"SleepyGram emergency execution capsule key v2",
+		result);
+}
+
+OperationId NewOperationId() {
+	auto bytes = std::array<uint8_t, 16>{};
+	if (RAND_bytes(bytes.data(), int(bytes.size())) != 1) {
+		return {};
+	}
+	constexpr auto hex = std::string_view("0123456789abcdef");
+	auto id = std::string();
+	id.reserve(bytes.size() * 2);
+	for (const auto byte : bytes) {
+		id.push_back(hex[byte >> 4]);
+		id.push_back(hex[byte & 15]);
+	}
+	return OperationId(std::move(id));
 }
 
 std::string AssociatedData(const EmergencyRuleGeneration &generation, size_t slot) {
@@ -306,7 +337,9 @@ bool ValidRule(
 	if (!ValidId(record.actionId.value) || !ValidId(record.operationId.value)
 		|| !ValidId(rule.id.value) || !record.revision
 		|| (record.executionCapsuleDigest
-			&& !ValidKey(*record.executionCapsuleDigest))
+			&& (!ValidKey(*record.executionCapsuleDigest)
+				|| (record.capsuleVersion != EmergencyExecutionCapsuleVersion::Legacy
+					&& record.capsuleVersion != EmergencyExecutionCapsuleVersion::Rebindable)))
 		|| (!rule.safeProfileId.value.empty() && !ValidId(rule.safeProfileId.value))
 		|| rule.installationId != installation
 		|| unsigned(rule.action) > unsigned(EmergencyAction::RemoveInstallation)
@@ -470,7 +503,9 @@ bool WriteRule(
 				&& writer.number(uint8_t(policy.kind), 1)
 				&& WriteIds(writer, policy.selectedSessionIds);
 		})
-		&& writer.number(record.executionCapsuleDigest.has_value(), 1)
+		&& writer.number(
+			record.executionCapsuleDigest ? uint8_t(record.capsuleVersion) : 0,
+			1)
 		&& (!record.executionCapsuleDigest
 			|| (reviewedLive && writer.write(*record.executionCapsuleDigest)
 				&& WriteReviewedLive(writer, *reviewedLive)));
@@ -511,11 +546,13 @@ std::optional<RuleRecord> ReadRule(
 		policy.kind = RemoteSessionTargetKind(kind);
 	}
 	// Earlier v1 slots left zero padding here.
-	auto hasCapsule = uint64_t(0);
-	if (!reader.number(hasCapsule, 1) || hasCapsule > 1) {
+	auto capsuleVersion = uint64_t(0);
+	if (!reader.number(capsuleVersion, 1)
+		|| capsuleVersion > uint8_t(EmergencyExecutionCapsuleVersion::Rebindable)) {
 		return std::nullopt;
 	}
-	if (hasCapsule) {
+	if (capsuleVersion) {
+		record.capsuleVersion = EmergencyExecutionCapsuleVersion(capsuleVersion);
 		if (!reader.read(record.executionCapsuleDigest.emplace())) {
 			return std::nullopt;
 		}
@@ -632,12 +669,21 @@ std::optional<std::vector<MasterRule>> OpenMasterRules(
 			return std::nullopt;
 		}
 		rule.named.details = std::move(opened->details);
+		rule.reviewedLive = std::move(opened->reviewedLive);
 		result.push_back(std::move(rule));
 	}
 	return index.finished() ? std::optional(std::move(result)) : std::nullopt;
 }
 
 } // namespace
+
+bool details::DeriveRebindableEmergencyCapsuleKey(
+		std::span<const uint8_t> emergencyDerivedKey,
+		std::span<uint8_t, kKeyBytes> result) {
+	auto slot = Key();
+	return DeriveSlotKey(emergencyDerivedKey, false, slot)
+		&& DeriveCapsuleKey(slot.data, result);
+}
 
 size_t SealedEmergencyRulesSize() {
 	return kSealedBytes;
@@ -680,6 +726,7 @@ std::optional<SealedEmergencyRules> SealEmergencyRules(
 			.operationId = reviewed.operationId,
 			.revision = draft->revision,
 			.executionCapsuleDigest = entry.executionCapsuleDigest,
+			.capsuleVersion = entry.capsuleVersion,
 		};
 		if (!ValidRule(record, generation.installationId)
 			|| !operationIds.insert(record.operationId).second
@@ -766,7 +813,8 @@ std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 		std::span<const uint8_t> previousMasterDerivedKey,
 		const EmergencyRuleGeneration &nextGeneration,
 		const LiveInstallation &nextLive,
-		const EmergencyRuleMasterContext &nextMaster) {
+		const EmergencyRuleMasterContext &nextMaster,
+		const RebuildEmergencyExecutionCapsule &rebuild) {
 	if (!ValidGeneration(nextGeneration)
 		|| nextGeneration == previousAuthority.generation
 		|| nextGeneration.installationId != previousAuthority.generation.installationId
@@ -787,7 +835,7 @@ std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 		|| !DeriveSlotKey(nextMaster.derivedKey, false, nextMasterSlotKey)) {
 		return std::nullopt;
 	}
-	const auto rules = OpenMasterRules(
+	auto rules = OpenMasterRules(
 		previousAuthority,
 		previousSealed,
 		previousMasterDerivedKey);
@@ -797,15 +845,46 @@ std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 	for (const auto &rule : *rules) {
 		const auto &details = rule.named.details;
 		const auto &verifier = rule.secrets->verifier.data;
-		if (details.executionCapsuleDigest
+		if ((details.executionCapsuleDigest && (!rebuild || !rule.reviewedLive
+				|| details.capsuleVersion != EmergencyExecutionCapsuleVersion::Rebindable))
 			|| Same(rule.secrets->key.data, nextMasterSlotKey.data)
 			|| Same(verifier, nextMaster.verifier)
 			|| std::ranges::any_of(nextMaster.normalCredentials, [&](const auto &normal) {
 				return Same(normal.verifier, verifier);
 			})
-			|| !MakeJournal(BuildDryRunPlan(details.operationId, details.rule, nextLive))) {
+			|| (!details.executionCapsuleDigest
+				&& !MakeJournal(BuildDryRunPlan(details.operationId, details.rule, nextLive)))) {
 			return std::nullopt;
 		}
+	}
+	for (auto &rule : *rules) {
+		const auto &previous = rule.named.details;
+		if (!previous.executionCapsuleDigest) {
+			continue;
+		}
+		auto next = previous;
+		next.operationId = NewOperationId();
+		next.executionCapsuleDigest.reset();
+		const auto plan = BuildDryRunPlan(next.operationId, next.rule, nextLive);
+		auto reviewed = ProjectReviewedLive(nextLive, plan);
+		auto capsuleKey = Key();
+		if (!MakeJournal(plan) || !reviewed
+			|| BuildDryRunPlan(next.operationId, next.rule, *reviewed) != plan
+			|| !DeriveCapsuleKey(rule.secrets->key.data, capsuleKey.data)) {
+			return std::nullopt;
+		}
+		const auto ticket = EmergencyRuleTicket(
+			previousAuthority,
+			previous,
+			std::move(rule.reviewedLive));
+		const auto digest = rebuild(ticket, next, plan, capsuleKey.data);
+		if (!digest || !ValidKey(*digest)
+			|| Same(*digest, *previous.executionCapsuleDigest)) {
+			return std::nullopt;
+		}
+		next.executionCapsuleDigest = *digest;
+		rule.named.details = std::move(next);
+		rule.reviewedLive = std::move(reviewed);
 	}
 	return SealMasterRules(nextGeneration, nextMaster.derivedKey, *rules);
 }

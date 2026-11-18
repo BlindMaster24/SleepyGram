@@ -146,6 +146,12 @@ void DeriveProfileVaultCredential(
 	const DerivedCredential &admin,
 	const std::vector<AccountId> &remove,
 	ProfileVaultError *error = nullptr);
+
+[[nodiscard]] std::optional<ProfileVault> CopyEmptyProfileVaultSet(
+	const ProfileVault &vault,
+	const ProfileVault &source,
+	const DerivedCredential &admin,
+	SetId setId);
 // The destination stays bound to its original passcode and must still be empty.
 [[nodiscard]] std::optional<ProfileVault> EnrollProfileVaultAccount(
 	const ProfileVault &vault,

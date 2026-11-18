@@ -211,6 +211,15 @@ bool LaunchProfileInstallationRemoval(
 		return false;
 	}
 	const auto root = QFileInfo(workspace.workspacePath());
+	const auto journals = workspace.emergencyJournalDirectory();
+	if (journals.isEmpty()) {
+		return false;
+	}
+	auto store = EA::FileJournalStore(QFileInfo(journals).filesystemFilePath());
+	const auto operations = store.operationIds();
+	if (!operations || !std::ranges::contains(*operations, journal.operationId)) {
+		return false;
+	}
 	const auto setSettings = QFileInfo(QDir(root.absoluteFilePath()).filePath(u"set-settings"_q));
 	if (setSettings.isSymLink() || setSettings.isJunction()
 		|| (setSettings.exists() && !setSettings.isDir())) {
@@ -220,8 +229,12 @@ bool LaunchProfileInstallationRemoval(
 		.installationId = record.journal.installationId,
 		.dataDirectory = QFileInfo(root.absolutePath()).filesystemFilePath().make_preferred(),
 		.generationIds = { record.successorGeneration },
-		.journalIds = { record.journal.operationId },
 	};
+	for (const auto &operation : *operations) {
+		if (const auto entry = EA::LoadJournal(store, operation); entry && entry->installationId == scope.installationId) {
+			scope.journalIds.push_back(operation);
+		}
+	}
 	const auto folders = QDir(setSettings.absoluteFilePath()).entryInfoList(
 		QDir::Dirs | QDir::NoDotAndDotDot | QDir::System | QDir::Hidden);
 	for (const auto &folder : folders) {

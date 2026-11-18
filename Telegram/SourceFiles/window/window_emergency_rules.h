@@ -32,6 +32,12 @@ struct EmergencySafeSetChoice final {
 	std::vector<Ayu::EmergencyActions::AccountId> accounts;
 };
 
+struct EmergencyResetSummary final {
+	int clearedAccounts = 0;
+	int unconfirmedDeviceRevokes = 0;
+	int unconfirmedLogouts = 0;
+};
+
 struct EmergencyRulesSnapshot final {
 	QByteArray transactionId;
 	bool canSave = false;
@@ -41,6 +47,7 @@ struct EmergencyRulesSnapshot final {
 	std::vector<EmergencyAccountChoice> accounts;
 	std::vector<EmergencySafeSetChoice> safeSets;
 	std::vector<Ayu::EmergencyActions::NamedEmergencyRule> entries;
+	std::optional<EmergencyResetSummary> lastReset;
 };
 
 struct EmergencyRuleReplacement final {

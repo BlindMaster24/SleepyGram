@@ -40,6 +40,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtGui/QGuiApplication>
 #include <QtGui/QScreen>
 
+// AyuGram includes
+#include "ayu/features/profile_sets/profile_webview_policy.h"
+
+
 namespace Ui {
 namespace {
 
@@ -395,6 +399,10 @@ void LocationPicker::setupWindow(const Descriptor &descriptor) {
 void LocationPicker::setupWebview() {
 	Expects(!_webview);
 
+	if (!Ayu::ProfileSets::CanUsePersistentWebview(_webviewStorageId)) {
+		showWebviewError();
+		return;
+	}
 	delete base::take(_mapPlaceholder);
 
 	const auto window = _window.get();

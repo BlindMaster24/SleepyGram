@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ayu/features/profile_sets/profile_generation.h"
 #include "ayu/features/profile_sets/profile_emergency.h"
+#include "ayu/features/profile_sets/profile_emergency_settings.h"
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_auth_key.h"
@@ -162,7 +163,8 @@ ProfileGenerationError SaveSetOnWorker(
 		expectedTransactionId,
 		change,
 		std::move(master),
-		std::move(replacement));
+		std::move(replacement),
+		RebindProfileEmergencyRulesOnWorker);
 }
 
 } // namespace

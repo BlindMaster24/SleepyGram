@@ -2,7 +2,9 @@
 #include "ayu/features/profile_sets/profile_enrollment.h"
 
 #include "ayu/data/ayu_database.h"
+#include "ayu/features/emergency_actions/scoped_account_clear.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
+#include "ayu/features/profile_sets/profile_emergency_settings.h"
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
@@ -45,7 +47,8 @@ void WipeAccess(ProfileVaultAccess &access) {
 Result CheckExistingIdentities(
 		const QString &root,
 		const AdminVaultAccess &master,
-		UserId expectedUser) {
+		UserId expectedUser,
+		MTP::Environment expectedEnvironment) {
 	for (const auto &key : master.accounts) {
 		const auto locator = std::ranges::find(master.locators, key.id, &AccountVaultLocator::id);
 		if (locator == end(master.locators)) {
@@ -57,7 +60,7 @@ Result CheckExistingIdentities(
 			: std::nullopt;
 		if (!identity) {
 			return Result::StorageFailed;
-		} else if (identity->userId == expectedUser) {
+		} else if (identity->userId == expectedUser && identity->environment == expectedEnvironment) {
 			return Result::DuplicateAccount;
 		}
 	}
@@ -97,6 +100,38 @@ bool StageNewAccount(
 		&& workspace.SyncScopedAccount(name);
 }
 
+bool DiscardStagedAccount(
+		const MigrationController &workspace,
+		const QByteArray &vaultId,
+		const AccountKey &key,
+		const AccountVaultLocator &locator,
+		UserId expectedUser) {
+	const auto name = AccountVaultDataName(locator);
+	const auto accounts = workspace.accountStorageRoot();
+	const auto paths = Storage::ScopedAccountPaths(accounts, name);
+	if (paths) {
+		const auto directory = QFileInfo(QFileInfo(paths->authPath).path());
+		if (!directory.exists() && !directory.isSymLink() && !directory.isJunction()) {
+			return true;
+		}
+	}
+	const auto localKey = ProfileAccountStorageKey(key);
+	const auto identity = paths && localKey
+		? Storage::ValidateScopedAccountForStartup(*paths, localKey) : std::nullopt;
+	if (!identity || identity->userId != expectedUser) {
+		return false;
+	}
+	const auto installation = EmergencyActions::InstallationId(vaultId.toHex().toStdString());
+	const auto account = EmergencyActions::AccountId(name.toStdString());
+	auto clear = EmergencyActions::ScopedAccountClear(installation,
+		QFileInfo(QFileInfo(workspace.workspacePath()).path()).filesystemFilePath(), {
+			.installationId = installation,
+			.accountStorageRoot = QFileInfo(accounts).filesystemFilePath(),
+			.accounts = {{ account, name.toStdString() }},
+		});
+	return clear.clear(account) == EmergencyActions::EffectResult::ConfirmedSuccess;
+}
+
 Result Enroll(const MigrationController &workspace, ScopedEnrollmentRequest &request) {
 	if (!request.userId || !request.targetSet || request.authorization.isEmpty()
 		|| request.configuration.isEmpty()) {
@@ -106,8 +141,6 @@ Result Enroll(const MigrationController &workspace, ScopedEnrollmentRequest &req
 	if (!committed || committed->transactionId != request.expectedTransactionId
 		|| !committed->legacyRetirement.isEmpty() || !committed->emergencyRecovery.isEmpty()) {
 		return Result::Stale;
-	} else if (!committed->emergencyRules.isEmpty()) {
-		return Result::RuleUpdateRequired;
 	}
 	const auto vault = ParseProfileVault(committed->profileVault);
 	if (!vault || vault->version != kProfileVaultVersion) {
@@ -126,7 +159,7 @@ Result Enroll(const MigrationController &workspace, ScopedEnrollmentRequest &req
 		return Result::InvalidPasscodes;
 	}
 	const auto root = workspace.accountStorageRoot();
-	const auto checked = CheckExistingIdentities(root, *master, request.userId);
+	const auto checked = CheckExistingIdentities(root, *master, request.userId, request.environment);
 	if (checked != Result::Complete) {
 		return checked;
 	}
@@ -148,22 +181,44 @@ Result Enroll(const MigrationController &workspace, ScopedEnrollmentRequest &req
 		return Result::StorageFailed;
 	}
 	const auto operation = [&] { return StageNewAccount(workspace, request, *key, *locator); };
+	const auto discard = [&] {
+		return workspace.WithCurrentGeneration(committed->transactionId, [&] {
+			return DiscardStagedAccount(workspace, vault->id, *key, *locator, request.userId);
+		});
+	};
 	auto migrationError = MigrationError::None;
 	if (!workspace.WithCurrentGeneration(committed->transactionId, operation, &migrationError)) {
-		return migrationError == MigrationError::StaleGeneration ? Result::Stale : Result::StorageFailed;
+		const auto cleaned = migrationError != MigrationError::CallbackFailed || discard();
+		return (migrationError == MigrationError::StaleGeneration || !cleaned)
+			? Result::Stale : Result::StorageFailed;
 	}
-	const auto published = workspace.ReplaceCommitted(committed->transactionId, {
+	const auto next = MigrationController::NewTransactionId();
+	const auto rules = next.isEmpty() ? std::nullopt : RebindProfileEmergencyRulesOnWorker(
+		workspace, *committed, *enrolled, next, admin);
+	if (!rules) {
+		return discard() && !committed->emergencyRules.isEmpty()
+			? Result::RuleUpdateRequired : Result::StorageFailed;
+	}
+	auto artifacts = std::vector<MigrationInput>{
 		{ MigrationArtifact::ProfileVault, sealed }, { MigrationArtifact::AccountKeyring, keyring },
-	}, [&](const CommittedMigration &record) {
+	};
+	if (!rules->isEmpty()) {
+		artifacts.push_back({ MigrationArtifact::EmergencyRules, *rules });
+	}
+	const auto published = workspace.ReplaceCommitted(committed->transactionId, artifacts,
+		[&](const CommittedMigration &record) {
 		return record.profileVault == sealed && record.accountKeyring == keyring
-			&& record.emergencyRules.isEmpty() && record.emergencyRecovery.isEmpty();
-	}, &migrationError);
+			&& record.emergencyRules == *rules && record.emergencyRecovery.isEmpty();
+	}, &migrationError, next);
 	if (published) {
 		return workspace.RetireInactiveGenerations(published->transactionId)
 			? Result::Complete : Result::Stale;
 	}
-	return (migrationError == MigrationError::StaleGeneration
-		|| migrationError == MigrationError::PublicationUncertain) ? Result::Stale : Result::StorageFailed;
+	if (migrationError == MigrationError::StaleGeneration
+		|| migrationError == MigrationError::PublicationUncertain || !discard()) {
+		return Result::Stale;
+	}
+	return Result::StorageFailed;
 }
 
 } // namespace

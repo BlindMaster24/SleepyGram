@@ -174,6 +174,7 @@ public:
 
 	[[nodiscard]] std::unique_ptr<ExecutionLease> tryAcquireExecution() override;
 	[[nodiscard]] std::optional<std::vector<OperationId>> operationIds() override;
+	[[nodiscard]] std::optional<EmergencyActionJournal> latestReset(const InstallationId &installation) const;
 	[[nodiscard]] JournalCreateResult createAtomically(
 		const OperationId &operationId,
 		std::span<const std::byte> bytes) override;

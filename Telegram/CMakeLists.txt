@@ -312,6 +312,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_emergency_settings.h
         ayu/features/profile_sets/profile_installation_removal.cpp
         ayu/features/profile_sets/profile_installation_removal.h
+        ayu/features/profile_sets/profile_webview_policy.cpp
+        ayu/features/profile_sets/profile_webview_policy.h
         ayu/features/profile_sets/profile_emergency.cpp
         ayu/features/profile_sets/profile_emergency.h
         ayu/features/profile_sets/legacy_retirement.cpp
@@ -2284,6 +2286,7 @@ PRIVATE
     storage/details/storage_hkdf.h
     storage/details/storage_settings_scheme.cpp
     storage/details/storage_settings_scheme.h
+    storage/details/storage_webview_migration.h
     storage/download_manager_mtproto.cpp
     storage/download_manager_mtproto.h
     storage/file_download.cpp
@@ -2717,6 +2720,8 @@ PRIVATE
     wallet/wallet_content.h
     wallet/wallet_custody.cpp
     wallet/wallet_custody.h
+    wallet/wallet_migration_metadata.cpp
+    wallet/wallet_migration_metadata.h
     wallet/wallet_diamond_flight.cpp
     wallet/wallet_diamond_flight.h
     wallet/wallet_engine.cpp

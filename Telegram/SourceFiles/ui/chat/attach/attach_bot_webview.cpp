@@ -61,6 +61,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/profile_sets/profile_webview_policy.h"
 #include "styles/style_ayu_styles.h"
 
 
@@ -2211,6 +2212,9 @@ void Panel::createWebviewBottom() {
 }
 
 bool Panel::createWebview(const Webview::ThemeParams &params) {
+	if (!Ayu::ProfileSets::CanUsePersistentWebview(_storageId)) {
+		return false;
+	}
 	auto container = (RpWidget*)nullptr;
 	if (_externalShell) {
 		_externalWebviewParent = std::make_unique<RpWidget>();

@@ -183,12 +183,21 @@ void SaveProfileSetChange(
 	QString setPasscode,
 	Fn<void(ProfileGenerationError)> done);
 
+using RebindProfileEmergencyRules = std::optional<QByteArray>(*)(
+	const MigrationController&,
+	const CommittedMigration&,
+	const ProfileVault&,
+	const QByteArray&,
+	const DerivedCredential&,
+	std::span<const SetGrantCredential>);
+
 [[nodiscard]] ProfileGenerationError CommitProfileSetChange(
 	const MigrationController &sidecar,
 	const QByteArray &expectedTransactionId,
 	const ProfileSetChange &change,
 	DerivedCredential admin,
-	std::optional<DerivedCredential> replacement);
+	std::optional<DerivedCredential> replacement,
+	RebindProfileEmergencyRules rebind = nullptr);
 
 [[nodiscard]] std::optional<QByteArray> CommitProfileSetChanges(
 	const MigrationController &sidecar,
@@ -196,7 +205,8 @@ void SaveProfileSetChange(
 	DerivedCredential admin,
 	const Metadata &metadata,
 	std::vector<SetGrantCredential> replacements,
-	ProfileGenerationError *error = nullptr);
+	ProfileGenerationError *error = nullptr,
+	RebindProfileEmergencyRules rebind = nullptr);
 
 [[nodiscard]] std::optional<OpenedProfileGeneration>
 OpenCommittedProfileGeneration(

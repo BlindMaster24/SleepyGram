@@ -38,6 +38,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cmath>
 #include <limits>
 
+// AyuGram includes
+#include "ayu/features/profile_sets/profile_webview_policy.h"
+
+
 namespace Iv::Markdown {
 namespace {
 
@@ -522,6 +526,9 @@ QSize EmbedOverlay::externalInitialSize() const {
 }
 
 void EmbedOverlay::ensureWebview() {
+	if (!Ayu::ProfileSets::CanUsePersistentWebview(_storageId)) {
+		return;
+	}
 	if (_webview && _webview->widget()) {
 		updateContentGeometry();
 		return;

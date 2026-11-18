@@ -17,11 +17,12 @@
 namespace Ayu::EmergencyActions {
 namespace {
 
-constexpr auto kMagic = std::array<uint8_t, 8>{ 'S', 'G', 'E', 'C', 0, 0, 0, 1 };
+constexpr auto kLegacyMagic = std::array<uint8_t, 8>{ 'S', 'G', 'E', 'C', 0, 0, 0, 1 };
+constexpr auto kRebindableMagic = std::array<uint8_t, 8>{ 'S', 'G', 'E', 'C', 0, 0, 0, 2 };
 constexpr auto kKeyBytes = size_t(32);
 constexpr auto kNonceBytes = size_t(12);
 constexpr auto kTagBytes = size_t(16);
-constexpr auto kHeaderBytes = kMagic.size() + kNonceBytes;
+constexpr auto kHeaderBytes = kRebindableMagic.size() + kNonceBytes;
 constexpr auto kOverhead = kHeaderBytes + kTagBytes;
 constexpr auto kMaxIdentityBytes = size_t(128);
 constexpr auto kMaxMetadataBytes = size_t(32) * 1024;
@@ -273,11 +274,12 @@ private:
 };
 
 std::vector<uint8_t> AssociatedData(
+		std::span<const uint8_t> magic,
 		const EmergencyRuleGeneration &generation,
 		const EmergencyRuleDetails &details) {
 	auto result = std::vector<uint8_t>();
 	auto writer = Writer(result);
-	writer.bytes(kMagic);
+	writer.bytes(magic);
 	writer.string(generation.installationId.value);
 	writer.string(generation.transactionId);
 	writer.string(details.actionId.value);
@@ -303,7 +305,7 @@ std::vector<uint8_t> AssociatedData(
 	return result;
 }
 
-bool DeriveKey(std::span<const uint8_t> input, Key &key) {
+bool DeriveLegacyKey(std::span<const uint8_t> input, Key &key) {
 	constexpr auto context = std::string_view("SleepyGram emergency execution capsule key v1");
 	auto size = 0U;
 	return ValidKey(input, kKeyBytes)
@@ -326,7 +328,7 @@ bool Hash(std::span<const uint8_t> input, EmergencyExecutionCapsuleDigest &diges
 
 bool Crypt(
 		bool encrypt,
-		const Key &key,
+		EmergencyExecutionCapsuleKey key,
 		std::span<const uint8_t> nonce,
 		std::span<const uint8_t> aad,
 		std::span<const uint8_t> input,
@@ -336,7 +338,7 @@ bool Crypt(
 		EVP_CIPHER_CTX_new(), EVP_CIPHER_CTX_free);
 	auto size = 0;
 	if (!context || EVP_CipherInit_ex(context.get(), EVP_aes_256_gcm(), nullptr,
-			key.bytes.data(), nonce.data(), encrypt ? 1 : 0) != 1
+			key.data(), nonce.data(), encrypt ? 1 : 0) != 1
 		|| EVP_CipherUpdate(context.get(), nullptr, &size, aad.data(), int(aad.size())) != 1
 		|| EVP_CipherUpdate(context.get(), output.data(), &size,
 			input.data(), int(input.size())) != 1
@@ -400,9 +402,25 @@ std::optional<SealedEmergencyExecutionCapsule> SealEmergencyExecutionCapsule(
 		const std::optional<EmergencyExecutionSafeDestination> &safeDestination,
 		std::span<const uint8_t> emergencyDerivedKey) {
 	auto key = Key();
-	if (!ValidBinding(generation, details, plan)
+	if (!details::DeriveRebindableEmergencyCapsuleKey(emergencyDerivedKey, key.bytes)) {
+		return std::nullopt;
+	}
+	return SealEmergencyExecutionCapsuleForRebind(
+		generation, details, plan, accounts, successor, safeDestination, key.bytes);
+}
+
+std::optional<SealedEmergencyExecutionCapsule> SealEmergencyExecutionCapsuleForRebind(
+		const EmergencyRuleGeneration &generation,
+		const EmergencyRuleDetails &details,
+		const DryRunPlan &plan,
+		std::span<const EmergencyExecutionAccount> accounts,
+		const EmergencyExecutionSuccessor &successor,
+		const std::optional<EmergencyExecutionSafeDestination> &safeDestination,
+		EmergencyExecutionCapsuleKey key) {
+	if (details.capsuleVersion != EmergencyExecutionCapsuleVersion::Rebindable
+		|| !ValidBinding(generation, details, plan)
 		|| !ValidPayload(generation, plan, accounts, successor, safeDestination)
-		|| !DeriveKey(emergencyDerivedKey, key)) {
+		|| !ValidKey(key, kKeyBytes)) {
 		return std::nullopt;
 	}
 	auto plaintext = SecretBytes();
@@ -431,14 +449,14 @@ std::optional<SealedEmergencyExecutionCapsule> SealEmergencyExecutionCapsule(
 	auto result = SealedEmergencyExecutionCapsule();
 	result.bytes.resize(kOverhead + plaintext.bytes.size());
 	auto buffer = std::span(result.bytes);
-	std::ranges::copy(kMagic, buffer.begin());
-	const auto nonce = buffer.subspan(kMagic.size(), kNonceBytes);
+	std::ranges::copy(kRebindableMagic, buffer.begin());
+	const auto nonce = buffer.subspan(kRebindableMagic.size(), kNonceBytes);
 	if (RAND_bytes(nonce.data(), int(nonce.size())) != 1
 		|| !Crypt(
 			true,
 			key,
 			nonce,
-			AssociatedData(generation, details),
+			AssociatedData(kRebindableMagic, generation, details),
 			plaintext.bytes,
 			buffer.subspan(kHeaderBytes, plaintext.bytes.size()),
 			buffer.last(kTagBytes))
@@ -453,20 +471,51 @@ std::optional<OpenedEmergencyExecutionCapsule> OpenEmergencyExecutionCapsule(
 		const DryRunPlan &plan,
 		std::span<const uint8_t> sealed,
 		std::span<const uint8_t> emergencyDerivedKey) {
+	auto key = Key();
+	const auto version = ticket.details().capsuleVersion;
+	const auto derived = (version == EmergencyExecutionCapsuleVersion::Legacy)
+		? DeriveLegacyKey(emergencyDerivedKey, key)
+		: details::DeriveRebindableEmergencyCapsuleKey(emergencyDerivedKey, key.bytes);
+	return derived
+		? OpenedEmergencyExecutionCapsule::OpenWithKey(ticket, plan, sealed, key.bytes)
+		: std::nullopt;
+}
+
+std::optional<OpenedEmergencyExecutionCapsule> OpenEmergencyExecutionCapsuleForRebind(
+		const EmergencyRuleTicket &ticket,
+		std::span<const uint8_t> sealed,
+		EmergencyExecutionCapsuleKey key) {
+	const auto &details = ticket.details();
+	const auto snapshot = ticket.reviewedLive();
+	if (details.capsuleVersion != EmergencyExecutionCapsuleVersion::Rebindable
+		|| !snapshot) {
+		return std::nullopt;
+	}
+	const auto plan = BuildDryRunPlan(details.operationId, details.rule, *snapshot);
+	return OpenedEmergencyExecutionCapsule::OpenWithKey(ticket, plan, sealed, key);
+}
+
+std::optional<OpenedEmergencyExecutionCapsule> OpenedEmergencyExecutionCapsule::OpenWithKey(
+		const EmergencyRuleTicket &ticket,
+		const DryRunPlan &plan,
+		std::span<const uint8_t> sealed,
+		EmergencyExecutionCapsuleKey key) {
 	const auto &generation = ticket.authority().generation;
 	const auto &details = ticket.details();
 	const auto &expectedDigest = details.executionCapsuleDigest;
 	const auto snapshot = ticket.reviewedLive();
-	auto key = Key();
+	const auto &magic = (details.capsuleVersion == EmergencyExecutionCapsuleVersion::Legacy)
+		? kLegacyMagic
+		: kRebindableMagic;
 	auto digest = EmergencyExecutionCapsuleDigest{};
 	if (!expectedDigest || !snapshot
 		|| sealed.size() <= kOverhead || sealed.size() > MaximumEmergencyExecutionCapsuleSize()
-		|| !std::ranges::equal(kMagic, sealed.first(kMagic.size()))
+		|| !std::ranges::equal(magic, sealed.first(magic.size()))
 		|| !ValidBinding(generation, details, plan)
 		|| BuildDryRunPlan(details.operationId, details.rule, *snapshot) != plan
 		|| !Hash(sealed, digest)
 		|| CRYPTO_memcmp(expectedDigest->data(), digest.data(), digest.size()) != 0
-		|| !DeriveKey(emergencyDerivedKey, key)) {
+		|| !ValidKey(key, kKeyBytes)) {
 		return std::nullopt;
 	}
 	auto data = std::make_unique<OpenedEmergencyExecutionCapsule::Data>();
@@ -476,8 +525,8 @@ std::optional<OpenedEmergencyExecutionCapsule> OpenEmergencyExecutionCapsule(
 	if (!Crypt(
 			false,
 			key,
-			sealed.subspan(kMagic.size(), kNonceBytes),
-			AssociatedData(generation, details),
+			sealed.subspan(magic.size(), kNonceBytes),
+			AssociatedData(magic, generation, details),
 			sealed.subspan(kHeaderBytes, data->plaintext.bytes.size()),
 			data->plaintext.bytes,
 			tag)) {

@@ -10,6 +10,8 @@
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
 
+#include <QtCore/QFileInfo>
+
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -56,8 +58,8 @@ EA::CredentialVerifier Verifier(const QByteArray &data) {
 	return result;
 }
 
-struct MasterAccess final {
-	~MasterAccess() {
+struct EmergencyMasterAccess final {
+	~EmergencyMasterAccess() {
 		Wipe(credential);
 		for (auto &account : admin.accounts) Wipe(account.key);
 	}
@@ -68,7 +70,7 @@ struct MasterAccess final {
 	std::vector<EA::NamedEmergencyRule> rules;
 };
 
-std::unique_ptr<MasterAccess> OpenMaster(
+std::unique_ptr<EmergencyMasterAccess> OpenMaster(
 		const MigrationController &workspace,
 		const QByteArray &expected,
 		QString &passcode,
@@ -86,7 +88,7 @@ std::unique_ptr<MasterAccess> OpenMaster(
 	if (!vault || vault->version != kProfileVaultVersion) {
 		return nullptr;
 	}
-	auto access = std::make_unique<MasterAccess>();
+	auto access = std::make_unique<EmergencyMasterAccess>();
 	access->committed = std::move(*committed);
 	access->vault = std::move(*vault);
 	access->credential = details::DeriveProfileVaultCredentialOnWorker(
@@ -129,7 +131,7 @@ struct InstallationInventory final {
 
 std::optional<InstallationInventory> ReadInstallationInventory(
 		const MigrationController &workspace,
-		const MasterAccess &master,
+		const EmergencyMasterAccess &master,
 		const std::set<EA::AccountId> *selectedAccounts = nullptr) {
 	const auto root = workspace.accountStorageRoot();
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
@@ -221,12 +223,28 @@ std::optional<Window::EmergencyRulesSnapshot> LoadSettings(
 		const auto &profile = inventory->live.profiles[i];
 		result.safeSets.push_back({ profile.id, set.name, profile.accountIds });
 	}
+	const auto journalDirectory = workspace.emergencyJournalDirectory();
+	if (!journalDirectory.isEmpty()) {
+		const auto log = EA::FileJournalStore(QFileInfo(journalDirectory).filesystemFilePath());
+		if (const auto latest = log.latestReset(inventory->live.id)) {
+			const auto unconfirmed = [](const EA::JournalEffectState &effect) {
+				return effect.state != EA::EffectState::NotRequested && effect.state != EA::EffectState::Succeeded;
+			};
+			auto summary = Window::EmergencyResetSummary();
+			for (const auto &account : latest->accounts) {
+				summary.clearedAccounts += (account.localDataClear.state == EA::EffectState::Succeeded);
+				summary.unconfirmedDeviceRevokes += unconfirmed(account.remoteSessionRevoke);
+				summary.unconfirmedLogouts += unconfirmed(account.currentSessionLogout);
+			}
+			result.lastReset = summary;
+		}
+	}
 	error = Result::Success;
 	return result;
 }
 
 EA::RuleConfiguration RuleConfiguration(
-		const MasterAccess &master,
+		const EmergencyMasterAccess &master,
 		const EA::InstallationId &installation) {
 	auto config = EA::RuleConfiguration{
 		.activeInstallationId = installation,
@@ -367,7 +385,9 @@ Result SaveSettings(
 				.remoteIdentity = grant.identity,
 			});
 		}
-		auto pruned = PruneProfileVaultAccounts(access->vault, access->credential, removed);
+		auto pruned = (uninstall && removed.empty())
+			? std::optional(access->vault)
+			: PruneProfileVaultAccounts(access->vault, access->credential, removed);
 		if (pruned && plan.safeDestination == EA::SafeDestinationKind::AddAccount) {
 			pruned = AddFallbackEnrollmentSet(*pruned, access->credential, credential);
 		}
@@ -437,6 +457,30 @@ Result SaveSettings(
 		if (bundle.isEmpty()) {
 			return Result::Failed;
 		}
+		const auto proof = ReadProfileEmergencyBundle({
+			.transactionId = next,
+			.profileVault = access->committed.profileVault,
+			.emergencyRules = bundle,
+		});
+		if (!proof) {
+			return Result::Failed;
+		}
+		for (auto i = size_t(0); i != inputs.size(); ++i) {
+			const auto &input = inputs[i];
+			const auto &rule = config.emergencyRules[i];
+			const auto matched = EA::AuthenticateEmergencyRule(proof->authority, BytesOf(proof->rules), input.key);
+			const auto ticket = std::get_if<EA::EmergencyRuleTicket>(&matched);
+			if (!ticket || ticket->details().actionId != rule.id || ticket->details().rule != rule.rule
+				|| !ticket->reviewedLive() || ticket->details().executionCapsuleDigest != input.executionCapsuleDigest) {
+				return Result::Failed;
+			}
+			const auto capsule = proof->capsules.find(ByteArrayOf(*input.executionCapsuleDigest));
+			const auto plan = EA::BuildDryRunPlan(ticket->details().operationId, rule.rule, *ticket->reviewedLive());
+			if (capsule == proof->capsules.end() || !EA::OpenEmergencyExecutionCapsule(
+					*ticket, plan, BytesOf(capsule->second), input.key)) {
+				return Result::Failed;
+			}
+		}
 		artifacts.push_back({ MigrationArtifact::EmergencyRules, bundle });
 	}
 	auto migrationError = MigrationError::None;
@@ -455,6 +499,163 @@ Result SaveSettings(
 }
 
 } // namespace
+
+std::optional<QByteArray> RebindProfileEmergencyRulesOnWorker(
+		const MigrationController &workspace,
+		const CommittedMigration &previous,
+		const ProfileVault &nextVault,
+		const QByteArray &nextTransaction,
+		const DerivedCredential &master,
+		std::span<const SetGrantCredential> replacements) {
+	if (previous.emergencyRules.isEmpty()) {
+		return QByteArray();
+	}
+	const auto bundle = ReadProfileEmergencyBundle(previous);
+	auto oldVault = ParseProfileVault(previous.profileVault);
+	if (!bundle || !oldVault || oldVault->id != nextVault.id || oldVault->salt != nextVault.salt
+		|| oldVault->kdf != nextVault.kdf || nextTransaction.size() != 16) {
+		return std::nullopt;
+	}
+	auto masterAccess = EmergencyMasterAccess();
+	masterAccess.credential = master;
+	masterAccess.vault = nextVault;
+	auto opened = OpenProfileVault(nextVault, master);
+	const auto nextAdmin = std::get_if<AdminVaultAccess>(&opened);
+	if (!nextAdmin) {
+		return std::nullopt;
+	}
+	masterAccess.admin = std::move(*nextAdmin);
+	const auto noNetwork = std::set<EA::AccountId>();
+	auto inventory = ReadInstallationInventory(workspace, masterAccess, &noNetwork);
+	const auto rules = EA::OpenEmergencyRulesForMaster(bundle->authority, BytesOf(bundle->rules), BytesOf(master.key));
+	if (!inventory || !rules) {
+		return std::nullopt;
+	}
+	for (const auto &rule : *rules) {
+		for (const auto &policy : rule.details.rule.remoteSessionPolicies) {
+			const auto account = std::ranges::find(inventory->live.accounts, policy.accountId, &EA::LiveAccount::id);
+			if (account != end(inventory->live.accounts)) {
+				for (const auto &device : policy.selectedSessionIds) {
+					if (!std::ranges::contains(account->sessionIds, device)) account->sessionIds.push_back(device);
+				}
+			}
+		}
+	}
+	const auto generation = EA::EmergencyRuleGeneration{
+		.installationId = inventory->live.id, .transactionId = nextTransaction.toHex().toStdString() };
+	const auto configuration = RuleConfiguration(masterAccess, generation.installationId);
+	auto capsules = std::map<QByteArray, QByteArray>();
+	const auto rebound = EA::RebindEmergencyRulesForMaster(bundle->authority, BytesOf(bundle->rules), BytesOf(master.key),
+		generation, inventory->live, { BytesOf(master.key), configuration.masterVerifier, configuration.normalCredentials },
+		[&](const EA::EmergencyRuleTicket &prior, const EA::EmergencyRuleDetails &next,
+				const EA::DryRunPlan &plan, EA::EmergencyExecutionCapsuleKey key)
+				-> std::optional<EA::EmergencyExecutionCapsuleDigest> {
+			const auto source = bundle->capsules.find(ByteArrayOf(*prior.details().executionCapsuleDigest));
+			const auto oldCapsule = source != bundle->capsules.end()
+				? EA::OpenEmergencyExecutionCapsuleForRebind(prior, BytesOf(source->second), key) : std::nullopt;
+			if (!oldCapsule) {
+				return std::nullopt;
+			}
+			if (next.rule.action == EA::EmergencyAction::RemoveInstallation) {
+				const auto package = ReadRemovalPackage(workspace, generation.installationId);
+				if (!package || package->digest != ByteArrayOf(oldCapsule->successor().installationDigest)) {
+					return std::nullopt;
+				}
+			}
+			const auto oldPlan = EA::BuildDryRunPlan(
+				prior.details().operationId, prior.details().rule, *prior.reviewedLive());
+			auto targets = std::vector<EA::EmergencyExecutionAccount>();
+			auto removed = std::vector<AccountId>();
+			for (const auto &target : plan.accounts) {
+				const auto grant = inventory->accounts.find(target.accountId);
+				if (grant == inventory->accounts.end()) {
+					return std::nullopt;
+				}
+				const auto &account = grant->second;
+				const auto oldAccounts = oldCapsule->accounts();
+				const auto previous = std::ranges::find(oldAccounts, target.accountId, &EA::EmergencyExecutionAccount::accountId);
+				const auto original = std::ranges::find(oldPlan.accounts, target.accountId, &EA::AccountDryRun::accountId);
+				const auto locator = account.locator->value.toHex().toStdString();
+				const auto scopedKey = BytesOf(account.key->key);
+				if (previous != end(oldAccounts)
+					&& (previous->locator != locator || previous->scopedKey.size() != scopedKey.size()
+						|| CRYPTO_memcmp(previous->scopedKey.data(), scopedKey.data(), scopedKey.size())
+						|| !previous->remoteIdentity || previous->remoteIdentity->userId != account.identity.userId
+						|| previous->remoteIdentity->environment != account.identity.environment)) {
+					return std::nullopt;
+				} else if (target.remoteTarget != EA::RemoteSessionTargetKind::None
+					&& (!account.canEndOtherSessions || previous == end(oldAccounts) || original == end(oldPlan.accounts)
+						|| original->remoteTarget != target.remoteTarget
+						|| (target.remoteTarget == EA::RemoteSessionTargetKind::SelectedSessions
+							&& original->sessionIdsForRevokeRequest != target.sessionIdsForRevokeRequest))) {
+					return std::nullopt;
+				}
+				removed.push_back(account.key->id);
+				targets.push_back({ target.accountId, locator, scopedKey, account.identity });
+			}
+			auto pruned = removed.empty() ? std::optional(nextVault) : PruneProfileVaultAccounts(nextVault, master, removed);
+			if (pruned && plan.safeDestination == EA::SafeDestinationKind::AddAccount) {
+				const auto sourceVault = ParseProfileVault(ByteArrayOf(oldCapsule->successor().sealedProfileVault));
+				if (!sourceVault) return std::nullopt;
+				auto fallback = SetId();
+				for (const auto &grant : sourceVault->grants) {
+					if (std::ranges::find(oldVault->grants, grant.id, &SealedSetGrant::id) == end(oldVault->grants)) {
+						if (fallback) return std::nullopt;
+						fallback = grant.id;
+					}
+				}
+				pruned = CopyEmptyProfileVaultSet(*pruned, *sourceVault, master, fallback);
+			}
+			if (!pruned) return std::nullopt;
+			const auto sealedVault = SerializeProfileVault(*pruned);
+			auto remaining = masterAccess.admin.accounts;
+			const auto wipeRemaining = gsl::finally([&] { for (auto &account : remaining) Wipe(account.key); });
+			std::erase_if(remaining, [&](AccountKey &account) {
+				const auto remove = std::ranges::contains(removed, account.id);
+				if (remove) Wipe(account.key);
+				return remove;
+			});
+			const auto keyring = SealAccountKeyring(remaining, master.key);
+			const auto successor = EA::EmergencyExecutionSuccessor{
+				.transactionId = MigrationController::NewTransactionId().toHex().toStdString(),
+				.sealedProfileVault = BytesOf(sealedVault), .sealedAccountKeyring = BytesOf(keyring),
+				.installationDigest = oldCapsule->successor().installationDigest,
+			};
+			auto safe = oldCapsule->safeDestination();
+			auto replacementKey = QByteArray();
+			const auto wipeReplacement = gsl::finally([&] { Wipe(replacementKey); });
+			if (plan.safeDestination == EA::SafeDestinationKind::Profile) {
+				if (!safe || safe->profileId != plan.safeProfileId || safe->sealedSetGrant.size() != 64) return std::nullopt;
+				for (const auto &replacement : replacements) {
+					if (EA::ProfileId(Identifier(replacement.id)) == plan.safeProfileId) {
+						replacementKey = replacement.credential.verifier + replacement.credential.key;
+						safe->sealedSetGrant = BytesOf(replacementKey);
+						break;
+					}
+				}
+				auto derived = DerivedCredential{ ByteArrayOf(safe->sealedSetGrant.first(32)), ByteArrayOf(safe->sealedSetGrant.last(32)) };
+				const auto wipe = gsl::finally([&] { Wipe(derived); });
+				auto opened = OpenProfileVault(*pruned, derived);
+				const auto grant = std::get_if<SetVaultAccess>(&opened);
+				if (!grant) {
+					if (const auto openedMaster = std::get_if<AdminVaultAccess>(&opened)) {
+						for (auto &account : openedMaster->accounts) Wipe(account.key);
+					}
+					return std::nullopt;
+				}
+				const auto correct = EA::ProfileId(Identifier(grant->id)) == plan.safeProfileId;
+				Wipe(grant->settingsKey);
+				for (auto &account : grant->accounts) Wipe(account.key);
+				if (!correct) return std::nullopt;
+			}
+			const auto sealed = EA::SealEmergencyExecutionCapsuleForRebind(generation, next, plan,
+				targets, successor, safe, key);
+			if (!sealed || !capsules.emplace(ByteArrayOf(sealed->digest), ByteArrayOf(sealed->bytes)).second) return std::nullopt;
+			return sealed->digest;
+		});
+	const auto result = rebound ? SerializeProfileEmergencyBundle(ByteArrayOf(rebound->bytes), capsules) : QByteArray();
+	return result.isEmpty() ? std::nullopt : std::optional(result);
+}
 
 void LoadProfileEmergencySettings(
 		MigrationController workspace,

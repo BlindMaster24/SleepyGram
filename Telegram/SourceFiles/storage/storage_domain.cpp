@@ -367,14 +367,15 @@ std::optional<LegacyProfileInventory> ReadLegacyProfileInventory(
 			current = &wrap;
 		}
 	}
-	if (!parsed.legacy && ((current == nullptr) != passcode.isEmpty())) {
+	const auto usePasscodeWrap = !parsed.legacy && !passcode.isEmpty();
+	if (usePasscodeWrap && !current) {
 		return std::nullopt;
 	}
-	const auto wrapping = current
+	const auto wrapping = usePasscodeWrap
 		? CreatePasscodeKey(passcode, current->salt, current->kdf)
 		: CreateLocalKey(passcode, parsed.openSalt);
 	auto key = UnwrapLocalKey(
-		current ? current->keyEncrypted : parsed.openKeyEncrypted,
+		usePasscodeWrap ? current->keyEncrypted : parsed.openKeyEncrypted,
 		wrapping);
 	auto info = EncryptedDescriptor();
 	if (!key || !DecryptLocal(info, encrypted, key)) {

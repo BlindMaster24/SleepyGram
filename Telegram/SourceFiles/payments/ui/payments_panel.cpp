@@ -27,6 +27,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_payments.h"
 #include "styles/style_layers.h"
 
+// AyuGram includes
+#include "ayu/features/profile_sets/profile_webview_policy.h"
+
+
 namespace Payments::Ui {
 namespace {
 
@@ -534,6 +538,10 @@ bool Panel::showWebview(
 }
 
 bool Panel::createWebview(const Webview::ThemeParams &params) {
+	const auto storageId = _delegate->panelWebviewStorageId();
+	if (!Ayu::ProfileSets::CanUsePersistentWebview(storageId)) {
+		return false;
+	}
 	auto outer = base::make_unique_q<RpWidget>(_widget.get());
 	const auto container = outer.get();
 	_widget->showInner(std::move(outer));
@@ -559,7 +567,7 @@ bool Panel::createWebview(const Webview::ThemeParams &params) {
 		container,
 		Webview::WindowConfig{
 			.opaqueBg = params.bodyBg,
-			.storageId = _delegate->panelWebviewStorageId(),
+			.storageId = storageId,
 		});
 
 	const auto raw = &_webview->window;

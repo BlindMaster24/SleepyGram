@@ -39,6 +39,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/profile_sets/profile_webview_policy.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
@@ -295,6 +296,10 @@ void Controller::createWindow() {
 void Controller::createWebview(const Webview::StorageId &storageId) {
 	Expects(!_webview);
 
+	if (!Ayu::ProfileSets::CanUsePersistentWebview(storageId)) {
+		showWebviewError();
+		return;
+	}
 	const auto window = _window.get();
 
 	if (AyuSettings::getInstance().streamerMode()) {

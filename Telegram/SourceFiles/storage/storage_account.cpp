@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/details/storage_cache_migration.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/details/storage_settings_scheme.h"
+#include "storage/details/storage_webview_migration.h"
 #include "storage/serialize_common.h"
 #include "storage/serialize_peer.h"
 #include "storage/serialize_document.h"
@@ -52,6 +53,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_preferences_migration.h"
+#include "wallet/wallet_migration_metadata.h"
 
 
 namespace Storage {
@@ -145,6 +147,7 @@ enum class MigrationRecordType : uchar {
 	Authorization,
 	Settings,
 	Config,
+	WalletPublicMetadata,
 	Other,
 };
 
@@ -433,20 +436,27 @@ MigrationResult InspectMap(
 				return MigrationResult::InvalidSource;
 			}
 			for (auto i = quint32(0); i != count; ++i) {
-				if (!keys(1, MigrationRecordType::Other)) {
-					return MigrationResult::InvalidSource;
-				}
 				if (type == lskWalletEngineStorages) {
+					auto key = FileKey();
 					auto entry = QString();
-					stream >> entry;
-					if (mode == AccountStorageMode::Legacy
+					stream >> key >> entry;
+					auto kind = MigrationRecordType::Other;
+					if (mode == AccountStorageMode::Legacy && entry == u"custody/records"_q) {
+						kind = MigrationRecordType::WalletPublicMetadata;
+					} else if (mode == AccountStorageMode::Legacy
 						&& (entry.startsWith(u"secret/"_q)
 							|| entry.startsWith(u"custody/"_q)
 							|| entry.startsWith(u"vault/"_q)
 							|| entry.startsWith(u"journal/"_q))) {
 						return MigrationResult::UnsupportedData;
 					}
+					if (!key || !files.emplace(ToFilePart(key), kind).second) {
+						return MigrationResult::InvalidSource;
+					}
 				} else {
+					if (!keys(1, MigrationRecordType::Other)) {
+						return MigrationResult::InvalidSource;
+					}
 					auto peer = quint64();
 					stream >> peer;
 				}
@@ -480,12 +490,15 @@ MigrationResult InspectMap(
 			ok = keys(3, MigrationRecordType::Other);
 			break;
 		case lskWebviewTokens: {
-			if (mode == AccountStorageMode::Legacy) {
-				return MigrationResult::UnsupportedData;
-			}
 			auto bots = QByteArray();
 			auto other = QByteArray();
 			stream >> bots >> other;
+			if (stream.status() != QDataStream::Ok) {
+				return MigrationResult::InvalidSource;
+			} else if (mode == AccountStorageMode::Legacy
+				&& ClassifyLegacyWebviewTokens(bots, other) == LegacyWebviewStorageProof::Unsupported) {
+				return MigrationResult::UnsupportedData;
+			}
 			const auto legacy = Webview::LegacyStorageIdToken();
 			ok = (bots.isEmpty() || bots != legacy)
 				&& (other.isEmpty() || other != legacy);
@@ -579,6 +592,16 @@ MigrationResult InspectMigrationRecord(
 			*environment = config->environment();
 		}
 		return MigrationResult::Success;
+	}
+	case MigrationRecordType::WalletPublicMetadata: {
+		auto version = quint32();
+		auto metadata = QByteArray();
+		stream >> version >> metadata;
+		const auto wipe = gsl::finally([&] { OPENSSL_cleanse(metadata.data(), size_t(metadata.size())); });
+		return (stream.status() == QDataStream::Ok && stream.atEnd()
+				&& version == kWalletEngineFormatVersion
+				&& Wallet::IsPublicWalletMigrationMetadata(u"custody/records"_q, metadata))
+			? MigrationResult::Success : MigrationResult::UnsupportedData;
 	}
 	case MigrationRecordType::Other:
 		return MigrationResult::Success;

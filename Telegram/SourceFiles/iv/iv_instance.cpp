@@ -1143,7 +1143,8 @@ void Instance::openWithIvPreferred(
 void Instance::showTonSite(
 		const QString &uri,
 		QVariant context) {
-	if (!Controller::IsGoodTonSiteUrl(uri)) {
+	if (!Core::App().legacyProfileAccessAllowed()
+		|| !Controller::IsGoodTonSiteUrl(uri)) {
 		Ui::Toast::Show(tr::lng_iv_not_supported(tr::now));
 		return;
 	} else if (Platform::IsMac()) {

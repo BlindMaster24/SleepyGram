@@ -446,7 +446,8 @@ ProfileGenerationError CommitProfileSetChange(
 		const QByteArray &expectedTransactionId,
 		const ProfileSetChange &change,
 		DerivedCredential admin,
-		std::optional<DerivedCredential> replacement) {
+		std::optional<DerivedCredential> replacement,
+		RebindProfileEmergencyRules rebind) {
 	using Error = ProfileGenerationError;
 	using Kind = ProfileSetChangeKind;
 	auto adminWiper = CredentialWiper{ admin };
@@ -521,7 +522,8 @@ ProfileGenerationError CommitProfileSetChange(
 		std::move(admin),
 		metadata,
 		std::move(replacements),
-		&error);
+		&error,
+		rebind);
 	return saved ? Error::None : error;
 }
 
@@ -531,7 +533,8 @@ std::optional<QByteArray> CommitProfileSetChanges(
 		DerivedCredential admin,
 		const Metadata &metadata,
 		std::vector<SetGrantCredential> replacements,
-		ProfileGenerationError *error) {
+		ProfileGenerationError *error,
+		RebindProfileEmergencyRules rebind) {
 	auto adminWiper = CredentialWiper{ admin };
 	const auto replacementsWiper = gsl::finally([&] {
 		for (auto &replacement : replacements) {
@@ -545,8 +548,7 @@ std::optional<QByteArray> CommitProfileSetChanges(
 	} else if (current->transactionId != expectedTransactionId) {
 		SetError(error, ProfileGenerationError::StaleGeneration);
 		return std::nullopt;
-	} else if (!current->emergencyRules.isEmpty()
-		|| !current->legacyRetirement.isEmpty()) {
+	} else if (!current->emergencyRecovery.isEmpty() || !current->legacyRetirement.isEmpty()) {
 		SetError(error, ProfileGenerationError::SettingsRejected);
 		return std::nullopt;
 	}
@@ -564,16 +566,30 @@ std::optional<QByteArray> CommitProfileSetChanges(
 			: ProfileGenerationError::SettingsRejected);
 		return std::nullopt;
 	}
+	const auto next = MigrationController::NewTransactionId();
+	auto rules = std::optional(QByteArray());
+	if (!current->emergencyRules.isEmpty()) {
+		rules = rebind ? rebind(sidecar, *current, *updated, next, admin, replacements) : std::nullopt;
+	}
+	if (next.isEmpty() || !rules) {
+		SetError(error, ProfileGenerationError::SettingsRejected);
+		return std::nullopt;
+	}
+	auto artifacts = std::vector<MigrationInput>{
+		{ MigrationArtifact::ProfileVault, SerializeProfileVault(*updated) },
+		{ MigrationArtifact::AccountKeyring, current->accountKeyring },
+	};
+	if (!rules->isEmpty()) {
+		artifacts.push_back({ MigrationArtifact::EmergencyRules, *rules });
+	}
 	auto migrationError = MigrationError::None;
 	const auto committed = sidecar.ReplaceCommitted(
 		expectedTransactionId,
-		{
-			{ MigrationArtifact::ProfileVault, SerializeProfileVault(*updated) },
-			{ MigrationArtifact::AccountKeyring, current->accountKeyring },
-		},
+		artifacts,
 		[&](const CommittedMigration &candidate) {
 			const auto decoded = ParseProfileVault(candidate.profileVault);
-			if (!decoded || candidate.accountKeyring != current->accountKeyring) {
+			if (!decoded || candidate.accountKeyring != current->accountKeyring
+				|| candidate.emergencyRules != *rules || !candidate.emergencyRecovery.isEmpty()) {
 				return false;
 			}
 			auto opened = OpenProfileVault(*decoded, admin);
@@ -581,7 +597,7 @@ std::optional<QByteArray> CommitProfileSetChanges(
 			const auto master = std::get_if<AdminVaultAccess>(&opened);
 			return master && master->metadata == metadata;
 		},
-		&migrationError);
+		&migrationError, next);
 	if (!committed) {
 		const auto code = (migrationError == MigrationError::StaleGeneration)
 			? ProfileGenerationError::StaleGeneration
@@ -589,6 +605,10 @@ std::optional<QByteArray> CommitProfileSetChanges(
 			? ProfileGenerationError::PublicationUncertain
 			: ProfileGenerationError::InvalidSidecar;
 		SetError(error, code);
+		return std::nullopt;
+	}
+	if (!sidecar.RetireInactiveGenerations(committed->transactionId)) {
+		SetError(error, ProfileGenerationError::PublicationUncertain);
 		return std::nullopt;
 	}
 	SetError(error, ProfileGenerationError::None);

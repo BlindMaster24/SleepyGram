@@ -65,6 +65,17 @@ private:
 		const DryRunPlan&,
 		std::span<const uint8_t>,
 		std::span<const uint8_t>);
+	friend std::optional<OpenedEmergencyExecutionCapsule>
+	OpenEmergencyExecutionCapsuleForRebind(
+		const EmergencyRuleTicket&,
+		std::span<const uint8_t>,
+		EmergencyExecutionCapsuleKey);
+
+	[[nodiscard]] static std::optional<OpenedEmergencyExecutionCapsule> OpenWithKey(
+		const EmergencyRuleTicket &ticket,
+		const DryRunPlan &plan,
+		std::span<const uint8_t> sealed,
+		EmergencyExecutionCapsuleKey key);
 
 	struct Data;
 	explicit OpenedEmergencyExecutionCapsule(std::unique_ptr<Data> data);
@@ -90,5 +101,21 @@ private:
 	const DryRunPlan &plan,
 	std::span<const uint8_t> sealed,
 	std::span<const uint8_t> emergencyDerivedKey);
+
+[[nodiscard]] std::optional<OpenedEmergencyExecutionCapsule>
+OpenEmergencyExecutionCapsuleForRebind(
+	const EmergencyRuleTicket &ticket,
+	std::span<const uint8_t> sealed,
+	EmergencyExecutionCapsuleKey key);
+
+[[nodiscard]] std::optional<SealedEmergencyExecutionCapsule>
+SealEmergencyExecutionCapsuleForRebind(
+	const EmergencyRuleGeneration &generation,
+	const EmergencyRuleDetails &details,
+	const DryRunPlan &plan,
+	std::span<const EmergencyExecutionAccount> accounts,
+	const EmergencyExecutionSuccessor &successor,
+	const std::optional<EmergencyExecutionSafeDestination> &safeDestination,
+	EmergencyExecutionCapsuleKey key);
 
 } // namespace Ayu::EmergencyActions

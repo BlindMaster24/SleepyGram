@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ranges>
+#include <string_view>
 #include <type_traits>
 
 namespace {
@@ -20,6 +21,17 @@ std::array<uint8_t, 32> Bytes(uint8_t tag) {
 	auto result = std::array<uint8_t, 32>{};
 	for (auto i = size_t(0); i != result.size(); ++i) {
 		result[i] = uint8_t(tag + i);
+	}
+	return result;
+}
+
+template <size_t Size>
+constexpr auto Hex(const char (&hex)[Size]) {
+	static_assert((Size - 1) % 2 == 0);
+	constexpr auto digits = std::string_view("0123456789abcdef");
+	auto result = std::array<uint8_t, (Size - 1) / 2>{};
+	for (auto i = size_t(0); i != result.size(); ++i) {
+		result[i] = uint8_t(digits.find(hex[2 * i]) * 16 + digits.find(hex[2 * i + 1]));
 	}
 	return result;
 }
@@ -133,6 +145,7 @@ struct Fixture final {
 				.verifier = Bytes(12),
 				.key = emergencyKey,
 				.executionCapsuleDigest = capsuleDigest,
+				.capsuleVersion = details.capsuleVersion,
 			},
 		};
 		return SealEmergencyRules(generation, masterKey, config, live, entries);
@@ -354,6 +367,148 @@ void CapsuleCryptographicallyBindsTheRuleAndItsGeneration() {
 	Check("old-capsule-rejected-under-another-installation", rejects(installation));
 }
 
+void LegacyCapsulesRemainUsableButCannotBeRebound() {
+	constexpr auto sealed = Hex(
+		"534745430000000149bdaf3823b9942989daddb764f836391e7f7fb45c0d7228"
+		"8c1990771c6b5f69f20b020247e2c61135a3cc47bd4179632666dab2aa1e0f8b"
+		"dd45f5b164a3c62879c954c730014ea9ead05b5670381fca3944c1a5766ee9fa"
+		"22e42e16e27f0fef4f06e68bfe4892b330f080a1dc2b90e36e45e3e38a5b418f"
+		"c85028d13d2025f47cd92884bf6301e2ba9cd2da322feae30fd22816dc813836"
+		"7533d80e25727d9e91012014daa884f2eb556e5a8cea69eab204a3c530d76c13"
+		"f8d942eb051cc8ed9107192c9cb982ce47724e6f106b04e64ebd39974273cf7d"
+		"8f391c725650cd426316b47116e9355d47653db2c75d35eebcb63d7cd182df16"
+		"65287e4647ff1b47480e681444476d4ec00b749cf16c4a7498ba0d44a4abd3d5"
+		"f19a713a105e262c789d1c4e10f6e2702380071faa75eceabc6b38fbcdedbd49"
+		"79e354b7a096b9825c6996136f92a50fb75a61be2f6fe5cb0b0f62f28629df75"
+		"aeacf3167217a12d741a20d19d14c935ce192ea0adfe379e4408");
+	constexpr auto digest = Hex(
+		"09483497a5ad12437044a17d4fba8a3572424b47494f3b8563ff8f759d19badf");
+	auto fixture = Fixture();
+	const auto mismatched = fixture.authenticate(digest);
+	Check("legacy-bytes-cannot-be-used-with-a-v2-rule-record",
+		mismatched && !OpenEmergencyExecutionCapsule(
+			*mismatched, fixture.plan(), sealed, fixture.emergencyKey));
+	fixture.details.capsuleVersion = EmergencyExecutionCapsuleVersion::Legacy;
+	const auto ticket = fixture.authenticate(digest);
+	const auto opened = ticket ? OpenEmergencyExecutionCapsule(
+		*ticket, fixture.plan(), sealed, fixture.emergencyKey) : std::nullopt;
+	Check("historical-v1-capsule-retains-its-keys-and-exact-safe-grant",
+		opened && opened->accounts().size() == fixture.accounts.size()
+		&& std::ranges::equal(opened->accounts().front().scopedKey, fixture.accountKeyOne)
+		&& opened->safeDestination()
+		&& std::ranges::equal(opened->safeDestination()->sealedSetGrant, fixture.safeGrant));
+	Check("legacy-capsule-cannot-use-a-rebind-capability",
+		ticket && !OpenEmergencyExecutionCapsuleForRebind(*ticket, sealed, fixture.emergencyKey));
+	const auto rules = fixture.sealRule(digest);
+	const auto next = EmergencyRuleGeneration{
+		.installationId = fixture.generation.installationId,
+		.transactionId = std::string(32, 'e'),
+	};
+	auto called = false;
+	Check("legacy-capsule-prevents-rebind-even-with-a-rebuild-callback",
+		rules && !RebindEmergencyRulesForMaster(rules->authority, rules->bytes, fixture.masterKey,
+			next, fixture.live, { fixture.masterKey, Bytes(11), {} },
+			[&](const auto &, const auto &, const auto &, auto) {
+				called = true;
+				return std::optional(Bytes(77));
+			}) && !called);
+}
+
+void MasterRebindsResetAllForNewlyEnrolledAccounts(bool withSafeGrant) {
+	auto fixture = Fixture();
+	fixture.live.accounts.resize(2);
+	fixture.live.profiles.front().accountIds.clear();
+	fixture.details.rule.targetScope = TargetScope::AllAccounts;
+	fixture.details.rule.selectedAccountIds.clear();
+	if (!withSafeGrant) {
+		fixture.details.rule.safeProfileId = {};
+		fixture.safe.reset();
+	}
+	const auto sealed = fixture.seal();
+	const auto rules = sealed ? fixture.sealRule(sealed->digest) : std::nullopt;
+	if (!rules) {
+		Check("rebind-fixture-sealed", false);
+		return;
+	}
+	const auto next = EmergencyRuleGeneration{
+		.installationId = fixture.generation.installationId,
+		.transactionId = std::string(32, 'e'),
+	};
+	auto live = fixture.live;
+	const auto enrolled = AccountId("new-enrollee");
+	live.accounts.push_back({ enrolled, SessionId("new-current"), { SessionId("new-current") } });
+	auto accounts = std::vector(fixture.accounts.begin(), fixture.accounts.end());
+	accounts.push_back({ enrolled, std::string(32, 'c'), fixture.accountKeyOther });
+	const auto master = EmergencyRuleMasterContext{ fixture.masterKey, Bytes(11), {} };
+	Check("master-rebind-cannot-retain-the-previous-capsule-digest",
+		!RebindEmergencyRulesForMaster(rules->authority, rules->bytes, fixture.masterKey,
+			next, live, master, [&](const auto &, const auto &, const auto &, auto) {
+				return std::optional(sealed->digest);
+			}));
+	auto callbackCount = 0;
+	auto nextCapsule = std::optional<SealedEmergencyExecutionCapsule>();
+	const auto rebuild = [&](const EmergencyRuleTicket &previous, const EmergencyRuleDetails &details,
+			const DryRunPlan &plan, EmergencyExecutionCapsuleKey key) {
+		++callbackCount;
+		const auto reviewed = previous.reviewedLive();
+		const auto old = OpenEmergencyExecutionCapsuleForRebind(previous, sealed->bytes, key);
+		if (!old || bool(old->safeDestination()) != withSafeGrant
+			|| (withSafeGrant && !std::ranges::equal(old->safeDestination()->sealedSetGrant, fixture.safeGrant))
+			|| !reviewed || reviewed->accounts.size() != 2
+			|| (fixture.plan().safeDestination == SafeDestinationKind::Profile) != withSafeGrant
+			|| details.operationId == previous.details().operationId) {
+			return std::optional<EmergencyExecutionCapsuleDigest>();
+		}
+		nextCapsule = SealEmergencyExecutionCapsuleForRebind(
+			next, details, plan, accounts, fixture.successor, old->safeDestination(), key);
+		return nextCapsule ? std::optional(nextCapsule->digest) : std::nullopt;
+	};
+	Check("emergency-key-cannot-request-master-rebind",
+		!RebindEmergencyRulesForMaster(rules->authority, rules->bytes, fixture.emergencyKey,
+			next, live, master, rebuild) && !callbackCount);
+	const auto rebound = RebindEmergencyRulesForMaster(
+		rules->authority, rules->bytes, fixture.masterKey, next, live, master, rebuild);
+	if (!rebound || !nextCapsule) {
+		Check("master-rebind-produced-a-sealed-rule-and-capsule", false);
+		return;
+	}
+	auto auth = AuthenticateEmergencyRule(rebound->authority, rebound->bytes, fixture.emergencyKey);
+	const auto ticket = std::get_if<EmergencyRuleTicket>(&auth);
+	const auto reviewed = ticket ? ticket->reviewedLive() : nullptr;
+	auto plan = reviewed ? BuildDryRunPlan(ticket->details().operationId, ticket->details().rule, *reviewed)
+		: DryRunPlan();
+	const auto opened = ticket ? OpenEmergencyExecutionCapsule(
+		*ticket, plan, nextCapsule->bytes, fixture.emergencyKey) : std::nullopt;
+	const auto added = std::ranges::find(plan.accounts, enrolled, &AccountDryRun::accountId);
+	Check(withSafeGrant ? "master-rebind-retains-safe-grant-and-adds-new-account"
+		: "master-rebind-retains-empty-fallback-and-adds-new-account",
+		callbackCount == 1 && opened && reviewed && opened->accounts().size() == 3
+		&& bool(opened->safeDestination()) == withSafeGrant
+		&& added != end(plan.accounts) && added->remoteTarget == RemoteSessionTargetKind::None
+		&& !OpenEmergencyExecutionCapsule(*ticket, plan, sealed->bytes, fixture.emergencyKey)
+		&& OpenEmergencyRulesForMaster(rebound->authority, rebound->bytes, fixture.masterKey)
+		&& !OpenEmergencyRulesForMaster(rebound->authority, rebound->bytes, fixture.emergencyKey));
+}
+
+void InstallationDigestRemainsBoundToTheCapsule() {
+	auto fixture = Fixture();
+	fixture.live.accounts.resize(2);
+	fixture.details.rule.action = EmergencyAction::RemoveInstallation;
+	fixture.details.rule.targetScope = TargetScope::CurrentInstallation;
+	fixture.details.rule.selectedAccountIds.clear();
+	fixture.details.rule.safeProfileId = {};
+	fixture.safe.reset();
+	const auto installationDigest = Bytes(199);
+	Check("v2-installation-removal-requires-the-installation-digest", !fixture.seal());
+	fixture.successor.installationDigest = installationDigest;
+	const auto sealed = fixture.seal();
+	const auto ticket = sealed ? fixture.authenticate(sealed->digest) : std::nullopt;
+	const auto opened = ticket ? OpenEmergencyExecutionCapsule(
+		*ticket, fixture.plan(), sealed->bytes, fixture.emergencyKey) : std::nullopt;
+	Check("v2-installation-digest-round-trips-in-authenticated-payload",
+		opened && std::ranges::equal(opened->successor().installationDigest, installationDigest));
+}
+
 } // namespace
 
 int main() {
@@ -361,5 +516,9 @@ int main() {
 	CapsuleOpensOnlyThroughItsAuthenticatedRuleTicket();
 	RuleTicketProvidesOnlyTheConfirmedLiveData();
 	CapsuleCryptographicallyBindsTheRuleAndItsGeneration();
+	LegacyCapsulesRemainUsableButCannotBeRebound();
+	MasterRebindsResetAllForNewlyEnrolledAccounts(true);
+	MasterRebindsResetAllForNewlyEnrolledAccounts(false);
+	InstallationDigestRemainsBoundToTheCapsule();
 	return failures ? 1 : 0;
 }

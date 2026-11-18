@@ -429,6 +429,14 @@ void EmergencyRulesPanel::showList() {
 		: _drafts.empty()
 		? (canAdd() ? u"No emergency rules yet."_q : ResultText(Result::Unavailable))
 		: u"Emergency rules"_q);
+	if (_snapshot && _snapshot->lastReset) {
+		const auto &last = *_snapshot->lastReset;
+		AddText(layout, u"Last reset cleared local data for %1 accounts."_q.arg(last.clearedAccounts));
+		if (last.unconfirmedDeviceRevokes || last.unconfirmedLogouts) {
+			AddText(layout, u"Unconfirmed on Telegram: %1 device revokes, %2 sign-outs."_q
+				.arg(last.unconfirmedDeviceRevokes).arg(last.unconfirmedLogouts));
+		}
+	}
 	const auto list = new QListWidget();
 	list->setAccessibleName(u"Emergency rules"_q);
 	for (const auto &draft : _drafts) {
@@ -508,6 +516,9 @@ void EmergencyRulesPanel::edit(std::optional<size_t> index) {
 		_scope->setCurrentIndex(_scope->findData(int(original.rule.targetScope)));
 	}
 	form->addRow(u"Action"_q, _scope);
+	AddText(layout, _snapshot->canRemoveInstallation
+		? u"This installation supports automatic removal."_q
+		: u"Automatic removal is unavailable for this installation."_q);
 	_safeSet = new QComboBox();
 	form->addRow(u"Safe set"_q, _safeSet);
 	layout->addLayout(form);

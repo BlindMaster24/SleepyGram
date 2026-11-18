@@ -1166,6 +1166,41 @@ std::optional<ProfileVault> PruneProfileVaultAccounts(
 		error);
 }
 
+std::optional<ProfileVault> CopyEmptyProfileVaultSet(
+		const ProfileVault &vault,
+		const ProfileVault &source,
+		const DerivedCredential &admin,
+		SetId setId) {
+	if (!setId || source.id != vault.id || source.salt != vault.salt || source.kdf != vault.kdf) {
+		return std::nullopt;
+	}
+	auto keys = GrantKeys();
+	auto sourceKeys = GrantKeys();
+	const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); CleanseGrantKeys(sourceKeys); });
+	auto target = OpenForUpdate(vault, admin, keys, nullptr);
+	auto original = OpenForUpdate(source, admin, sourceKeys, nullptr);
+	const auto wipeAccounts = gsl::finally([&] {
+		if (target) CleanseAccountKeys(target->accounts);
+		if (original) CleanseAccountKeys(original->accounts);
+	});
+	if (!target || !original || keys.contains(setId)) {
+		return std::nullopt;
+	}
+	const auto set = std::ranges::find(original->metadata.sets, setId, &AccountSet::id);
+	const auto grant = std::ranges::find(source.grants, setId, &SealedSetGrant::id);
+	const auto key = sourceKeys.find(setId);
+	if (set == end(original->metadata.sets) || !set->accounts.empty()
+		|| grant == end(source.grants) || key == end(sourceKeys)) {
+		return std::nullopt;
+	}
+	auto templateVault = vault;
+	templateVault.grants.push_back(*grant);
+	target->metadata.sets.push_back(*set);
+	keys.emplace(setId, key->second);
+	return RewriteVault(target->metadata, target->accounts, target->locators, admin, {},
+		&templateVault, &target->metadata, keys, nullptr);
+}
+
 std::optional<ProfileVault> EnrollProfileVaultAccount(
 		const ProfileVault &vault,
 		const DerivedCredential &admin,
