@@ -414,4 +414,70 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 		std::move(*plan), route, committed->transactionId);
 }
 
+std::optional<QByteArray> CommitProfileSetChanges(
+		const MigrationController &sidecar,
+		const QByteArray &expectedTransactionId,
+		DerivedCredential admin,
+		const Metadata &metadata,
+		std::vector<SetGrantCredential> replacements,
+		ProfileGenerationError *error) {
+	auto adminWiper = CredentialWiper{ admin };
+	const auto replacementsWiper = gsl::finally([&] {
+		for (auto &replacement : replacements) {
+			CleanseCredential(replacement.credential);
+		}
+	});
+	const auto current = sidecar.LoadCommitted();
+	if (!current || sidecar.isIsolatedFixture()) {
+		SetError(error, ProfileGenerationError::InvalidSidecar);
+		return std::nullopt;
+	} else if (current->transactionId != expectedTransactionId) {
+		SetError(error, ProfileGenerationError::StaleGeneration);
+		return std::nullopt;
+	}
+	const auto vault = ParseProfileVault(current->profileVault);
+	if (!vault || vault->version != kProfileVaultVersion) {
+		SetError(error, ProfileGenerationError::InvalidVault);
+		return std::nullopt;
+	}
+	auto vaultError = ProfileVaultError::None;
+	const auto updated = UpdateProfileVault(
+		*vault, admin, metadata, replacements, &vaultError);
+	if (!updated) {
+		SetError(error, (vaultError == ProfileVaultError::WrongPassword)
+			? ProfileGenerationError::WrongPassword
+			: ProfileGenerationError::SettingsRejected);
+		return std::nullopt;
+	}
+	auto migrationError = MigrationError::None;
+	const auto committed = sidecar.ReplaceCommitted(
+		expectedTransactionId,
+		{
+			{ MigrationArtifact::ProfileVault, SerializeProfileVault(*updated) },
+			{ MigrationArtifact::AccountKeyring, current->accountKeyring },
+		},
+		[&](const CommittedMigration &candidate) {
+			const auto decoded = ParseProfileVault(candidate.profileVault);
+			if (!decoded || candidate.accountKeyring != current->accountKeyring) {
+				return false;
+			}
+			auto opened = OpenProfileVault(*decoded, admin);
+			auto wiper = AccessWiper{ opened };
+			const auto master = std::get_if<AdminVaultAccess>(&opened);
+			return master && master->metadata == metadata;
+		},
+		&migrationError);
+	if (!committed) {
+		const auto code = (migrationError == MigrationError::StaleGeneration)
+			? ProfileGenerationError::StaleGeneration
+			: (migrationError == MigrationError::PublicationUncertain)
+			? ProfileGenerationError::PublicationUncertain
+			: ProfileGenerationError::InvalidSidecar;
+		SetError(error, code);
+		return std::nullopt;
+	}
+	SetError(error, ProfileGenerationError::None);
+	return committed->transactionId;
+}
+
 } // namespace Ayu::ProfileSets

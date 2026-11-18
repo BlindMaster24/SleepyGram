@@ -10,6 +10,14 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/timer.h"
 #include "base/weak_ptr.h"
 
+namespace Ayu::ProfileSets {
+class MigrationController;
+class OpenedProfileGeneration;
+struct Metadata;
+struct ProfileGenerationAccess;
+enum class ProfileGenerationError : uchar;
+} // namespace Ayu::ProfileSets
+
 namespace Storage {
 class Domain;
 class PasscodeDerivation;
@@ -44,6 +52,19 @@ public:
 
 	[[nodiscard]] bool started() const;
 	[[nodiscard]] Storage::StartResult start(const QByteArray &passcode);
+	[[nodiscard]] bool reserveScopedProfile();
+	[[nodiscard]] bool scopedProfileReserved() const;
+	[[nodiscard]] bool prepareScopedProfile(
+		const Ayu::ProfileSets::MigrationController &sidecar,
+		Ayu::ProfileSets::OpenedProfileGeneration generation,
+		Ayu::ProfileSets::ProfileGenerationError *error = nullptr);
+	void clearPreparedScopedProfile();
+	[[nodiscard]] auto preparedScopedProfileAccess() const
+		-> const Ayu::ProfileSets::ProfileGenerationAccess*;
+	[[nodiscard]] auto preparedScopedAdminMetadata() const
+		-> const Ayu::ProfileSets::Metadata*;
+	[[nodiscard]] QByteArray preparedScopedProfileTransactionId() const;
+	[[nodiscard]] int preparedScopedAccountCount() const;
 
 	// One passcode attempt at a time for the whole application: while the
 	// derivation runs on a worker this returns true, and every further call
@@ -68,9 +89,7 @@ public:
 	[[nodiscard]] int maxAccounts() const;
 	[[nodiscard]] rpl::producer<int> maxAccountsChanges() const;
 
-	[[nodiscard]] Storage::Domain &local() const {
-		return *_local;
-	}
+	[[nodiscard]] Storage::Domain &local() const;
 
 	[[nodiscard]] Wallet::VaultRuntime &walletKeyring();
 
@@ -108,6 +127,13 @@ public:
 	[[nodiscard]] int activeForStorage() const;
 
 private:
+	enum class ProfileStorageMode : uchar {
+		Unopened,
+		Legacy,
+		Scoped,
+	};
+	struct ScopedProfile;
+
 	[[nodiscard]] Storage::StartResult startWith(
 		Storage::PasscodeDerivation derived);
 	void activateAfterStarting();
@@ -143,6 +169,8 @@ private:
 
 	const QString _dataName;
 	const std::unique_ptr<Storage::Domain> _local;
+	ProfileStorageMode _profileStorageMode = ProfileStorageMode::Unopened;
+	std::unique_ptr<ScopedProfile> _scopedProfile;
 
 	std::shared_ptr<Wallet::VaultRuntime> _walletKeyring;
 	std::vector<AccountWithIndex> _accounts;

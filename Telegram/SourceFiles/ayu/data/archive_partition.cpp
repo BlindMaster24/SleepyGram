@@ -10,6 +10,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Ayu {
 namespace {
@@ -148,19 +149,22 @@ bool CipherEnabled(sqlite3 &database) {
 		&& sqlite3_column_int(cipher.get(), 0) == 1;
 }
 
-bool MatchingColumns(sqlite3_stmt &source, sqlite3_stmt &destination) {
-	const auto count = sqlite3_column_count(&source);
-	if (count != sqlite3_column_count(&destination) || !count) {
-		return false;
-	}
+std::vector<std::string> ColumnNames(sqlite3_stmt &query) {
+	const auto count = sqlite3_column_count(&query);
+	auto result = std::vector<std::string>();
+	result.reserve(count);
 	for (auto column = 0; column != count; ++column) {
-		const auto name = sqlite3_column_name(&source, column);
-		const auto other = sqlite3_column_name(&destination, column);
-		if (!name || !other || std::strcmp(name, other)) {
-			return false;
+		const auto name = sqlite3_column_name(&query, column);
+		if (!name || !*name || !std::ranges::all_of(
+			std::string_view(name), [](char ch) {
+				return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+					|| (ch >= '0' && ch <= '9') || ch == '_';
+			})) {
+			return {};
 		}
+		result.emplace_back(name);
 	}
-	return true;
+	return result;
 }
 
 bool SameValue(sqlite3_stmt &source, sqlite3_stmt &destination, int column) {
@@ -198,18 +202,35 @@ bool CopyTable(
 		const ArchivePartitionTarget &target,
 		const char *table) {
 	const auto select = std::string("SELECT * FROM ") + table;
-	auto source = Prepare(legacy, select + " WHERE userId = ?1 ORDER BY fakeId");
 	auto destination = Prepare(*target.database, select + " ORDER BY fakeId");
+	const auto legacySchema = Prepare(legacy, select + " LIMIT 0");
+	if (!destination || !legacySchema) {
+		return false;
+	}
+	auto columns = ColumnNames(*destination);
+	const auto oldColumns = ColumnNames(*legacySchema);
+	if (columns.empty() || !std::ranges::is_permutation(columns, oldColumns)) {
+		return false;
+	}
+	auto projection = std::string();
+	for (const auto &column : columns) {
+		if (!projection.empty()) {
+			projection += ',';
+		}
+		projection += '"' + column + '"';
+	}
+	auto source = Prepare(legacy, "SELECT " + projection + " FROM " + table
+		+ " WHERE userId = ?1 ORDER BY fakeId");
 	if (!source || !destination
-		|| sqlite3_bind_int64(source.get(), 1, target.userId) != SQLITE_OK
-		|| !MatchingColumns(*source, *destination)) {
+		|| sqlite3_bind_int64(source.get(), 1, target.userId) != SQLITE_OK) {
 		return false;
 	}
 	const auto existing = sqlite3_step(destination.get());
 	if (existing != SQLITE_DONE && existing != SQLITE_ROW) {
 		return false;
 	}
-	if (existing == SQLITE_DONE) {
+	const auto writable = sqlite3_db_readonly(target.database, "main") == 0;
+	if (writable && existing == SQLITE_DONE) {
 		const auto count = sqlite3_column_count(source.get());
 		auto query = std::string("INSERT INTO ") + table + " VALUES (?";
 		for (auto column = 1; column != count; ++column) {
@@ -273,7 +294,7 @@ ArchivePartitionResult StageLegacyArchivePartitions(
 	for (const auto &target : targets) {
 		if (target.userId <= 0 || !owners.insert(target.userId).second
 			|| !target.database || !databases.insert(target.database).second
-			|| sqlite3_db_readonly(target.database, "main") != 0
+			|| sqlite3_db_readonly(target.database, "main") < 0
 			|| !CipherEnabled(*target.database)) {
 			return Result::InvalidTarget;
 		}

@@ -101,10 +101,29 @@ EmergencyActionRuntimeService::EmergencyActionRuntimeService(
 		LocalAccountEffect &local,
 		SafeDestinationEffect &destination,
 		const CoordinatorClock &clock)
+: EmergencyActionRuntimeService(
+	configuration,
+	std::move(readLiveInstallation),
+	store,
+	RemoteSessionProvider(),
+	local,
+	destination,
+	clock) {
+	_remote = &remote;
+}
+
+EmergencyActionRuntimeService::EmergencyActionRuntimeService(
+		const RuleConfiguration &configuration,
+		LiveInstallationReader readLiveInstallation,
+		JournalStore &store,
+		RemoteSessionProvider provideRemote,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		const CoordinatorClock &clock)
 : _configuration(configuration)
 , _readLiveInstallation(std::move(readLiveInstallation))
 , _store(store)
-, _remote(remote)
+, _provideRemote(std::move(provideRemote))
 , _local(local)
 , _destination(destination)
 , _clock(clock) {
@@ -181,7 +200,17 @@ RuntimeServiceReport EmergencyActionRuntimeService::Submit(
 		result.status = RuntimeServiceStatus::CheckpointFailed;
 		return result;
 	}
-	result.coordinator = RunResetCoordinator(*journal, *lease, _remote, _local, _destination, _clock);
+	auto provided = std::unique_ptr<RemoteSessionEffect>();
+	if (_provideRemote) {
+		try {
+			provided = _provideRemote(*journal);
+		} catch (...) {
+		}
+	}
+	const auto remote = provided ? provided.get() : _remote;
+	result.coordinator = remote
+		? RunResetCoordinator(*journal, *lease, *remote, _local, _destination, _clock)
+		: ResumeResetCoordinator(*journal, *lease, _local, _destination);
 	result.status = RuntimeStatus(result.coordinator->result);
 	return result;
 }

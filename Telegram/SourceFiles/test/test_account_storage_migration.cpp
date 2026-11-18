@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "core/version.h"
 #include "mtproto/mtproto_auth_key.h"
+#include "mtproto/mtproto_config.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/details/storage_settings_scheme.h"
 #include "test/test_log.h"
@@ -30,6 +31,7 @@ using namespace Ayu::ProfileSets;
 constexpr auto kFixtureVersion = AppVersion - 1;
 constexpr auto kFixtureUser = UserId(1ULL << 40);
 constexpr auto kFixturePrefs = FileKey(0x1234);
+constexpr auto kFixtureSettings = FileKey(0x2345);
 
 MTP::AuthKeyPtr LocalKey(gsl::byte seed) {
 	auto key = MTP::AuthKey::Data();
@@ -37,13 +39,17 @@ MTP::AuthKeyPtr LocalKey(gsl::byte seed) {
 	return std::make_shared<MTP::AuthKey>(key);
 }
 
-bool WriteFixture(const AccountPaths &paths, const MTP::AuthKeyPtr &key) {
+bool WriteFixtureAuth(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		UserId user,
+		int32 version) {
 	const auto split = paths.authPath.lastIndexOf('/') + 1;
 	auto rawAuth = QByteArray();
 	{
 		auto stream = QDataStream(&rawAuth, QIODevice::WriteOnly);
 		stream.setVersion(QDataStream::Qt_5_1);
-		stream << quint64(-1) << quint64(kFixtureUser.bare) << qint32(2);
+		stream << quint64(-1) << quint64(user.bare) << qint32(2);
 		stream << qint32(1) << qint32(2);
 		LocalKey(gsl::byte(42))->write(stream);
 		stream << qint32(0);
@@ -54,38 +60,132 @@ bool WriteFixture(const AccountPaths &paths, const MTP::AuthKeyPtr &key) {
 		paths.authPath.mid(split),
 		paths.authPath.left(split));
 	authFile.writeEncrypted(auth, key);
+	return authFile.finishStaged(version);
+}
 
+bool WriteFixtureMap(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		bool active) {
 	auto self = QByteArray();
 	{
 		auto stream = QDataStream(&self, QIODevice::WriteOnly);
 		stream.setVersion(QDataStream::Qt_5_1);
 		stream << SerializePeerId(peerFromUser(kFixtureUser));
 	}
-	auto map = EncryptedDescriptor(self.size() + 20);
+	auto map = EncryptedDescriptor(self.size() + 128);
 	map.stream << quint32(0x15) << self;
 	map.stream << quint32(0x1e) << quint64(kFixturePrefs);
+	if (active) {
+		map.stream << quint32(0x09) << quint64(kFixtureSettings);
+		map.stream << quint32(0x19) << QByteArray("scoped-fixture-token")
+			<< QByteArray();
+	}
 	auto mapFile = FileWriteDescriptor(u"map"_q, paths.basePath);
 	mapFile.writeData(QByteArray());
 	mapFile.writeData(QByteArray());
 	mapFile.writeEncrypted(map, key);
+	return mapFile.finishStaged(active ? AppVersion : kFixtureVersion);
+}
 
+bool MakeMapBackups(const AccountPaths &paths) {
+	const auto stem = paths.basePath + u"map"_q;
+	return QFile::rename(stem + 's', stem + '0')
+		&& QFile::copy(stem + '0', stem + '1');
+}
+
+bool WriteFixture(const AccountPaths &paths, const MTP::AuthKeyPtr &key) {
 	auto prefs = EncryptedDescriptor(4);
 	prefs.stream << quint32(0);
 	auto prefsFile = FileWriteDescriptor(kFixturePrefs, paths.basePath);
 	prefsFile.writeEncrypted(prefs, key);
 
-	const auto authWritten = authFile.finishStaged(kFixtureVersion);
-	const auto mapWritten = mapFile.finishStaged(kFixtureVersion);
 	const auto prefsWritten = prefsFile.finishStaged(kFixtureVersion);
-	const auto mapPath = paths.basePath + u"map"_q;
-	return authWritten && mapWritten && prefsWritten
-		&& QFile::rename(mapPath + 's', mapPath + '0')
-		&& QFile::copy(mapPath + '0', mapPath + '1');
+	return prefsWritten
+		&& WriteFixtureAuth(paths, key, kFixtureUser, kFixtureVersion)
+		&& WriteFixtureMap(paths, key, false)
+		&& MakeMapBackups(paths);
 }
 
 QByteArray ReadBytes(const QString &path) {
 	auto file = QFile(path);
 	return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+bool WriteConfigFixture(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		const QByteArray &serialized) {
+	auto config = EncryptedDescriptor(serialized.size() + 4);
+	config.stream << serialized;
+	auto file = FileWriteDescriptor(u"config"_q, paths.basePath);
+	file.writeEncrypted(config, key);
+	return file.finishStaged(AppVersion);
+}
+
+void CheckScopedStartup(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &oldKey,
+		const MTP::AuthKeyPtr &newKey) {
+	const auto validate = [&] {
+		return ValidateScopedAccountForStartup(paths, newKey);
+	};
+	const auto initial = validate();
+	Check(
+		initial && initial->userId == kFixtureUser
+			&& initial->environment == MTP::Environment::Production,
+		u"Read-only startup validates a staged account with no config"_q);
+	Check(
+		!ReadScopedAccountConnection(paths, newKey),
+		u"Technical connection requires a persisted Telegram environment"_q);
+	Check(
+		!ValidateScopedAccountForStartup(paths, oldKey),
+		u"Scoped startup rejects the old shared key"_q);
+
+	const auto current = WriteFixtureMap(paths, newKey, true)
+		&& MakeMapBackups(paths)
+		&& QDir().mkpath(paths.databasePath + u"cache"_q)
+		&& QFile::remove(paths.basePath + ToFilePart(kFixturePrefs) + 's')
+		&& WriteConfigFixture(
+			paths,
+			newKey,
+			MTP::Config(MTP::Environment::Test).serialize());
+	Check(current, u"Scoped startup fixture has current local files"_q);
+	if (!current) {
+		return;
+	}
+	const auto map0 = paths.basePath + u"map0"_q;
+	const auto map1 = paths.basePath + u"map1"_q;
+	const auto backup0 = ReadBytes(map0);
+	const auto backup1 = ReadBytes(map1);
+	const auto modern = validate();
+	Check(
+		modern && modern->userId == kFixtureUser
+			&& modern->environment == MTP::Environment::Test
+			&& !backup0.isEmpty() && !backup1.isEmpty()
+			&& backup0 == ReadBytes(map0) && backup1 == ReadBytes(map1),
+		u"Scoped startup preserves backups and reads the persisted environment"_q);
+	const auto connection = ReadScopedAccountConnection(paths, newKey);
+	Check(
+		connection && connection->mainDcId == 2
+			&& connection->mainKey
+			&& connection->mainKey->equals(LocalKey(gsl::byte(42)))
+			&& connection->config->environment() == MTP::Environment::Test
+			&& backup0 == ReadBytes(map0) && backup1 == ReadBytes(map1),
+		u"Technical connection reads only the authenticated main DC without writes"_q);
+	Check(
+		WriteFixtureAuth(paths, newKey, UserId(kFixtureUser.bare + 1), AppVersion)
+			&& !validate()
+			&& !ReadScopedAccountConnection(paths, newKey),
+		u"Scoped startup rejects an authenticated but conflicting identity"_q);
+	Check(
+		WriteFixtureAuth(paths, newKey, UserId(), AppVersion) && !validate(),
+		u"Scoped startup rejects a zero user ID"_q);
+	Check(
+		WriteFixtureAuth(paths, newKey, kFixtureUser, AppVersion)
+			&& WriteConfigFixture(paths, newKey, QByteArray("invalid"))
+			&& !validate(),
+		u"Scoped startup rejects a present malformed config"_q);
 }
 
 void RunStorageAccountMigration() {
@@ -200,6 +300,15 @@ void RunStorageAccountMigration() {
 			newKey,
 			kFixtureUser) == AccountMigrationResult::VerificationFailed,
 		u"Verify rejects a staged account with missing authorization"_q);
+	const auto restored = WriteFixtureAuth(
+		*target, newKey, kFixtureUser, kFixtureVersion);
+	Check(restored, u"Scoped fixture restored for startup checks"_q);
+	Check(
+		!ValidateScopedAccountForStartup(origin, oldKey),
+		u"Scoped startup does not read from the legacy account root"_q);
+	if (restored) {
+		CheckScopedStartup(*target, oldKey, newKey);
+	}
 }
 
 [[maybe_unused]] const auto kRegistered = [] {

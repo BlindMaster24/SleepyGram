@@ -802,6 +802,17 @@ ProfileStartupMode MigrationController::ProbeProfileStartup(
 	SetError(error, MigrationError::UnsafeWorkspace);
 	const auto parent = CanonicalProfileDataDirectory(dataDirectory);
 	if (parent.isEmpty()) {
+		const auto alias = QFileInfo(dataDirectory);
+		const auto resolved = alias.canonicalFilePath();
+		if (QDir::isAbsolutePath(dataDirectory)
+			&& !dataDirectory.startsWith(':')
+			&& !dataDirectory.contains(QChar(0))
+			&& alias.isDir()
+			&& alias.isReadable() && !resolved.isEmpty()
+			&& !PathPresent(ManifestPath(resolved, kProfileDirectoryName))) {
+			SetError(error, MigrationError::None);
+			return ProfileStartupMode::Legacy;
+		}
 		return ProfileStartupMode::RecoveryRequired;
 	}
 	const auto root = ManifestPath(parent, kProfileDirectoryName);
@@ -1310,6 +1321,28 @@ bool MigrationController::WithCurrentGeneration(
 			SetError(error, MigrationError::StaleGeneration);
 			return false;
 		}
+	}
+	const auto result = callback();
+	SetError(error, result ? MigrationError::None : MigrationError::CallbackFailed);
+	return result;
+}
+
+bool MigrationController::WithPreparingWorkspace(
+		const std::function<bool()> &callback,
+		MigrationError *error) const {
+	if (!callback || isIsolatedFixture() || !validateWorkspace()) {
+		SetError(error, MigrationError::UnsafeWorkspace);
+		return false;
+	}
+	const auto lock = LockWorkspace(_root);
+	if (!lock) {
+		SetError(error, MigrationError::WorkspaceBusy);
+		return false;
+	}
+	if (ProbeProfileStartup(_profileDataDirectory, error)
+		!= ProfileStartupMode::Preparing) {
+		SetError(error, MigrationError::StaleGeneration);
+		return false;
 	}
 	const auto result = callback();
 	SetError(error, result ? MigrationError::None : MigrationError::CallbackFailed);

@@ -6,6 +6,7 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
+#include "ayu/data/archive_migration.h"
 #include "ayu/data/entities.h"
 
 #include <cstdint>
@@ -59,6 +60,10 @@ struct ArchiveImportCounts {
 };
 
 void initialize();
+
+[[nodiscard]] Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
+	const std::filesystem::path &dataDirectory,
+	std::span<const Ayu::LegacyArchiveFileTarget> targets);
 
 void addEditedMessage(const EditedMessage &message);
 std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit);

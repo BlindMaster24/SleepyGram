@@ -96,6 +96,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "webrtc/webrtc_environment.h"
 #include "webview/webview_interface.h"
 #include "window/window_columns.h"
+#include "window/window_lock_widgets.h"
 #include "window/window_saved_windows.h"
 #include "window/window_separate_id.h"
 #include "window/window_session_controller.h"
@@ -132,22 +133,20 @@ namespace {
 using Ayu::ProfileSets::MigrationController;
 using Ayu::ProfileSets::ProfileStartupMode;
 
-class BlockedProfileWindow final : public PreLaunchWindow {
+class ProfileRecoveryWindow final : public PreLaunchWindow {
 public:
-	explicit BlockedProfileWindow(ProfileStartupMode mode);
+	ProfileRecoveryWindow();
 
 protected:
 	void closeEvent(QCloseEvent *e) override;
 
 };
 
-BlockedProfileWindow::BlockedProfileWindow(ProfileStartupMode mode) {
+ProfileRecoveryWindow::ProfileRecoveryWindow() {
 	const auto layout = new QVBoxLayout(this);
 	const auto label = new PreLaunchLabel(this);
 	label->setWordWrap(true);
-	label->setText(mode == ProfileStartupMode::RecoveryRequired
-		? u"Local data needs recovery before it can be opened."_q
-		: u"Local data is locked. This version of SleepyGram cannot open it."_q);
+	label->setText(u"Local data needs recovery before it can be opened."_q);
 	const auto button = new PreLaunchButton(this);
 	button->setText(u"Close"_q);
 	connect(button, &QPushButton::clicked, this, [this] { close(); });
@@ -155,7 +154,7 @@ BlockedProfileWindow::BlockedProfileWindow(ProfileStartupMode mode) {
 	layout->addWidget(button, 0, Qt::AlignRight);
 }
 
-void BlockedProfileWindow::closeEvent(QCloseEvent *e) {
+void ProfileRecoveryWindow::closeEvent(QCloseEvent *e) {
 	PreLaunchWindow::closeEvent(e);
 	Quit();
 }
@@ -366,8 +365,19 @@ Application::~Application() {
 void Application::run() {
 	if (!legacyProfileAccessAllowed()) {
 		cRefStartUrls().clear();
-		_blockedProfileWindow = std::make_unique<BlockedProfileWindow>(
-			_profileStartupMode);
+		const auto reserved = _domain->reserveScopedProfile();
+		if (reserved && _profileStartupMode == ProfileStartupMode::Committed) {
+			auto sidecar = MigrationController::OpenProfileWorkspace(
+				cWorkingDir() + u"tdata"_q);
+			if (sidecar) {
+				_blockedProfileWindow = Window::CreateScopedProfileLockWindow(
+					_domain.get(),
+					std::move(*sidecar));
+			}
+		}
+		if (!_blockedProfileWindow) {
+			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>();
+		}
 		_blockedProfileWindow->show();
 		return;
 	}

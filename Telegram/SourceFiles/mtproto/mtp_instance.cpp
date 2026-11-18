@@ -171,6 +171,13 @@ public:
 	bool isKeysDestroyer() const {
 		return (_mode == Instance::Mode::KeysDestroyer);
 	}
+	bool isEmergencySessionEffect() const {
+		return (_mode == Instance::Mode::EmergencySessionEffect);
+	}
+	bool emergencySessionEffectExpired() const {
+		return isEmergencySessionEffect()
+			&& std::chrono::steady_clock::now() >= _emergencyDeadline;
+	}
 
 	void scheduleKeyDestroy(ShiftedDcId shiftedDcId);
 	void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId);
@@ -224,6 +231,7 @@ private:
 
 	const not_null<Instance*> _instance;
 	const Instance::Mode _mode = Instance::Mode::Normal;
+	const std::chrono::steady_clock::time_point _emergencyDeadline;
 	const std::unique_ptr<Config> _config;
 	const std::shared_ptr<base::NetworkReachability> _networkReachability;
 
@@ -319,10 +327,15 @@ Instance::Private::Private(
 : Sender(instance)
 , _instance(instance)
 , _mode(mode)
+, _emergencyDeadline(fields.emergencyDeadline)
 , _config(std::move(fields.config))
 , _networkReachability(base::NetworkReachability::Instance())
 , _proxySettings(Core::App().settings().proxy()) {
 	Expects(_config != nullptr);
+	if (isEmergencySessionEffect()) {
+		Expects(fields.mainDcId > 0 && fields.keys.size() == 1);
+		Expects(fields.keys.front()->dcId() == fields.mainDcId);
+	}
 
 	const auto idealThreadPoolSize = QThread::idealThreadCount();
 	_fileSessionThreads.resize(2 * std::max(idealThreadPoolSize / 2, 1));
@@ -395,6 +408,9 @@ void Instance::Private::start() {
 }
 
 void Instance::Private::resolveProxyDomain(const QString &host) {
+	if (isEmergencySessionEffect()) {
+		return;
+	}
 	if (!_domainResolver) {
 		_domainResolver = std::make_unique<DomainResolver>([=](
 				const QString &host,
@@ -452,6 +468,9 @@ void Instance::Private::applyDomainIps(
 void Instance::Private::setGoodProxyDomain(
 		const QString &host,
 		const QString &ip) {
+	if (isEmergencySessionEffect()) {
+		return;
+	}
 	const auto applyToProxy = [&](ProxyData &proxy) {
 		if (!proxy.tryCustomResolve() || proxy.host != host) {
 			return false;
@@ -518,7 +537,7 @@ rpl::producer<DcId> Instance::Private::mainDcIdValue() const {
 }
 
 void Instance::Private::requestConfig() {
-	if (_configLoader || isKeysDestroyer()) {
+	if (_configLoader || !isNormal()) {
 		return;
 	}
 	_configLoader = std::make_unique<ConfigLoader>(
@@ -548,7 +567,9 @@ void Instance::Private::badConfigurationError(const ProxyData &proxy) {
 }
 
 void Instance::Private::syncHttpUnixtime() {
-	if (base::unixtime::http_valid() || _httpUnixtimeLoader) {
+	if (isEmergencySessionEffect()
+		|| base::unixtime::http_valid()
+		|| _httpUnixtimeLoader) {
 		return;
 	}
 	_httpUnixtimeLoader = std::make_unique<SpecialConfigRequest>([=] {
@@ -597,7 +618,7 @@ void Instance::Private::requestConfigIfExpired() {
 }
 
 void Instance::Private::requestCDNConfig() {
-	if (_cdnConfigLoadRequestId || !hasMainDcId()) {
+	if (isEmergencySessionEffect() || _cdnConfigLoadRequestId || !hasMainDcId()) {
 		return;
 	}
 	_cdnConfigLoadRequestId = request(
@@ -1026,6 +1047,22 @@ void Instance::Private::sendRequest(
 		crl::time msCanWait,
 		bool needsLayer,
 		mtpRequestId afterRequestId) {
+	if (isEmergencySessionEffect()) {
+		const auto body = SerializedRequest::kMessageBodyPosition;
+		const auto type = request->size() > body + 1
+			? mtpTypeId(request->at(body + 1))
+			: mtpTypeId();
+		if (emergencySessionEffectExpired()
+			|| shiftedDcId
+			|| afterRequestId
+			|| !type
+			|| mtpTypeId(request->at(body)) != mtpc_invokeWithoutUpdates
+			|| (type != mtpc_account_resetAuthorization
+				&& type != mtpc_auth_resetAuthorizations
+				&& type != mtpc_auth_logOut)) {
+			return;
+		}
+	}
 	const auto session = getSession(shiftedDcId);
 
 	request->requestId = requestId;
@@ -1167,11 +1204,13 @@ void Instance::Private::processCallback(const Response &response) {
 	}
 	if (handler.done || handler.fail) {
 		const auto handleError = [&](const Error &error) {
-			DEBUG_LOG(("RPC Info: "
-				"error received, code %1, type %2, description: %3").arg(
-					QString::number(error.code()),
-					error.type(),
-					error.description()));
+			if (!isEmergencySessionEffect()) {
+				DEBUG_LOG(("RPC Info: "
+					"error received, code %1, type %2, description: %3").arg(
+						QString::number(error.code()),
+						error.type(),
+						error.description()));
+			}
 			const auto guard = QPointer<Instance>(_instance);
 			if (rpcErrorOccured(response, handler, error) && guard) {
 				unregisterRequest(requestId);
@@ -1212,7 +1251,7 @@ void Instance::Private::processCallback(const Response &response) {
 }
 
 void Instance::Private::processUpdate(const Response &message) {
-	if (_updatesHandler) {
+	if (!isEmergencySessionEffect() && _updatesHandler) {
 		_updatesHandler(message);
 	}
 }
@@ -1233,6 +1272,13 @@ bool Instance::Private::rpcErrorOccured(
 		const Response &response,
 		const FailHandler &onFail,
 		const Error &error) { // return true if need to clean request data
+	if (isEmergencySessionEffect()) {
+		const auto guard = QPointer<Instance>(_instance);
+		if (onFail) {
+			onFail(error, response);
+		}
+		return bool(guard);
+	}
 	if (IsDefaultHandledError(error)) {
 		const auto guard = QPointer<Instance>(_instance);
 		if (onFail && onFail(error, response)) {
@@ -1876,6 +1922,12 @@ void Instance::Private::completedKeyDestroy(ShiftedDcId shiftedDcId) {
 void Instance::Private::keyDestroyedOnServer(
 		ShiftedDcId shiftedDcId,
 		uint64 keyId) {
+	if (isEmergencySessionEffect()) {
+		if (const auto session = findSession(shiftedDcId)) {
+			session->stop();
+		}
+		return;
+	}
 	LOG(("Destroying key for dc: %1").arg(shiftedDcId));
 	if (const auto dc = findDc(BareDcId(shiftedDcId))) {
 		if (dc->destroyConfirmedForgottenKey(keyId)) {
@@ -2180,6 +2232,14 @@ bool Instance::rpcErrorOccured(
 
 bool Instance::isKeysDestroyer() const {
 	return _private->isKeysDestroyer();
+}
+
+bool Instance::isEmergencySessionEffect() const {
+	return _private->isEmergencySessionEffect();
+}
+
+bool Instance::emergencySessionEffectExpired() const {
+	return _private->emergencySessionEffectExpired();
 }
 
 void Instance::keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId) {

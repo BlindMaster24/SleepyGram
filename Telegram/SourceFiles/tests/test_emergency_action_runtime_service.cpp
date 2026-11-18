@@ -290,6 +290,46 @@ void ConfigureReviewAndColdSubmitRunOnce() {
 		&& f.store.writes == writesAfterCompletion);
 }
 
+void BindRemoteOnlyToTheDurablyApprovedTargets() {
+	auto f = Fixture();
+	const auto preview = PreviewEmergencyRule(
+		f.config,
+		EmergencyActionId("action-runtime"),
+		f.live,
+		OperationId("operation-reviewed"));
+	if (!preview || !ConfirmEmergencyRule(f.config, *preview, f.live, true)) {
+		Check("provider-fixture-confirms-rule", false);
+		return;
+	}
+	auto bindings = 0;
+	auto matchedSeed = false;
+	auto service = EmergencyActionRuntimeService(
+		f.config,
+		[&] { return std::optional<LiveInstallation>(f.live); },
+		f.store,
+		[&](const EmergencyActionJournal &approved)
+		-> std::unique_ptr<RemoteSessionEffect> {
+			++bindings;
+			const auto saved = LoadJournal(f.store, approved.operationId);
+			matchedSeed = saved && EncodeJournal(*saved) == EncodeJournal(approved);
+			return nullptr;
+		},
+		f.local,
+		f.destination,
+		f.clock);
+	const auto first = service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("remote-provider-receives-durable-frozen-targets",
+		bindings == 1 && matchedSeed);
+	const auto saved = LoadJournal(f.store, preview->plan.operationId);
+	Check("unavailable-remote-provider-does-not-block-local-reset",
+		first.coordinator && first.coordinator->safeDestinationReady
+		&& f.local.calls == 1 && saved
+		&& saved->accounts.front().currentSessionLogout.state == EffectState::Skipped);
+	const auto repeated = service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("resuming-never-recreates-remote-provider",
+		repeated.coordinator && bindings == 1 && f.local.calls == 1);
+}
+
 void NonLockScreenAndStaleReviewCannotStartEffects() {
 	auto f = Fixture();
 	const auto preview = PreviewEmergencyRule(
@@ -564,6 +604,7 @@ void ExecutionLeaseRecoversAfterProcessDeath() {
 
 int main() {
 	ConfigureReviewAndColdSubmitRunOnce();
+	BindRemoteOnlyToTheDurablyApprovedTargets();
 	NonLockScreenAndStaleReviewCannotStartEffects();
 	ResetAllResolvesLiveAccountsOnce();
 	SelectedRuleDoesNotWidenOnLiveChanges();

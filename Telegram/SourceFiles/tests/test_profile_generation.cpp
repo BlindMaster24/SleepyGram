@@ -367,6 +367,45 @@ int RunChecks() {
 		&& error == ProfileGenerationError::StaleGeneration
 		&& pendingRoute->plan().targets().empty()
 		&& adapterCalls.size() == 3);
+	if (!replacement) {
+		return 1;
+	}
+	auto modified = fixture->metadata;
+	modified.sets[0].name = u"Renamed"_q;
+	modified.sets[0].verifier = Credential(4).verifier;
+	const auto replacements = std::vector<SetGrantCredential>{
+		{ modified.sets[0].id, Credential(4) },
+	};
+	check("settings-write-rejects-non-master-password",
+		!CommitProfileSetChanges(
+			*sidecar, replacement->transactionId, Credential(1),
+			modified, replacements, &error)
+		&& error == ProfileGenerationError::WrongPassword);
+	const auto changed = CommitProfileSetChanges(
+		*sidecar, replacement->transactionId, Credential(0xFFFFFFFF),
+		modified, replacements, &error);
+	check("master-settings-write-replaces-the-active-generation",
+		changed && *changed != replacement->transactionId
+		&& error == ProfileGenerationError::None
+		&& !CommitProfileSetChanges(
+			*sidecar, replacement->transactionId, Credential(0xFFFFFFFF),
+			modified, replacements, &error)
+		&& error == ProfileGenerationError::StaleGeneration);
+	if (changed) {
+		const auto fresh = sidecar->LoadCommitted();
+		const auto master = OpenCommittedProfileGeneration(
+			*sidecar, Credential(0xFFFFFFFF), {}, &error);
+		const auto oldPassword = OpenCommittedProfileGeneration(
+			*sidecar, Credential(1), adapter, &error);
+		const auto newPassword = OpenCommittedProfileGeneration(
+			*sidecar, Credential(4), adapter, &error);
+		check("updated-settings-open-with-same-accounts-and-replaced-password",
+			fresh && fresh->transactionId == *changed
+			&& fresh->accountKeyring == fixture->keyring
+			&& master && master->adminMetadata()
+			&& *master->adminMetadata() == modified
+			&& !oldPassword && newPassword && adapterCalls.size() == 4);
+	}
 	std::printf("%d/%d checks passed\n", passed, total);
 	return (passed == total) ? 0 : 1;
 }

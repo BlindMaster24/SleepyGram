@@ -10,6 +10,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/details/mtproto_serialized_request.h"
 #include "mtproto/mtproto_response.h"
 
+#include <chrono>
+
 namespace MTP {
 namespace details {
 
@@ -49,11 +51,13 @@ public:
 		AuthKeysList keys;
 		QString deviceModel;
 		QString systemVersion;
+		std::chrono::steady_clock::time_point emergencyDeadline;
 	};
 
 	enum class Mode {
 		Normal,
 		KeysDestroyer,
+		EmergencySessionEffect,
 	};
 
 	Instance(Mode mode, Fields &&fields);
@@ -127,6 +131,8 @@ public:
 
 	// Thread-safe.
 	bool isKeysDestroyer() const;
+	[[nodiscard]] bool isEmergencySessionEffect() const;
+	[[nodiscard]] bool emergencySessionEffectExpired() const;
 	void keyWasPossiblyDestroyed(ShiftedDcId shiftedDcId);
 
 	// Main thread.

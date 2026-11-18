@@ -37,6 +37,7 @@ class WallPaper;
 namespace MTP {
 class Config;
 class AuthKey;
+enum class Environment : uchar;
 using AuthKeyPtr = std::shared_ptr<AuthKey>;
 } // namespace MTP
 
@@ -75,6 +76,28 @@ enum class AccountMigrationResult : uchar {
 	const MTP::AuthKeyPtr &targetKey,
 	UserId expectedUser);
 
+struct ScopedAccountStartupInfo final {
+	UserId userId;
+	MTP::Environment environment = {};
+};
+
+[[nodiscard]] std::optional<ScopedAccountStartupInfo>
+ValidateScopedAccountForStartup(
+	const AccountPaths &paths,
+	const MTP::AuthKeyPtr &key);
+
+struct ScopedAccountConnection final {
+	~ScopedAccountConnection();
+
+	int32 mainDcId = 0;
+	MTP::AuthKeyPtr mainKey;
+	std::unique_ptr<MTP::Config> config;
+};
+
+[[nodiscard]] std::unique_ptr<ScopedAccountConnection> ReadScopedAccountConnection(
+	const AccountPaths &paths,
+	const MTP::AuthKeyPtr &key);
+
 struct MessageDraft {
 	FullReplyTo reply;
 	SuggestOptions suggest;
@@ -103,6 +126,10 @@ public:
 	Account(not_null<Main::Account*> owner, const QString &dataName);
 	Account(not_null<Main::Account*> owner, AccountPaths paths);
 	~Account();
+
+	[[nodiscard]] bool usesScopedStorage() const {
+		return _storageMode == AccountStorageMode::Scoped;
+	}
 
 	[[nodiscard]] StartResult legacyStart(const QByteArray &passcode);
 	[[nodiscard]] std::unique_ptr<MTP::Config> start(

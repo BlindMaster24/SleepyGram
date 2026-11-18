@@ -13,6 +13,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cstring>
 
 namespace Storage {
+
+QString AccountDataName(const QString &dataName, int index) {
+	auto result = dataName;
+	result.replace('#', QString());
+	if (index > 0) {
+		result += '#' + QString::number(index + 1);
+	}
+	return result;
+}
 namespace {
 
 QString ToFilePart(FileKey value) {

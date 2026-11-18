@@ -12,153 +12,180 @@
 
 #include <algorithm>
 #include <mutex>
+#include <type_traits>
+#include <utility>
 
 using namespace sqlite_orm;
 
 std::mutex databaseMutex;
 
-auto storage = make_storage(
-	"./tdata/ayudata.db",
-	make_table<SchemaVersion>(
-		"SchemaVersion",
-		make_column("id", &SchemaVersion::id, primary_key()),
-		make_column("version", &SchemaVersion::version)
-	),
-	make_index("idx_deleted_message_userId_dialogId_topicId_messageId",
-			   column<DeletedMessage>(&DeletedMessage::userId),
-			   column<DeletedMessage>(&DeletedMessage::dialogId),
-			   column<DeletedMessage>(&DeletedMessage::topicId),
-			   column<DeletedMessage>(&DeletedMessage::messageId)),
-	make_index("idx_edited_message_userId_dialogId_messageId",
-			   column<EditedMessage>(&EditedMessage::userId),
-			   column<EditedMessage>(&EditedMessage::dialogId),
-			   column<EditedMessage>(&EditedMessage::messageId)),
-	make_index("idx_edited_archive_search",
-			   column<EditedMessage>(&EditedMessage::userId),
-			   column<EditedMessage>(&EditedMessage::editDate),
-			   column<EditedMessage>(&EditedMessage::fakeId)),
-	make_index("idx_deleted_archive_search",
-			   column<DeletedMessage>(&DeletedMessage::userId),
-			   column<DeletedMessage>(&DeletedMessage::date),
-			   column<DeletedMessage>(&DeletedMessage::fakeId)),
-	make_table<DeletedMessage>(
-		"DeletedMessage",
-		make_column("fakeId", &DeletedMessage::fakeId, primary_key().autoincrement()),
-		make_column("userId", &DeletedMessage::userId),
-		make_column("dialogId", &DeletedMessage::dialogId),
-		make_column("groupedId", &DeletedMessage::groupedId),
-		make_column("peerId", &DeletedMessage::peerId),
-		make_column("peerType", &DeletedMessage::peerType, default_value(0)),
-		make_column("fromId", &DeletedMessage::fromId),
-		make_column("topicId", &DeletedMessage::topicId),
-		make_column("messageId", &DeletedMessage::messageId),
-		make_column("date", &DeletedMessage::date),
-		make_column("flags", &DeletedMessage::flags),
-		make_column("editDate", &DeletedMessage::editDate),
-		make_column("views", &DeletedMessage::views),
-		make_column("fwdFlags", &DeletedMessage::fwdFlags),
-		make_column("fwdFromId", &DeletedMessage::fwdFromId),
-		make_column("fwdName", &DeletedMessage::fwdName),
-		make_column("fwdDate", &DeletedMessage::fwdDate),
-		make_column("fwdPostAuthor", &DeletedMessage::fwdPostAuthor),
-		make_column("replyFlags", &DeletedMessage::replyFlags),
-		make_column("replyMessageId", &DeletedMessage::replyMessageId),
-		make_column("replyPeerId", &DeletedMessage::replyPeerId),
-		make_column("replyTopId", &DeletedMessage::replyTopId),
-		make_column("replyForumTopic", &DeletedMessage::replyForumTopic),
-		make_column("replySerialized", &DeletedMessage::replySerialized),
-		make_column("entityCreateDate", &DeletedMessage::entityCreateDate),
-		make_column("text", &DeletedMessage::text),
-		make_column("textEntities", &DeletedMessage::textEntities),
-		make_column("mediaPath", &DeletedMessage::mediaPath),
-		make_column("hqThumbPath", &DeletedMessage::hqThumbPath),
-		make_column("documentType", &DeletedMessage::documentType),
-		make_column("documentSerialized", &DeletedMessage::documentSerialized),
-		make_column("thumbsSerialized", &DeletedMessage::thumbsSerialized),
-		make_column("documentAttributesSerialized", &DeletedMessage::documentAttributesSerialized),
-		make_column("mimeType", &DeletedMessage::mimeType)
-	),
-	make_table<EditedMessage>(
-		"EditedMessage",
-		make_column("fakeId", &EditedMessage::fakeId, primary_key().autoincrement()),
-		make_column("userId", &EditedMessage::userId),
-		make_column("dialogId", &EditedMessage::dialogId),
-		make_column("groupedId", &EditedMessage::groupedId),
-		make_column("peerId", &EditedMessage::peerId),
-		make_column("peerType", &EditedMessage::peerType, default_value(0)),
-		make_column("fromId", &EditedMessage::fromId),
-		make_column("topicId", &EditedMessage::topicId),
-		make_column("messageId", &EditedMessage::messageId),
-		make_column("date", &EditedMessage::date),
-		make_column("flags", &EditedMessage::flags),
-		make_column("editDate", &EditedMessage::editDate),
-		make_column("views", &EditedMessage::views),
-		make_column("fwdFlags", &EditedMessage::fwdFlags),
-		make_column("fwdFromId", &EditedMessage::fwdFromId),
-		make_column("fwdName", &EditedMessage::fwdName),
-		make_column("fwdDate", &EditedMessage::fwdDate),
-		make_column("fwdPostAuthor", &EditedMessage::fwdPostAuthor),
-		make_column("replyFlags", &EditedMessage::replyFlags),
-		make_column("replyMessageId", &EditedMessage::replyMessageId),
-		make_column("replyPeerId", &EditedMessage::replyPeerId),
-		make_column("replyTopId", &EditedMessage::replyTopId),
-		make_column("replyForumTopic", &EditedMessage::replyForumTopic),
-		make_column("replySerialized", &EditedMessage::replySerialized),
-		make_column("entityCreateDate", &EditedMessage::entityCreateDate),
-		make_column("text", &EditedMessage::text),
-		make_column("textEntities", &EditedMessage::textEntities),
-		make_column("mediaPath", &EditedMessage::mediaPath),
-		make_column("hqThumbPath", &EditedMessage::hqThumbPath),
-		make_column("documentType", &EditedMessage::documentType),
-		make_column("documentSerialized", &EditedMessage::documentSerialized),
-		make_column("thumbsSerialized", &EditedMessage::thumbsSerialized),
-		make_column("documentAttributesSerialized", &EditedMessage::documentAttributesSerialized),
-		make_column("mimeType", &EditedMessage::mimeType)
-	),
-	make_table<DeletedDialog>(
-		"DeletedDialog",
-		make_column("fakeId", &DeletedDialog::fakeId, primary_key().autoincrement()),
-		make_column("userId", &DeletedDialog::userId),
-		make_column("dialogId", &DeletedDialog::dialogId),
-		make_column("peerId", &DeletedDialog::peerId),
-		make_column("folderId", &DeletedDialog::folderId),
-		make_column("topMessage", &DeletedDialog::topMessage),
-		make_column("lastMessageDate", &DeletedDialog::lastMessageDate),
-		make_column("flags", &DeletedDialog::flags),
-		make_column("entityCreateDate", &DeletedDialog::entityCreateDate)
-	),
-	make_table<RegexFilter>(
-		"RegexFilter",
-		make_column("id", &RegexFilter::id, primary_key()),
-		make_column("text", &RegexFilter::text),
-		make_column("enabled", &RegexFilter::enabled),
-		make_column("reversed", &RegexFilter::reversed),
-		make_column("caseInsensitive", &RegexFilter::caseInsensitive),
-		make_column("dialogId", &RegexFilter::dialogId)
-	),
-	make_table<RegexFilterGlobalExclusion>(
-		"RegexFilterGlobalExclusion",
-		make_column("fakeId", &RegexFilterGlobalExclusion::fakeId, primary_key().autoincrement()),
-		make_column("dialogId", &RegexFilterGlobalExclusion::dialogId),
-		make_column("filterId", &RegexFilterGlobalExclusion::filterId)
-	),
-	make_table<SpyMessageRead>(
-		"SpyMessageRead",
-		make_column("fakeId", &SpyMessageRead::fakeId, primary_key().autoincrement()),
-		make_column("userId", &SpyMessageRead::userId),
-		make_column("dialogId", &SpyMessageRead::dialogId),
-		make_column("messageId", &SpyMessageRead::messageId),
-		make_column("entityCreateDate", &SpyMessageRead::entityCreateDate)
-	),
-	make_table<SpyMessageContentsRead>(
-		"SpyMessageContentsRead",
-		make_column("fakeId", &SpyMessageContentsRead::fakeId, primary_key().autoincrement()),
-		make_column("userId", &SpyMessageContentsRead::userId),
-		make_column("dialogId", &SpyMessageContentsRead::dialogId),
-		make_column("messageId", &SpyMessageContentsRead::messageId),
-		make_column("entityCreateDate", &SpyMessageContentsRead::entityCreateDate)
-	)
-);
+namespace {
+
+constexpr auto kLatestSchemaVersion = 1;
+
+auto MakeStorage(std::string path) {
+	return make_storage(
+		std::move(path),
+		make_table<SchemaVersion>(
+			"SchemaVersion",
+			make_column("id", &SchemaVersion::id, primary_key()),
+			make_column("version", &SchemaVersion::version)
+		),
+		make_index("idx_deleted_message_userId_dialogId_topicId_messageId",
+				   column<DeletedMessage>(&DeletedMessage::userId),
+				   column<DeletedMessage>(&DeletedMessage::dialogId),
+				   column<DeletedMessage>(&DeletedMessage::topicId),
+				   column<DeletedMessage>(&DeletedMessage::messageId)),
+		make_index("idx_edited_message_userId_dialogId_messageId",
+				   column<EditedMessage>(&EditedMessage::userId),
+				   column<EditedMessage>(&EditedMessage::dialogId),
+				   column<EditedMessage>(&EditedMessage::messageId)),
+		make_index("idx_edited_archive_search",
+				   column<EditedMessage>(&EditedMessage::userId),
+				   column<EditedMessage>(&EditedMessage::editDate),
+				   column<EditedMessage>(&EditedMessage::fakeId)),
+		make_index("idx_deleted_archive_search",
+				   column<DeletedMessage>(&DeletedMessage::userId),
+				   column<DeletedMessage>(&DeletedMessage::date),
+				   column<DeletedMessage>(&DeletedMessage::fakeId)),
+		make_table<DeletedMessage>(
+			"DeletedMessage",
+			make_column("fakeId", &DeletedMessage::fakeId, primary_key().autoincrement()),
+			make_column("userId", &DeletedMessage::userId),
+			make_column("dialogId", &DeletedMessage::dialogId),
+			make_column("groupedId", &DeletedMessage::groupedId),
+			make_column("peerId", &DeletedMessage::peerId),
+			make_column("peerType", &DeletedMessage::peerType, default_value(0)),
+			make_column("fromId", &DeletedMessage::fromId),
+			make_column("topicId", &DeletedMessage::topicId),
+			make_column("messageId", &DeletedMessage::messageId),
+			make_column("date", &DeletedMessage::date),
+			make_column("flags", &DeletedMessage::flags),
+			make_column("editDate", &DeletedMessage::editDate),
+			make_column("views", &DeletedMessage::views),
+			make_column("fwdFlags", &DeletedMessage::fwdFlags),
+			make_column("fwdFromId", &DeletedMessage::fwdFromId),
+			make_column("fwdName", &DeletedMessage::fwdName),
+			make_column("fwdDate", &DeletedMessage::fwdDate),
+			make_column("fwdPostAuthor", &DeletedMessage::fwdPostAuthor),
+			make_column("replyFlags", &DeletedMessage::replyFlags),
+			make_column("replyMessageId", &DeletedMessage::replyMessageId),
+			make_column("replyPeerId", &DeletedMessage::replyPeerId),
+			make_column("replyTopId", &DeletedMessage::replyTopId),
+			make_column("replyForumTopic", &DeletedMessage::replyForumTopic),
+			make_column("replySerialized", &DeletedMessage::replySerialized),
+			make_column("entityCreateDate", &DeletedMessage::entityCreateDate),
+			make_column("text", &DeletedMessage::text),
+			make_column("textEntities", &DeletedMessage::textEntities),
+			make_column("mediaPath", &DeletedMessage::mediaPath),
+			make_column("hqThumbPath", &DeletedMessage::hqThumbPath),
+			make_column("documentType", &DeletedMessage::documentType),
+			make_column("documentSerialized", &DeletedMessage::documentSerialized),
+			make_column("thumbsSerialized", &DeletedMessage::thumbsSerialized),
+			make_column("documentAttributesSerialized", &DeletedMessage::documentAttributesSerialized),
+			make_column("mimeType", &DeletedMessage::mimeType)
+		),
+		make_table<EditedMessage>(
+			"EditedMessage",
+			make_column("fakeId", &EditedMessage::fakeId, primary_key().autoincrement()),
+			make_column("userId", &EditedMessage::userId),
+			make_column("dialogId", &EditedMessage::dialogId),
+			make_column("groupedId", &EditedMessage::groupedId),
+			make_column("peerId", &EditedMessage::peerId),
+			make_column("peerType", &EditedMessage::peerType, default_value(0)),
+			make_column("fromId", &EditedMessage::fromId),
+			make_column("topicId", &EditedMessage::topicId),
+			make_column("messageId", &EditedMessage::messageId),
+			make_column("date", &EditedMessage::date),
+			make_column("flags", &EditedMessage::flags),
+			make_column("editDate", &EditedMessage::editDate),
+			make_column("views", &EditedMessage::views),
+			make_column("fwdFlags", &EditedMessage::fwdFlags),
+			make_column("fwdFromId", &EditedMessage::fwdFromId),
+			make_column("fwdName", &EditedMessage::fwdName),
+			make_column("fwdDate", &EditedMessage::fwdDate),
+			make_column("fwdPostAuthor", &EditedMessage::fwdPostAuthor),
+			make_column("replyFlags", &EditedMessage::replyFlags),
+			make_column("replyMessageId", &EditedMessage::replyMessageId),
+			make_column("replyPeerId", &EditedMessage::replyPeerId),
+			make_column("replyTopId", &EditedMessage::replyTopId),
+			make_column("replyForumTopic", &EditedMessage::replyForumTopic),
+			make_column("replySerialized", &EditedMessage::replySerialized),
+			make_column("entityCreateDate", &EditedMessage::entityCreateDate),
+			make_column("text", &EditedMessage::text),
+			make_column("textEntities", &EditedMessage::textEntities),
+			make_column("mediaPath", &EditedMessage::mediaPath),
+			make_column("hqThumbPath", &EditedMessage::hqThumbPath),
+			make_column("documentType", &EditedMessage::documentType),
+			make_column("documentSerialized", &EditedMessage::documentSerialized),
+			make_column("thumbsSerialized", &EditedMessage::thumbsSerialized),
+			make_column("documentAttributesSerialized", &EditedMessage::documentAttributesSerialized),
+			make_column("mimeType", &EditedMessage::mimeType)
+		),
+		make_table<DeletedDialog>(
+			"DeletedDialog",
+			make_column("fakeId", &DeletedDialog::fakeId, primary_key().autoincrement()),
+			make_column("userId", &DeletedDialog::userId),
+			make_column("dialogId", &DeletedDialog::dialogId),
+			make_column("peerId", &DeletedDialog::peerId),
+			make_column("folderId", &DeletedDialog::folderId),
+			make_column("topMessage", &DeletedDialog::topMessage),
+			make_column("lastMessageDate", &DeletedDialog::lastMessageDate),
+			make_column("flags", &DeletedDialog::flags),
+			make_column("entityCreateDate", &DeletedDialog::entityCreateDate)
+		),
+		make_table<RegexFilter>(
+			"RegexFilter",
+			make_column("id", &RegexFilter::id, primary_key()),
+			make_column("text", &RegexFilter::text),
+			make_column("enabled", &RegexFilter::enabled),
+			make_column("reversed", &RegexFilter::reversed),
+			make_column("caseInsensitive", &RegexFilter::caseInsensitive),
+			make_column("dialogId", &RegexFilter::dialogId)
+		),
+		make_table<RegexFilterGlobalExclusion>(
+			"RegexFilterGlobalExclusion",
+			make_column("fakeId", &RegexFilterGlobalExclusion::fakeId, primary_key().autoincrement()),
+			make_column("dialogId", &RegexFilterGlobalExclusion::dialogId),
+			make_column("filterId", &RegexFilterGlobalExclusion::filterId)
+		),
+		make_table<SpyMessageRead>(
+			"SpyMessageRead",
+			make_column("fakeId", &SpyMessageRead::fakeId, primary_key().autoincrement()),
+			make_column("userId", &SpyMessageRead::userId),
+			make_column("dialogId", &SpyMessageRead::dialogId),
+			make_column("messageId", &SpyMessageRead::messageId),
+			make_column("entityCreateDate", &SpyMessageRead::entityCreateDate)
+		),
+		make_table<SpyMessageContentsRead>(
+			"SpyMessageContentsRead",
+			make_column("fakeId", &SpyMessageContentsRead::fakeId, primary_key().autoincrement()),
+			make_column("userId", &SpyMessageContentsRead::userId),
+			make_column("dialogId", &SpyMessageContentsRead::dialogId),
+			make_column("messageId", &SpyMessageContentsRead::messageId),
+			make_column("entityCreateDate", &SpyMessageContentsRead::entityCreateDate)
+		)
+	);
+}
+
+std::string ArchiveSchemaSql() {
+	auto schema = MakeStorage("archive-schema");
+	const auto &objects = obtain_db_objects(schema);
+	using Objects = std::remove_cvref_t<decltype(objects)>;
+	const auto context = sqlite_orm::internal::serializer_context<Objects>{ objects };
+	auto sql = std::string();
+	sqlite_orm::internal::iterate_tuple<true>(objects, [&](const auto &object) {
+		sql += sqlite_orm::internal::serialize(object, context);
+		sql += ';';
+	});
+	sql += "INSERT INTO SchemaVersion(id, version) VALUES(1,"
+		+ std::to_string(kLatestSchemaVersion) + ");";
+	return sql;
+}
+
+} // namespace
+
+auto storage = MakeStorage("./tdata/ayudata.db");
 
 namespace AyuMigrations {
 
@@ -175,8 +202,6 @@ void migrateToV1(decltype(storage) &storage) {
 }
 
 void runMigrations(decltype(storage) &storage) {
-	constexpr int kLatestVersion = 1;
-
 	const std::map<int, Fn<void(decltype(storage) &)>> migrations = {
 		{1, AyuMigrations::migrateToV1},
 	};
@@ -193,14 +218,14 @@ void runMigrations(decltype(storage) &storage) {
 		storage.insert(SchemaVersion{1, 0});
 	}
 
-	if (currentVersion >= kLatestVersion) {
+	if (currentVersion >= kLatestSchemaVersion) {
 		LOG(("Database is ok"));
 		return;
 	}
 
-	LOG(("Database version: %1. Latest version: %2.").arg(currentVersion).arg(kLatestVersion));
+	LOG(("Database version: %1. Latest version: %2.").arg(currentVersion).arg(kLatestSchemaVersion));
 
-	for (int v = currentVersion + 1; v <= kLatestVersion; ++v) {
+	for (int v = currentVersion + 1; v <= kLatestSchemaVersion; ++v) {
 		if (migrations.contains(v)) {
 			try {
 				LOG(("Migration for version: %1").arg(v));
@@ -223,6 +248,13 @@ void runMigrations(decltype(storage) &storage) {
 }
 
 namespace AyuDatabase {
+
+Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
+		const std::filesystem::path &dataDirectory,
+		std::span<const Ayu::LegacyArchiveFileTarget> targets) {
+	std::lock_guard lock(databaseMutex);
+	return Ayu::StageLegacyArchiveFiles(dataDirectory, targets, ArchiveSchemaSql());
+}
 
 void moveCurrentDatabase() {
 	const auto time = base::unixtime::now();

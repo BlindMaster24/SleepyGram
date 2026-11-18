@@ -15,6 +15,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_domain.h"
 #include "mainwindow.h"
 #include "core/application.h"
+#include "core/crash_report_window.h"
 #include "api/api_text_entities.h"
 #include "ui/text/text.h"
 #include "ui/widgets/buttons.h"
@@ -32,12 +33,210 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_passcode_box.h"
 #include "styles/style_window_lock_widgets.h"
 
+#include <QtCore/QPointer>
+#include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QListWidget>
+#include <QtWidgets/QVBoxLayout>
+
+// AyuGram includes
+#include "ayu/features/profile_sets/profile_generation.h"
+
+
 namespace Window {
 namespace {
 
+namespace ProfileSets = Ayu::ProfileSets;
+
 constexpr auto kSystemUnlockDelay = crl::time(1000);
 
+class ScopedProfileLockWindow final : public PreLaunchWindow {
+public:
+	ScopedProfileLockWindow(
+		not_null<Main::Domain*> domain,
+		ProfileSets::MigrationController sidecar);
+	~ScopedProfileLockWindow() override;
+
+protected:
+	void closeEvent(QCloseEvent *e) override;
+
+private:
+	void showForm(QString status);
+	void submit();
+	void authenticationDone(
+		std::optional<ProfileSets::OpenedProfileGeneration> generation,
+		ProfileSets::ProfileGenerationError error);
+	void showPreparedProfile();
+	void lockProfile();
+	void clearProfile();
+
+	const not_null<Main::Domain*> _domain;
+	const ProfileSets::MigrationController _sidecar;
+	const not_null<PreLaunchLabel*> _status;
+	const not_null<PreLaunchInput*> _passcode;
+	const not_null<QListWidget*> _sets;
+	const not_null<PreLaunchButton*> _unlock;
+	const not_null<PreLaunchButton*> _lock;
+	bool _checking = false;
+	bool _closing = false;
+
+};
+
+ScopedProfileLockWindow::ScopedProfileLockWindow(
+		not_null<Main::Domain*> domain,
+		ProfileSets::MigrationController sidecar)
+: _domain(domain)
+, _sidecar(std::move(sidecar))
+, _status(new PreLaunchLabel(this))
+, _passcode(new PreLaunchInput(this, true))
+, _sets(new QListWidget(this))
+, _unlock(new PreLaunchButton(this))
+, _lock(new PreLaunchButton(this)) {
+	_status->setWordWrap(true);
+	_passcode->setAccessibleName(u"Passcode"_q);
+	_passcode->setInputMethodHints(
+		Qt::ImhHiddenText | Qt::ImhSensitiveData | Qt::ImhNoPredictiveText);
+	_sets->setSelectionMode(QAbstractItemView::NoSelection);
+	_sets->setAccessibleName(u"Sets"_q);
+	_unlock->setText(u"Unlock"_q);
+	_lock->setText(u"Lock"_q);
+	const auto close = new PreLaunchButton(this, false);
+	close->setText(u"Close"_q);
+
+	connect(_passcode.get(), &QLineEdit::returnPressed, this, [this] {
+		submit();
+	});
+	connect(_unlock.get(), &QPushButton::clicked, this, [this] { submit(); });
+	connect(_lock.get(), &QPushButton::clicked, this, [this] { lockProfile(); });
+	connect(close, &QPushButton::clicked, this, [this] { this->close(); });
+
+	const auto layout = new QVBoxLayout(this);
+	layout->addWidget(_status.get());
+	layout->addWidget(_passcode.get());
+	layout->addWidget(_sets.get());
+	const auto actions = new QHBoxLayout();
+	actions->addStretch();
+	actions->addWidget(close);
+	actions->addWidget(_lock.get());
+	actions->addWidget(_unlock.get());
+	layout->addLayout(actions);
+	showForm(u"Enter your passcode."_q);
+}
+
+ScopedProfileLockWindow::~ScopedProfileLockWindow() {
+	_closing = true;
+	clearProfile();
+}
+
+void ScopedProfileLockWindow::showForm(QString status) {
+	_status->setText(status);
+	_sets->hide();
+	_lock->hide();
+	_passcode->show();
+	_unlock->show();
+	_passcode->setEnabled(true);
+	_unlock->setEnabled(true);
+	_passcode->setFocus();
+}
+
+void ScopedProfileLockWindow::submit() {
+	if (_checking || _closing || Core::Quitting()
+		|| _domain->preparedScopedProfileAccess()) {
+		return;
+	}
+	if (_passcode->text().isEmpty()) {
+		showForm(u"Enter your passcode."_q);
+		return;
+	} else if (!passcodeCanTry()) {
+		_passcode->setText(QString());
+		showForm(u"Too many tries. Please try again later."_q);
+		return;
+	}
+	auto passcode = _passcode->text();
+	_passcode->setText(QString());
+	_checking = true;
+	_status->setText(u"Checking passcode…"_q);
+	_passcode->setEnabled(false);
+	_unlock->setEnabled(false);
+	const auto weak = QPointer<ScopedProfileLockWindow>(this);
+	ProfileSets::AuthenticateScopedProfilePasscode(
+		_sidecar,
+		std::move(passcode),
+		[weak](std::optional<ProfileSets::OpenedProfileGeneration> generation,
+				ProfileSets::ProfileGenerationError error) {
+			if (weak) {
+				weak->authenticationDone(std::move(generation), error);
+			}
+		});
+}
+
+void ScopedProfileLockWindow::authenticationDone(
+		std::optional<ProfileSets::OpenedProfileGeneration> generation,
+		ProfileSets::ProfileGenerationError error) {
+	if (!_checking || _closing || Core::Quitting()) {
+		return;
+	}
+	_checking = false;
+	if (!generation) {
+		if (error == ProfileSets::ProfileGenerationError::WrongPassword) {
+			cSetPasscodeBadTries(cPasscodeBadTries() + 1);
+			cSetPasscodeLastTry(crl::now());
+			showForm(u"Wrong passcode."_q);
+		} else {
+			showForm(u"Local data could not be opened."_q);
+		}
+		return;
+	}
+	if (!_domain->prepareScopedProfile(_sidecar, std::move(*generation))) {
+		showForm(u"Local data could not be opened."_q);
+		return;
+	}
+	cSetPasscodeBadTries(0);
+	showPreparedProfile();
+}
+
+void ScopedProfileLockWindow::showPreparedProfile() {
+	_passcode->hide();
+	_unlock->hide();
+	_lock->show();
+	if (const auto metadata = _domain->preparedScopedAdminMetadata()) {
+		_status->setText(metadata->sets.empty() ? u"No sets yet."_q : u"Sets"_q);
+		for (const auto &set : metadata->sets) {
+			_sets->addItem(set.name);
+		}
+		_sets->setVisible(!metadata->sets.empty());
+	} else if (_domain->preparedScopedAccountCount() == 0) {
+		_status->setText(u"This set has no accounts."_q);
+	} else {
+		_status->setText(u"Accounts in this set cannot start in this version."_q);
+	}
+	_lock->setFocus();
+}
+
+void ScopedProfileLockWindow::lockProfile() {
+	clearProfile();
+	showForm(u"Enter your passcode."_q);
+}
+
+void ScopedProfileLockWindow::clearProfile() {
+	_passcode->setText(QString());
+	_sets->clear();
+	_domain->clearPreparedScopedProfile();
+}
+
+void ScopedProfileLockWindow::closeEvent(QCloseEvent *e) {
+	_closing = true;
+	clearProfile();
+	PreLaunchWindow::closeEvent(e);
+	Core::Quit();
+}
+
 } // namespace
+
+std::unique_ptr<PreLaunchWindow> CreateScopedProfileLockWindow(
+		not_null<Main::Domain*> domain,
+		ProfileSets::MigrationController sidecar) {
+	return std::make_unique<ScopedProfileLockWindow>(domain, std::move(sidecar));
+}
 
 PasscodeAttempt TryPasscode(
 		const QString &passcode,

@@ -292,6 +292,12 @@ int RunChecks() {
 		&& !std::filesystem::exists(root / "migration.lock")
 		&& !std::filesystem::exists(root / ".cutover")
 		&& ReadFixture(phasePath) == preparingMarker);
+	check("preparing-storage-operation-holds-the-writer-lock",
+		live->WithPreparingWorkspace([&] {
+			return !live->Stage(inputs, &error)
+				&& error == MigrationError::WorkspaceBusy;
+		}, &error)
+		&& error == MigrationError::None);
 	{
 		auto lock = QLockFile(QDir(live->workspacePath()).filePath(
 			QStringLiteral("migration.lock")));

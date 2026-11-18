@@ -17,6 +17,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/random.h"
 #include "tgw/tgw_storage.h"
 
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+
+#include <openssl/crypto.h>
+
 namespace Storage {
 
 struct PasscodeWrap final {
@@ -116,6 +121,10 @@ constexpr auto kMaxWrapCount = quint32(2);
 		return nullptr;
 	}
 	auto key = Serialize::read<MTP::AuthKey::Data>(data.stream);
+	const auto wipe = gsl::finally([&] {
+		OPENSSL_cleanse(data.data.data(), data.data.size());
+		OPENSSL_cleanse(key.data(), key.size());
+	});
 	if (data.stream.status() != QDataStream::Ok || !data.stream.atEnd()) {
 		return nullptr;
 	}
@@ -319,6 +328,91 @@ void PasscodeDerivation::cleanse() {
 		OPENSSL_cleanse(_passcode.data(), _passcode.size());
 	}
 	_cleansed = true;
+}
+
+std::optional<LegacyProfileInventory> ReadLegacyProfileInventory(
+		const QString &dataDirectory,
+		const QString &dataName,
+		const QByteArray &passcode) {
+	constexpr auto kMaxKeyFileBytes = 64 * 1024;
+	const auto root = QDir::cleanPath(dataDirectory);
+	const auto directory = QFileInfo(root);
+	if (!directory.isDir() || directory.canonicalFilePath() != root
+		|| directory.isSymLink() || directory.isJunction()
+		|| dataName.isEmpty() || dataName.contains('/')
+		|| dataName.contains('\\') || dataName.contains(QChar(0))) {
+		return std::nullopt;
+	}
+	const auto name = ComputeKeyName(dataName);
+	for (const auto suffix : { 's', '0', '1' }) {
+		const auto item = QFileInfo(root + '/' + name + suffix);
+		if (item.isSymLink() || item.isJunction()
+			|| (item.exists() && (!item.isFile() || item.size() > kMaxKeyFileBytes))) {
+			return std::nullopt;
+		}
+	}
+	auto file = FileReadDescriptor();
+	auto parsed = KeyData();
+	auto encrypted = QByteArray();
+	if (!ReadFile(file, name, root + '/', LegacyBackupPolicy::Preserve)
+		|| ReadKeyData(file.stream, parsed, encrypted) != ReadKeyDataResult::Success) {
+		return std::nullopt;
+	}
+	auto current = static_cast<const PasscodeWrap*>(nullptr);
+	for (const auto &wrap : parsed.passcodeWraps) {
+		if (wrap.generation == parsed.committed) {
+			if (current) {
+				return std::nullopt;
+			}
+			current = &wrap;
+		}
+	}
+	if (!parsed.legacy && ((current == nullptr) != passcode.isEmpty())) {
+		return std::nullopt;
+	}
+	const auto wrapping = current
+		? CreatePasscodeKey(passcode, current->salt, current->kdf)
+		: CreateLocalKey(passcode, parsed.openSalt);
+	auto key = UnwrapLocalKey(
+		current ? current->keyEncrypted : parsed.openKeyEncrypted,
+		wrapping);
+	auto info = EncryptedDescriptor();
+	if (!key || !DecryptLocal(info, encrypted, key)) {
+		return std::nullopt;
+	}
+	const auto wipe = gsl::finally([&] {
+		OPENSSL_cleanse(info.data.data(), info.data.size());
+	});
+	auto count = qint32();
+	info.stream >> count;
+	if (info.stream.status() != QDataStream::Ok || count <= 0
+		|| count > Main::Domain::kPremiumMaxAccounts) {
+		return std::nullopt;
+	}
+	auto result = LegacyProfileInventory{ .localKey = std::move(key) };
+	auto used = base::flat_set<int>();
+	result.accountIndices.reserve(count);
+	for (auto i = 0; i != count; ++i) {
+		auto index = qint32();
+		info.stream >> index;
+		if (info.stream.status() != QDataStream::Ok || index < 0
+			|| index >= Main::Domain::kPremiumMaxAccounts
+			|| !used.emplace(index).second) {
+			return std::nullopt;
+		}
+		result.accountIndices.push_back(index);
+	}
+	result.activeIndex = result.accountIndices.front();
+	if (!info.stream.atEnd()) {
+		info.stream >> result.activeIndex;
+	}
+	if (info.stream.status() != QDataStream::Ok || !info.stream.atEnd()) {
+		return std::nullopt;
+	}
+	if (!used.contains(result.activeIndex)) {
+		result.activeIndex = result.accountIndices.front();
+	}
+	return result;
 }
 
 Domain::Domain(not_null<Main::Domain*> owner, const QString &dataName)

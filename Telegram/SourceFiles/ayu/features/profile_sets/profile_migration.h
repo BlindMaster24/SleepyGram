@@ -124,6 +124,9 @@ public:
 		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool WithPreparingWorkspace(
+		const std::function<bool()> &callback,
+		MigrationError *error = nullptr) const;
 
 	[[nodiscard]] QString workspacePath() const;
 	[[nodiscard]] QString accountStorageRoot() const;

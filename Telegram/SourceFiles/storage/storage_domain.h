@@ -24,6 +24,17 @@ struct PasscodeWrap;
 struct KeyData;
 struct WalletEngineValue;
 
+struct LegacyProfileInventory final {
+	MTP::AuthKeyPtr localKey;
+	std::vector<int> accountIndices;
+	int activeIndex = 0;
+};
+
+[[nodiscard]] std::optional<LegacyProfileInventory> ReadLegacyProfileInventory(
+	const QString &dataDirectory,
+	const QString &dataName,
+	const QByteArray &passcode);
+
 // The memory-hard step of a passcode check or change, cut out of Domain as a
 // value so that it can run on a worker. It holds copies only - the wrap the
 // typed bytes have to open (the live passcode wrap, the legacy blob, or a

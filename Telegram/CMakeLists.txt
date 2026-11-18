@@ -88,6 +88,7 @@ include(cmake/test_profile_migration.cmake)
 include(cmake/test_account_registry.cmake)
 include(cmake/test_account_storage_plan.cmake)
 include(cmake/test_profile_generation.cmake)
+include(cmake/test_archive_migration.cmake)
 include(cmake/test_wallet_phrase_shares.cmake)
 
 set_target_properties(Telegram PROPERTIES AUTOMOC ON)
@@ -257,6 +258,10 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_action_runtime_service.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
+        ayu/features/emergency_actions/mtproto_session_effect.cpp
+        ayu/features/emergency_actions/mtproto_session_effect.h
+        ayu/features/emergency_actions/mtproto_session_effect_transport.cpp
+        ayu/features/emergency_actions/mtproto_session_effect_transport.h
         ayu/features/emergency_actions/scoped_account_clear.cpp
         ayu/features/emergency_actions/scoped_account_clear.h
         ayu/features/profile_sets/profile_sets.cpp
@@ -269,6 +274,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_vault_password.cpp
         ayu/features/profile_sets/profile_migration.cpp
         ayu/features/profile_sets/profile_migration.h
+        ayu/features/profile_sets/profile_staging.cpp
+        ayu/features/profile_sets/profile_staging.h
         ayu/features/profile_sets/account_registry.cpp
         ayu/features/profile_sets/account_registry.h
         ayu/features/profile_sets/account_storage_plan.cpp
@@ -312,6 +319,8 @@ set(ayugram_files
         ayu/data/messages_storage.cpp
         ayu/data/messages_storage.h
         ayu/data/entities.h
+        ayu/data/archive_migration.cpp
+        ayu/data/archive_migration.h
         ayu/data/archive_partition.cpp
         ayu/data/archive_partition.h
         ayu/data/archive_sqlcipher.cpp

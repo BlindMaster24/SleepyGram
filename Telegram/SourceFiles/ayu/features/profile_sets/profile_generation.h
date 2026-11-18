@@ -49,6 +49,8 @@ enum class ProfileGenerationError : uchar {
 	StaleGeneration,
 	DerivationFailed,
 	ValidationFailed,
+	SettingsRejected,
+	PublicationUncertain,
 };
 
 // A failed start must leave no live account; success returns its close action.
@@ -73,6 +75,9 @@ public:
 	}
 	[[nodiscard]] ProfileGenerationAccess access() const {
 		return _access;
+	}
+	[[nodiscard]] const QByteArray &transactionId() const {
+		return _transactionId;
 	}
 	[[nodiscard]] const Metadata *adminMetadata() const {
 		return _adminMetadata ? &*_adminMetadata : nullptr;
@@ -137,6 +142,14 @@ void AuthenticateScopedProfilePasscode(
 	MigrationController sidecar,
 	QString passcode,
 	ProfilePasswordDone done);
+
+[[nodiscard]] std::optional<QByteArray> CommitProfileSetChanges(
+	const MigrationController &sidecar,
+	const QByteArray &expectedTransactionId,
+	DerivedCredential admin,
+	const Metadata &metadata,
+	std::vector<SetGrantCredential> replacements,
+	ProfileGenerationError *error = nullptr);
 
 [[nodiscard]] std::optional<OpenedProfileGeneration>
 OpenCommittedProfileGeneration(

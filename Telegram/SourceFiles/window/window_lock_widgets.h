@@ -13,6 +13,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/timer.h"
 
+class PreLaunchWindow;
+
+namespace Ayu::ProfileSets {
+class MigrationController;
+} // namespace Ayu::ProfileSets
+
 namespace base {
 enum class SystemUnlockResult;
 } // namespace base
@@ -25,6 +31,7 @@ class CheckView;
 } // namespace Ui
 
 namespace Main {
+class Domain;
 class Session;
 } // namespace Main
 
@@ -32,6 +39,10 @@ namespace Window {
 
 class Controller;
 class SlideAnimation;
+
+[[nodiscard]] std::unique_ptr<PreLaunchWindow> CreateScopedProfileLockWindow(
+	not_null<Main::Domain*> domain,
+	Ayu::ProfileSets::MigrationController sidecar);
 
 enum class PasscodeAttempt : uchar {
 	Unavailable,

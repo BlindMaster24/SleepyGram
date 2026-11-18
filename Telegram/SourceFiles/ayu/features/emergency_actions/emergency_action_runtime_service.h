@@ -5,6 +5,7 @@
 #include "ayu/features/emergency_actions/emergency_rule_dispatch.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -38,6 +39,8 @@ struct ResetRecoveryReport final {
 
 using LiveInstallationReader = std::function<
 	std::optional<LiveInstallation>()>;
+using RemoteSessionProvider = std::function<std::unique_ptr<RemoteSessionEffect>(
+	const EmergencyActionJournal&)>;
 
 // It accepts only verified fixed-size credentials and the lock-screen token.
 class EmergencyActionRuntimeService final {
@@ -50,6 +53,14 @@ public:
 		LocalAccountEffect &local,
 		SafeDestinationEffect &destination,
 		const CoordinatorClock &clock);
+	EmergencyActionRuntimeService(
+		const RuleConfiguration &configuration,
+		LiveInstallationReader readLiveInstallation,
+		JournalStore &store,
+		RemoteSessionProvider provideRemote,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		const CoordinatorClock &clock);
 
 	[[nodiscard]] RuntimeServiceReport Submit(
 		LockScreenSubmit,
@@ -59,7 +70,8 @@ private:
 	const RuleConfiguration &_configuration;
 	LiveInstallationReader _readLiveInstallation;
 	JournalStore &_store;
-	RemoteSessionEffect &_remote;
+	RemoteSessionEffect *_remote = nullptr;
+	RemoteSessionProvider _provideRemote;
 	LocalAccountEffect &_local;
 	SafeDestinationEffect &_destination;
 	const CoordinatorClock &_clock;

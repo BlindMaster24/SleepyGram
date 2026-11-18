@@ -32,6 +32,7 @@ struct AccountPaths final {
 [[nodiscard]] AccountPaths AccountPathsForDataName(
 	const QString &globalPath,
 	const QString &dataName);
+[[nodiscard]] QString AccountDataName(const QString &dataName, int index);
 
 [[nodiscard]] std::optional<AccountPaths> ScopedAccountPaths(
 	const QString &root,

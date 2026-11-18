@@ -1009,6 +1009,9 @@ void SessionPrivate::restartNow() {
 }
 
 void SessionPrivate::connectToServer(bool afterConfig) {
+	if (_instance->emergencySessionEffectExpired()) {
+		return;
+	}
 	if (afterConfig && (!_testConnections.empty() || _connection)) {
 		return;
 	}
@@ -1392,13 +1395,15 @@ void SessionPrivate::handleReceived() {
 		auto res = HandleResult::Success; // if no need to handle, then succeed
 		auto from = decryptedInts + kEncryptedHeaderIntsCount;
 		auto end = from + (messageLength / kIntSize);
-		auto sfrom = decryptedInts + 4U; // msg_id + seq_no + length + message
-		MTP_LOG(_shiftedDcId, ("Recv: ")
-			+ DumpToText(sfrom, end)
-			+ QString(" (dc:%1,key:%2,session:%3)"
-			).arg(AbstractConnection::ProtocolDcDebugId(getProtocolDcId())
-			).arg(_encryptionKey->keyId()
-			).arg(_sessionId));
+		if (!_instance->isEmergencySessionEffect()) {
+			auto sfrom = decryptedInts + 4U; // msg_id + seq_no + length + message
+			MTP_LOG(_shiftedDcId, ("Recv: ")
+				+ DumpToText(sfrom, end)
+				+ QString(" (dc:%1,key:%2,session:%3)"
+				).arg(AbstractConnection::ProtocolDcDebugId(getProtocolDcId())
+				).arg(_encryptionKey->keyId()
+				).arg(_sessionId));
+		}
 
 		const auto registered = _receivedMessageIds.registerMsgId(
 			msgId,
@@ -2712,6 +2717,9 @@ void SessionPrivate::destroyTemporaryKey() {
 bool SessionPrivate::sendSecureRequest(
 		SerializedRequest &&request,
 		bool needAnyResponse) {
+	if (_instance->emergencySessionEffectExpired()) {
+		return false;
+	}
 	request.addPadding(false);
 
 	uint32 fullSize = request->size();
@@ -2727,13 +2735,15 @@ bool SessionPrivate::sendSecureRequest(
 	memcpy(request->data() + 0, &_sessionSalt, 2 * sizeof(mtpPrime));
 	memcpy(request->data() + 2, &_sessionId, 2 * sizeof(mtpPrime));
 
-	auto from = request->constData() + 4;
-	MTP_LOG(_shiftedDcId, ("Send: ")
-		+ DumpToText(from, from + messageSize)
-		+ QString(" (dc:%1,key:%2,session:%3)"
-		).arg(AbstractConnection::ProtocolDcDebugId(getProtocolDcId())
-		).arg(_encryptionKey->keyId()
-		).arg(_sessionId));
+	if (!_instance->isEmergencySessionEffect()) {
+		auto from = request->constData() + 4;
+		MTP_LOG(_shiftedDcId, ("Send: ")
+			+ DumpToText(from, from + messageSize)
+			+ QString(" (dc:%1,key:%2,session:%3)"
+			).arg(AbstractConnection::ProtocolDcDebugId(getProtocolDcId())
+			).arg(_encryptionKey->keyId()
+			).arg(_sessionId));
+	}
 
 	uchar encryptedSHA256[32];
 	MTPint128 &msgKey(*(MTPint128*)(encryptedSHA256 + 8));
@@ -2757,6 +2767,9 @@ bool SessionPrivate::sendSecureRequest(
 
 	DEBUG_LOG(("MTP Info: sending request, size: %1, num: %2, time: %3").arg(fullSize + 6).arg((*request)[4]).arg((*request)[5]));
 
+	if (_instance->emergencySessionEffectExpired()) {
+		return false;
+	}
 	_connection->setSentEncryptedWithKeyId(_keyId);
 	_connection->sendData(std::move(packet));
 
