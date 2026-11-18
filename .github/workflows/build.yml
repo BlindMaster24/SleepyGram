@@ -320,6 +320,7 @@ jobs:
             Libraries
             ThirdParty
           key: macos-arm64-libraries-v2-${{ steps.cache-key.outputs.key }}
+          restore-keys: macos-arm64-libraries-v2-
 
       - name: Prepare libraries
         id: prepare
