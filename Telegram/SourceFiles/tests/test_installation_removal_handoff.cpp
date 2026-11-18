@@ -235,6 +235,19 @@ void RejectMalformedFrames() {
 	Check("reader-refuses-a-duplicate-artifact-path-in-a-valid-length-frame", !Decode(changed));
 }
 
+void RoundTripCleanupPayload() {
+	auto fixture = Fixture(Kind::LinuxPortable);
+	fixture.receipt.dataCleanup = { 1, 41, 0, 2 };
+	const auto frame = fixture.encode();
+	const auto decoded = frame ? Decode(*frame) : std::nullopt;
+	Check("optional-data-cleanup-round-trips", decoded
+		&& decoded->receipt().dataCleanup == fixture.receipt.dataCleanup);
+	Check("truncated-data-cleanup-is-rejected", frame
+		&& !Decode(std::span(*frame).first(frame->size() - 1)));
+	fixture.receipt.dataCleanup.resize(kMaxInstallationRemovalDataBytes + 1);
+	Check("oversized-data-cleanup-is-rejected", !fixture.encode());
+}
+
 #if defined(__APPLE__) || defined(__linux__)
 bool NativeDeclinesWithoutAck(bool wrongInstall, bool stall = false) {
 #ifdef __APPLE__
@@ -297,6 +310,7 @@ int main() {
 		RoundTrip(Kind::WindowsPortable));
 	RejectUnsafeReceipts();
 	RejectMalformedFrames();
+	RoundTripCleanupPayload();
 #if defined(__APPLE__) || defined(__linux__)
 	Check("native-pipes-emit-no-ack-for-foreign-installation", NativeDeclinesWithoutAck(true));
 	Check("native-pipes-emit-no-ack-for-wrong-issuer-process", NativeDeclinesWithoutAck(false));

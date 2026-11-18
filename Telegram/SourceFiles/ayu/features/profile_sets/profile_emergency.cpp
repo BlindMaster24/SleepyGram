@@ -4,6 +4,7 @@
 #include "ayu/features/emergency_actions/emergency_recovery_record.h"
 #include "ayu/features/emergency_actions/mtproto_session_effect_transport.h"
 #include "ayu/features/profile_sets/profile_emergency_bundle.h"
+#include "ayu/features/profile_sets/profile_installation_removal.h"
 
 #include <QtCore/QFileInfo>
 #include <QtCore/QtEndian>
@@ -72,6 +73,7 @@ public:
 		const EA::EmergencyRecoveryRecord &record,
 		const QByteArray &receipt);
 	EA::EffectResult clear(const EA::AccountId &account) override;
+	[[nodiscard]] bool confirmLocalCleanup();
 	[[nodiscard]] std::optional<QByteArray> finish();
 
 private:
@@ -136,14 +138,21 @@ EA::EffectResult LocalReset::clear(const EA::AccountId &account) {
 	return retireGrants() ? _clear.clear(account) : EA::EffectResult::ConfirmedFailure;
 }
 
-std::optional<QByteArray> LocalReset::finish() {
+bool LocalReset::confirmLocalCleanup() {
 	if (!retireGrants()) {
-		return std::nullopt;
+		return false;
 	}
 	for (const auto &target : _record.accounts) {
 		if (_clear.clear(target.accountId) != EA::EffectResult::ConfirmedSuccess) {
-			return std::nullopt;
+			return false;
 		}
+	}
+	return true;
+}
+
+std::optional<QByteArray> LocalReset::finish() {
+	if (!confirmLocalCleanup()) {
+		return std::nullopt;
 	}
 	const auto current = _workspace.LoadCommitted();
 	const auto checkpoint = current && current->emergencyRecovery == _receipt
@@ -221,6 +230,47 @@ std::optional<QByteArray> RunRecovery(
 	return report.localCleanupComplete ? local.finish() : std::nullopt;
 }
 
+std::optional<EA::EmergencyActionJournal> PrepareRemovalJournal(
+		const MigrationController &workspace,
+		const EA::EmergencyRecoveryRecord &record,
+		const QByteArray &receipt,
+		EA::RemoteSessionEffect *remote) {
+	const auto directory = workspace.emergencyJournalDirectory();
+	if (directory.isEmpty()) {
+		return std::nullopt;
+	}
+	auto store = EA::FileJournalStore(NativePath(directory));
+	const auto lease = store.tryAcquireExecution();
+	if (!lease) {
+		return std::nullopt;
+	}
+	const auto created = store.createAtomically(record.journal.operationId, EA::EncodeJournal(record.journal));
+	auto journal = EA::LoadJournal(store, record.journal.operationId);
+	if (!journal || !EA::MatchesEmergencyRecoveryJournal(record, *journal)) {
+		return std::nullopt;
+	}
+	auto local = LocalReset(workspace, record, receipt);
+	const auto report = EA::RunInstallationCleanupCoordinator(*journal, *lease,
+		(created == EA::JournalCreateResult::Created) ? remote : nullptr, local, Clock());
+	if (!report.localCleanupComplete || report.result == EA::CoordinatorResult::CheckpointFailed
+		|| !local.confirmLocalCleanup()
+		|| EA::BeginEffect(*journal, EA::JournalEffect::InstallationRemoval) != EA::TransitionResult::Applied
+		|| !EA::SaveJournal(store, *journal)) {
+		return std::nullopt;
+	}
+	return journal;
+}
+
+bool RunRemovalRecovery(
+		const MigrationController &workspace,
+		const EA::EmergencyRecoveryRecord &record,
+		const QByteArray &receipt,
+		ApprovedRemovalPackage package,
+		EA::RemoteSessionEffect *remote) {
+	const auto journal = PrepareRemovalJournal(workspace, record, receipt, remote);
+	return journal && LaunchProfileInstallationRemoval(workspace, record, std::move(package), *journal);
+}
+
 } // namespace
 
 std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
@@ -257,7 +307,13 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 	const auto receipt = ByteArrayOf(prepared->bytes);
 	const auto record = EA::DecodeEmergencyRecoveryRecord(BytesOf(receipt),
 		bundle->authority.generation.installationId, admission.toHex().toStdString());
-	if (!record || record->journal.action != EA::EmergencyAction::ResetAccountData) {
+	if (!record) {
+		error = Error::InvalidPlan;
+		return std::nullopt;
+	}
+	const auto removesInstallation = record->journal.action == EA::EmergencyAction::RemoveInstallation;
+	auto package = removesInstallation ? ReadRemovalPackage(workspace, record->journal.installationId) : std::nullopt;
+	if (removesInstallation && (!package || package->digest != ByteArrayOf(record->installationDigest))) {
 		error = Error::InvalidPlan;
 		return std::nullopt;
 	}
@@ -273,6 +329,11 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 		return std::nullopt;
 	}
 	const auto remote = RemoteEffect(workspace, *record, prepared->capsule);
+	if (package) {
+		error = RunRemovalRecovery(workspace, *record, receipt, std::move(*package), remote.get())
+			? Error::InstallationRemovalReady : Error::EmergencyRecoveryRequired;
+		return std::nullopt;
+	}
 	const auto installed = RunRecovery(workspace, *record, receipt, remote.get());
 	if (!installed) {
 		error = Error::EmergencyRecoveryRequired;
@@ -300,16 +361,26 @@ std::optional<OpenedProfileGeneration> SubmitProfileEmergencyOnWorker(
 	return std::nullopt;
 }
 
-bool FinishProfileEmergencyRecovery(const QString &dataDirectory) {
+ProfileEmergencyRecoveryResult FinishProfileEmergencyRecovery(const QString &dataDirectory) {
+	using Result = ProfileEmergencyRecoveryResult;
 	const auto workspace = MigrationController::OpenProfileWorkspace(dataDirectory);
 	const auto committed = workspace ? workspace->LoadCommitted() : std::nullopt;
 	if (!committed) {
-		return false;
+		return Result::Failed;
 	} else if (committed->emergencyRecovery.isEmpty()) {
-		return true;
+		return Result::Ready;
 	}
 	const auto record = OpenRecovery(*committed);
-	return record && RunRecovery(*workspace, *record, committed->emergencyRecovery, nullptr).has_value();
+	if (!record) {
+		return Result::Failed;
+	} else if (record->journal.action == EA::EmergencyAction::RemoveInstallation) {
+		auto package = ReadRemovalPackage(*workspace, record->journal.installationId);
+		return (package && package->digest == ByteArrayOf(record->installationDigest)
+				&& RunRemovalRecovery(*workspace, *record, committed->emergencyRecovery, std::move(*package), nullptr))
+			? Result::InstallationRemovalReady : Result::Failed;
+	}
+	return RunRecovery(*workspace, *record, committed->emergencyRecovery, nullptr)
+		? Result::Ready : Result::Failed;
 }
 
 } // namespace Ayu::ProfileSets

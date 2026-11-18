@@ -53,6 +53,7 @@ enum class ProfileGenerationError : uchar {
 	PublicationUncertain,
 	EmergencyResetComplete,
 	EmergencyRecoveryRequired,
+	InstallationRemovalReady,
 	PasswordInUse,
 };
 

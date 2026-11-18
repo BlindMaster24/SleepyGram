@@ -433,13 +433,16 @@ void Application::run() {
 		const auto committed = workspace->LoadCommitted();
 		const auto emergency = committed && !committed->emergencyRecovery.isEmpty();
 		if (committed) {
+			using Recovery = Ayu::ProfileSets::ProfileEmergencyRecoveryResult;
 			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>(
 				u"Checking local data…"_q);
 			_blockedProfileWindow->show();
-			crl::async([dataDirectory, emergency, done = crl::guard(this, [this](bool result) {
+			crl::async([dataDirectory, emergency, done = crl::guard(this, [this](Recovery result) {
 				if (!Quitting()) {
 					_blockedProfileWindow.reset();
-					if (result) {
+					if (result == Recovery::InstallationRemovalReady) {
+						Quit();
+					} else if (result == Recovery::Ready) {
 						showScopedProfileLock();
 					} else {
 						_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>();
@@ -449,7 +452,7 @@ void Application::run() {
 			})] {
 				const auto result = emergency
 					? Ayu::ProfileSets::FinishProfileEmergencyRecovery(dataDirectory)
-					: Ayu::ProfileSets::FinishProfileRetirement(dataDirectory);
+					: Ayu::ProfileSets::FinishProfileRetirement(dataDirectory) ? Recovery::Ready : Recovery::Failed;
 				crl::on_main([done, result] { done(result); });
 			});
 			return;

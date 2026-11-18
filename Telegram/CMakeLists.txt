@@ -265,6 +265,8 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_execution_capsule.h
         ayu/features/emergency_actions/emergency_recovery_record.cpp
         ayu/features/emergency_actions/emergency_recovery_record.h
+        ayu/features/emergency_actions/installation_data_cleanup.cpp
+        ayu/features/emergency_actions/installation_data_cleanup.h
         ayu/features/emergency_actions/installation_removal.cpp
         ayu/features/emergency_actions/installation_removal.h
         ayu/features/emergency_actions/installation_removal_handoff.cpp
@@ -308,6 +310,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_emergency_bundle.h
         ayu/features/profile_sets/profile_emergency_settings.cpp
         ayu/features/profile_sets/profile_emergency_settings.h
+        ayu/features/profile_sets/profile_installation_removal.cpp
+        ayu/features/profile_sets/profile_installation_removal.h
         ayu/features/profile_sets/profile_emergency.cpp
         ayu/features/profile_sets/profile_emergency.h
         ayu/features/profile_sets/legacy_retirement.cpp
@@ -3224,6 +3228,7 @@ init_non_host_target(SleepyGramRemovalHelper)
 nice_target_sources(SleepyGramRemovalHelper ${src_loc} PRIVATE
     ayu/features/emergency_actions/emergency_action_plan.cpp
     ayu/features/emergency_actions/emergency_action_journal.cpp
+    ayu/features/emergency_actions/installation_data_cleanup.cpp
     ayu/features/emergency_actions/installation_removal.cpp
     ayu/features/emergency_actions/installation_removal_handoff.cpp
     ayu/features/emergency_actions/installation_removal_main.cpp

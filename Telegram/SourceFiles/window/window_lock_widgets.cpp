@@ -304,7 +304,9 @@ void ScopedProfileLockWindow::authenticationDone(
 	}
 	_checking = false;
 	if (!generation) {
-		if (error == ProfileSets::ProfileGenerationError::EmergencyResetComplete) {
+		if (error == GenerationError::InstallationRemovalReady) {
+			Core::Quit();
+		} else if (error == ProfileSets::ProfileGenerationError::EmergencyResetComplete) {
 			cSetPasscodeBadTries(0);
 			showForm(u"Enter your passcode."_q);
 		} else if (error == ProfileSets::ProfileGenerationError::EmergencyRecoveryRequired) {

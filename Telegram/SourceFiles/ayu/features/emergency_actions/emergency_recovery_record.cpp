@@ -140,7 +140,7 @@ std::optional<std::vector<uint8_t>> EncodeRecoveryRecord(
 	const auto sealedKeyring = successor.sealedAccountKeyring;
 	const auto size = kMagic.size() + 3 * kOpaqueIdBytes + 3 * kSizeBytes + 2
 		+ encodedJournal.size() + accounts.size() * kOpaqueIdBytes
-		+ sealedVault.size() + sealedKeyring.size();
+		+ sealedVault.size() + sealedKeyring.size() + successor.installationDigest.size();
 	if (size > kMaxEmergencyRecoveryRecordBytes || sealedVault.empty() || sealedKeyring.empty()
 		|| sealedVault.size() > kMaxEmergencyExecutionSuccessorVaultBytes
 		|| sealedKeyring.size() > kMaxEmergencyExecutionSuccessorKeyringBytes) {
@@ -170,6 +170,7 @@ std::optional<std::vector<uint8_t>> EncodeRecoveryRecord(
 	}
 	writer.blob(sealedVault);
 	writer.blob(sealedKeyring);
+	writer.bytes(successor.installationDigest);
 	return result;
 }
 
@@ -258,7 +259,10 @@ std::optional<EmergencyRecoveryRecord> DecodeEmergencyRecoveryRecord(
 	}
 	const auto vault = reader.blob(kMaxEmergencyExecutionSuccessorVaultBytes);
 	const auto keyring = reader.blob(kMaxEmergencyExecutionSuccessorKeyringBytes);
-	if (vault.empty() || keyring.empty() || !reader.done()) {
+	const auto removal = journal->action == EmergencyAction::RemoveInstallation;
+	const auto installationDigest = removal ? reader.take(kEmergencyInstallationDigestBytes) : std::span<const uint8_t>();
+	if (vault.empty() || keyring.empty() || !reader.done()
+		|| (removal && std::ranges::none_of(installationDigest, [](uint8_t byte) { return byte != 0; }))) {
 		return std::nullopt;
 	}
 	result.phase = (activeGeneration == result.admissionGeneration)
@@ -267,6 +271,7 @@ std::optional<EmergencyRecoveryRecord> DecodeEmergencyRecoveryRecord(
 	result.journal = std::move(*journal);
 	result.sealedProfileVault.assign(vault.begin(), vault.end());
 	result.sealedAccountKeyring.assign(keyring.begin(), keyring.end());
+	result.installationDigest.assign(installationDigest.begin(), installationDigest.end());
 	return result;
 }
 

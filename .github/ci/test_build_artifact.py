@@ -19,6 +19,29 @@ from build_artifact import (
 
 
 class ReleaseInstallerTests(unittest.TestCase):
+    def test_removal_inventory_covers_only_bundle_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / PLATFORMS["macos-arm64"][0]
+            files = [
+                "Contents/Info.plist", "Contents/MacOS/SleepyGram",
+                "Contents/Helpers/SleepyGramRemovalHelper", "Contents/Resources/Telegram.rcc",
+                "Contents/Resources/SleepyGram.icns", "Contents/Resources/LICENSE-SQLCipher.txt",
+                "Contents/_CodeSignature/CodeResources",
+            ]
+            manifest = "Contents/Resources/BuildManifest.json"
+            with ZipFile(archive, "w") as package:
+                for file in files:
+                    package.writestr("SleepyGram.app/" + file, b"fixture")
+                package.writestr("SleepyGram.app/" + manifest, json.dumps({
+                    "schema_version": 1, "platform": "macos-arm64",
+                    "package": {"removal_inventory": files + [manifest]},
+                }))
+            verify_package(archive, "macos-arm64")
+            with ZipFile(archive, "a") as package:
+                package.writestr("SleepyGram.app/Contents/Resources/local-export.txt", b"private")
+            with self.assertRaisesRegex(RuntimeError, "differs from its removal inventory"):
+                verify_package(archive, "macos-arm64")
+
     def test_requires_native_icon_in_the_macos_bundle(self):
         with tempfile.TemporaryDirectory() as temporary:
             archive = Path(temporary) / PLATFORMS["macos-arm64"][0]

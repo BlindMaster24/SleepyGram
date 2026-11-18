@@ -6,7 +6,7 @@
 namespace Ayu::EmergencyActions {
 
 inline constexpr auto kInstallationRemovalHandoffAck = uint8_t('A');
-inline constexpr auto kMaxInstallationRemovalHandoffBytes = size_t(9) * 1024 * 1024;
+inline constexpr auto kMaxInstallationRemovalHandoffBytes = size_t(11) * 1024 * 1024;
 
 using InstallationRemovalHandoffRead = std::function<
 	std::optional<size_t>(std::span<uint8_t>)>;
@@ -51,6 +51,7 @@ private:
 [[nodiscard]] InstallationRemovalResult RunInstallationRemovalHandoff(
 	const InstallationId &expectedInstallation,
 	InstallationRemovalProcessHandle inheritedParent = {},
-	std::chrono::milliseconds timeout = std::chrono::seconds(30));
+	std::chrono::milliseconds timeout = std::chrono::seconds(30),
+	bool requireDataCleanup = false);
 
 } // namespace Ayu::EmergencyActions

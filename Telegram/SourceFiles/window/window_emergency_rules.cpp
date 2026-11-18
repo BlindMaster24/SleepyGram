@@ -219,6 +219,9 @@ const Rules::RemoteSessionPolicy *PolicyFor(
 			}
 		}
 	}
+	if (rule.targetScope == Scope::CurrentInstallation) {
+		return !rule.safeProfileId.valid();
+	}
 	const auto safe = std::ranges::find(
 		snapshot.safeSets, rule.safeProfileId, &EmergencySafeSetChoice::id);
 	return !rule.safeProfileId.valid()
@@ -690,6 +693,9 @@ void EmergencyRulesPanel::appendReview(QVBoxLayout *layout, const DraftRule &dra
 			== end(_snapshot->accounts)) {
 			AddText(layout, u"Account unavailable: %1"_q.arg(QString::fromStdString(id.value)));
 		}
+	}
+	if (rule.targetScope == Scope::CurrentInstallation) {
+		return;
 	}
 	const auto safe = std::ranges::find(
 		_snapshot->safeSets, rule.safeProfileId, &EmergencySafeSetChoice::id);

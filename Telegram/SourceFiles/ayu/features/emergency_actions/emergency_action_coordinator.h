@@ -79,4 +79,11 @@ public:
 	LocalAccountEffect &local,
 	SafeDestinationEffect &destination);
 
+[[nodiscard]] CoordinatorReport RunInstallationCleanupCoordinator(
+	EmergencyActionJournal &journal,
+	const JournalStore::ExecutionLease &lease,
+	RemoteSessionEffect *remote,
+	LocalAccountEffect &local,
+	const CoordinatorClock &clock);
+
 } // namespace Ayu::EmergencyActions

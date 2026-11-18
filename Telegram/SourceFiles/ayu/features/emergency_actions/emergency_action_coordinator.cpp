@@ -134,7 +134,7 @@ CoordinatorReport Run(
 		EmergencyActionJournal &journal,
 		JournalStore &store,
 		LocalAccountEffect &local,
-		SafeDestinationEffect &destination,
+		SafeDestinationEffect *destination,
 		RemoteSessionEffect *remote = nullptr,
 		const CoordinatorClock *clock = nullptr) {
 	auto report = CoordinatorReport();
@@ -142,7 +142,8 @@ CoordinatorReport Run(
 	if (!saved || EncodeJournal(*saved) != EncodeJournal(journal)) {
 		return report;
 	}
-	if (journal.action != EmergencyAction::ResetAccountData) {
+	const auto expected = destination ? EmergencyAction::ResetAccountData : EmergencyAction::RemoveInstallation;
+	if (journal.action != expected) {
 		report.result = CoordinatorResult::UnsupportedAction;
 		return report;
 	}
@@ -200,7 +201,7 @@ CoordinatorReport Run(
 			return failed();
 		}
 	}
-	if (LocalCleanupComplete(journal)
+	if (destination && LocalCleanupComplete(journal)
 		&& CanBeginLocal(journal.safeDestinationActivation)) {
 		if (!Claim(
 				journal,
@@ -212,7 +213,7 @@ CoordinatorReport Run(
 		report.safeDestinationAttempted = true;
 		auto outcome = EffectResult::Unconfirmed;
 		try {
-			outcome = destination.activate(
+			outcome = destination->activate(
 				journal.safeDestination,
 				journal.safeProfileId);
 		} catch (...) {
@@ -239,7 +240,7 @@ CoordinatorReport RunResetCoordinator(
 		LocalAccountEffect &local,
 		SafeDestinationEffect &destination,
 		const CoordinatorClock &clock) {
-	return Run(journal, lease.store(), local, destination, &remote, &clock);
+	return Run(journal, lease.store(), local, &destination, &remote, &clock);
 }
 
 CoordinatorReport ResumeResetCoordinator(
@@ -247,7 +248,16 @@ CoordinatorReport ResumeResetCoordinator(
 		const JournalStore::ExecutionLease &lease,
 		LocalAccountEffect &local,
 		SafeDestinationEffect &destination) {
-	return Run(journal, lease.store(), local, destination);
+	return Run(journal, lease.store(), local, &destination);
+}
+
+CoordinatorReport RunInstallationCleanupCoordinator(
+		EmergencyActionJournal &journal,
+		const JournalStore::ExecutionLease &lease,
+		RemoteSessionEffect *remote,
+		LocalAccountEffect &local,
+		const CoordinatorClock &clock) {
+	return Run(journal, lease.store(), local, nullptr, remote, &clock);
 }
 
 } // namespace Ayu::EmergencyActions

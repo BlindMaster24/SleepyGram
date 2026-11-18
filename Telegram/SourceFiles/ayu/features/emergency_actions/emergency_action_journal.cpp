@@ -214,7 +214,8 @@ bool IsNetworkEffect(JournalEffect effect) {
 
 bool IsIdempotentEffect(JournalEffect effect) {
 	return effect == JournalEffect::LocalDataClear
-		|| effect == JournalEffect::SafeDestinationActivation;
+		|| effect == JournalEffect::SafeDestinationActivation
+		|| effect == JournalEffect::InstallationRemoval;
 }
 
 bool CanBeginEffect(EffectState state, JournalEffect effect) {
@@ -763,7 +764,7 @@ TransitionResult BeginEffect(
 	if ((IsNetworkEffect(effect) && LocalPhaseStarted(journal))
 		|| (effect == JournalEffect::LocalDataClear
 			&& std::ranges::any_of(journal.accounts, RemoteInProgress))
-		|| (effect == JournalEffect::SafeDestinationActivation
+		|| ((effect == JournalEffect::SafeDestinationActivation || effect == JournalEffect::InstallationRemoval)
 			&& !LocalCleanupComplete(journal))) {
 		return TransitionResult::Rejected;
 	}

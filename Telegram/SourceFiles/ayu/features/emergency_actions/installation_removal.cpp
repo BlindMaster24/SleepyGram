@@ -731,7 +731,7 @@ std::optional<Inspection> Inspect(const VerifiedInstallationReceipt &receipt, bo
 	const auto owner = ProcessOwner(GetCurrentProcess());
 	if (receipt.kind != InstallationPackageKind::WindowsPortable
 		|| !SafeIdentity(receipt.installationId.value) || !root || !owner.sid()
-		|| receipt.artifacts.size() > 5 || !WindowsPortablePaths(receipt, executable)) {
+		|| receipt.artifacts.size() > 6 || !WindowsPortablePaths(receipt, executable)) {
 		return std::nullopt;
 	}
 	const auto drive = GetDriveTypeW(root->root_path().c_str());
@@ -836,6 +836,7 @@ std::optional<Digest> TicketAuthentication(
 		std::span<const uint8_t> secret) {
 	if (secret.size() != kInstallationRemovalKeyBytes
 		|| std::ranges::none_of(secret, [](auto byte) { return byte != 0; })
+		|| receipt.dataCleanup.size() > kMaxInstallationRemovalDataBytes
 		|| !SafeIdentity(ticket.operationId.value)) {
 		return std::nullopt;
 	}
@@ -856,6 +857,10 @@ std::optional<Digest> TicketAuthentication(
 		transcript.append(reinterpret_cast<const char*>(file.artifact->digest.data()),
 			file.artifact->digest.size());
 		AppendIdentity(transcript, file.identity);
+	}
+	if (!receipt.dataCleanup.empty()) {
+		AppendString(transcript, std::string_view(
+			reinterpret_cast<const char*>(receipt.dataCleanup.data()), receipt.dataCleanup.size()));
 	}
 	auto result = Digest{};
 	auto size = 0U;
@@ -960,12 +965,15 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 		std::span<const uint8_t> handoffSecret,
 		std::chrono::milliseconds timeout,
 		const std::function<bool()> &acknowledge,
-		InstallationRemovalProcessHandle inheritedParent) {
+		InstallationRemovalProcessHandle inheritedParent,
+		const InstallationRemovalDataEffects &dataEffects) {
 	if (_used.exchange(true) || !expectedInstallation.valid()
 		|| receipt.installationId != expectedInstallation
 		|| !ticket.operationId.valid()
 		|| handoffSecret.size() != kInstallationRemovalKeyBytes
 		|| !acknowledge
+		|| (bool(dataEffects.clear) != !receipt.dataCleanup.empty())
+		|| (bool(dataEffects.finalize) != !receipt.dataCleanup.empty())
 		|| timeout < std::chrono::milliseconds::zero()
 		|| timeout > std::chrono::minutes(5)) {
 		return InstallationRemovalResult::TicketRejected;
@@ -1000,11 +1008,14 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 			? InstallationRemovalResult::ParentStillRunning
 			: InstallationRemovalResult::ParentUnavailable;
 	}
+	if (dataEffects.clear && !dataEffects.clear()) {
+		return InstallationRemovalResult::Partial;
+	}
 	auto ready = Inspect(receipt, true);
 	if (!ready || !MatchesTicket(receipt, *ready, ticket, handoffSecret)) {
 		return InstallationRemovalResult::InstallationChanged;
 	}
-	return RemoveWindowsFiles(*ready)
+	return (RemoveWindowsFiles(*ready) && (!dataEffects.finalize || dataEffects.finalize()))
 		? InstallationRemovalResult::Removed
 		: InstallationRemovalResult::Partial;
 #elif defined(__APPLE__) || defined(__linux__)
@@ -1031,6 +1042,9 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(20));
 	}
+	if (dataEffects.clear && !dataEffects.clear()) {
+		return InstallationRemovalResult::Partial;
+	}
 	const auto ready = Inspect(receipt);
 	if (!ready || !MatchesTicket(receipt, *ready, ticket, handoffSecret)) {
 		return InstallationRemovalResult::InstallationChanged;
@@ -1044,7 +1058,8 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 		&& !RemoveEmptyBundleDirectories(*ready)) {
 		return InstallationRemovalResult::Partial;
 	}
-	return InstallationRemovalResult::Removed;
+	return (!dataEffects.finalize || dataEffects.finalize())
+		? InstallationRemovalResult::Removed : InstallationRemovalResult::Partial;
 #else
 	if (inheritedParent.value) {
 		return InstallationRemovalResult::ParentUnavailable;

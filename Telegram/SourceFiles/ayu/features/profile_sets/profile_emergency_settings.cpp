@@ -5,6 +5,7 @@
 #include "ayu/features/emergency_actions/mtproto_session_effect_transport.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_emergency_bundle.h"
+#include "ayu/features/profile_sets/profile_installation_removal.h"
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
@@ -204,6 +205,7 @@ std::optional<Window::EmergencyRulesSnapshot> LoadSettings(
 		.canSave = true,
 		.canResetSelected = !inventory->accounts.empty(),
 		.canResetAll = !inventory->accounts.empty(),
+		.canRemoveInstallation = ReadRemovalPackage(workspace, inventory->live.id).has_value(),
 		.entries = std::move(access->rules),
 	};
 	for (const auto &[id, account] : inventory->accounts) {
@@ -287,6 +289,13 @@ Result SaveSettings(
 	if (!inventory) {
 		return Result::Unavailable;
 	}
+	const auto removesInstallation = std::ranges::any_of(request.entries, [](const auto &entry) {
+		return entry.rule.action == EA::EmergencyAction::RemoveInstallation;
+	});
+	const auto package = removesInstallation ? ReadRemovalPackage(workspace, inventory->live.id) : std::nullopt;
+	if (removesInstallation && !package) {
+		return Result::Unavailable;
+	}
 	const auto next = MigrationController::NewTransactionId();
 	if (next.isEmpty()) {
 		return Result::Failed;
@@ -301,8 +310,8 @@ Result SaveSettings(
 	auto capsules = std::map<QByteArray, QByteArray>();
 	for (auto &entry : request.entries) {
 		auto &rule = entry.rule;
-		if (rule.action != EA::EmergencyAction::ResetAccountData
-			|| rule.targetScope == EA::TargetScope::CurrentInstallation
+		const auto uninstall = rule.action == EA::EmergencyAction::RemoveInstallation;
+		if (uninstall != (rule.targetScope == EA::TargetScope::CurrentInstallation)
 			|| entry.name.trimmed().isEmpty()) {
 			return Result::Unavailable;
 		}
@@ -334,7 +343,7 @@ Result SaveSettings(
 		}
 		const auto preview = EA::PreviewEmergencyRule(config, id, inventory->live, operation);
 		if (!preview || !EA::ConfirmEmergencyRule(config, *preview, inventory->live, true)
-			|| preview->plan.accounts.empty() || !preview->plan.selectedAccountIdsNotLive.empty()) {
+			|| (!uninstall && preview->plan.accounts.empty()) || !preview->plan.selectedAccountIdsNotLive.empty()) {
 			return Result::CredentialsRejected;
 		}
 		const auto &plan = preview->plan;
@@ -373,6 +382,7 @@ Result SaveSettings(
 		const auto successor = EA::EmergencyExecutionSuccessor{
 			.transactionId = MigrationController::NewTransactionId().toHex().toStdString(),
 			.sealedProfileVault = BytesOf(vault), .sealedAccountKeyring = BytesOf(keyring),
+			.installationDigest = uninstall ? BytesOf(package->digest) : std::span<const uint8_t>(),
 		};
 		auto safe = std::optional<EA::EmergencyExecutionSafeDestination>();
 		auto safeCredential = QByteArray();

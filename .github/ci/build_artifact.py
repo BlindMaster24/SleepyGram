@@ -248,6 +248,22 @@ def create_manifest(args: argparse.Namespace) -> None:
         "package": {"archive": PLATFORMS[args.platform][0]},
     }
     output = args.output.resolve()
+    if args.macos_bundle is not None:
+        bundle = args.macos_bundle.resolve()
+        if args.platform != "macos-arm64" or bundle.name != "SleepyGram.app":
+            raise RuntimeError("Expected a macOS SleepyGram bundle for the removal inventory.")
+        contents = bundle / "Contents"
+        if output != contents / "Resources" / "BuildManifest.json" or not contents.is_dir():
+            raise RuntimeError("The removal inventory must be sealed into the bundle manifest.")
+        inventory = {"Contents/Resources/BuildManifest.json", "Contents/_CodeSignature/CodeResources"}
+        for entry in contents.rglob("*"):
+            if entry.is_symlink() or not (entry.is_file() or entry.is_dir()):
+                raise RuntimeError("The removal inventory requires regular files and directories.")
+            if entry.is_file():
+                inventory.add(safe_member(entry.relative_to(bundle).as_posix()))
+        if len(inventory) > 2048:
+            raise RuntimeError("The removal inventory exceeds the supported file count.")
+        manifest["package"]["removal_inventory"] = sorted(inventory)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(f"Wrote {output.name} for {args.platform} at {source_sha}")
@@ -319,6 +335,17 @@ def verify_package(archive: Path, platform_name: str) -> dict[str, object]:
         raise RuntimeError("Artifact manifest is not valid JSON.") from error
     if manifest.get("schema_version") != 1 or manifest.get("platform") != platform_name:
         raise RuntimeError("Artifact manifest does not match its platform.")
+    package = manifest.get("package", {})
+    if platform_name == "macos-arm64" and isinstance(package, dict) and "removal_inventory" in package:
+        inventory = package["removal_inventory"]
+        if not isinstance(inventory, list) or len(inventory) > 2048 or any(
+            not isinstance(file, str) or not file.startswith("Contents/") or safe_member(file) != file
+            for file in inventory
+        ):
+            raise RuntimeError("Invalid removal inventory for the macOS bundle.")
+        actual = {name.removeprefix("SleepyGram.app/") for name in names if name.startswith("SleepyGram.app/")}
+        if len(inventory) != len(actual) or set(inventory) != actual:
+            raise RuntimeError("The macOS bundle differs from its removal inventory.")
     return manifest
 
 
@@ -409,6 +436,7 @@ def parser() -> argparse.ArgumentParser:
     create.add_argument("--output", type=Path, required=True)
     create.add_argument("--qt-version")
     create.add_argument("--container-image")
+    create.add_argument("--macos-bundle", type=Path)
     create.set_defaults(function=create_manifest)
     package = commands.add_parser("verify-package", help="check archive structure and manifest")
     package.add_argument("--platform", choices=sorted(PLATFORMS), required=True)

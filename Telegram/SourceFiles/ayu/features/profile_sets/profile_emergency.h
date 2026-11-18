@@ -11,6 +11,12 @@ namespace Ayu::ProfileSets {
 	const DerivedCredential &credential,
 	ProfileGenerationError &error);
 
-[[nodiscard]] bool FinishProfileEmergencyRecovery(const QString &dataDirectory);
+enum class ProfileEmergencyRecoveryResult : uint8_t {
+	Failed,
+	Ready,
+	InstallationRemovalReady,
+};
+
+[[nodiscard]] ProfileEmergencyRecoveryResult FinishProfileEmergencyRecovery(const QString &dataDirectory);
 
 } // namespace Ayu::ProfileSets

@@ -41,6 +41,7 @@ enum class InstallationRemovalResult : uint8_t {
 };
 
 inline constexpr auto kInstallationRemovalKeyBytes = size_t(32);
+inline constexpr auto kMaxInstallationRemovalDataBytes = size_t(2) * 1024 * 1024;
 using InstallationArtifactDigest = std::array<uint8_t, kInstallationRemovalKeyBytes>;
 
 struct VerifiedInstallationArtifact final {
@@ -53,6 +54,7 @@ struct VerifiedInstallationReceipt final {
 	InstallationPackageKind kind = InstallationPackageKind::Unknown;
 	std::filesystem::path packageRoot;
 	std::vector<VerifiedInstallationArtifact> artifacts;
+	std::vector<uint8_t> dataCleanup;
 };
 
 struct InstallationRemovalTicket final {
@@ -64,6 +66,11 @@ struct InstallationRemovalTicket final {
 
 struct InstallationRemovalProcessHandle final {
 	uintptr_t value = 0;
+};
+
+struct InstallationRemovalDataEffects final {
+	std::function<bool()> clear;
+	std::function<bool()> finalize;
 };
 
 [[nodiscard]] InstallationRemovalCapability InspectInstallationRemoval(
@@ -89,7 +96,8 @@ public:
 		std::span<const uint8_t> handoffSecret,
 		std::chrono::milliseconds timeout,
 		const std::function<bool()> &acknowledge,
-		InstallationRemovalProcessHandle inheritedParent = {});
+		InstallationRemovalProcessHandle inheritedParent = {},
+		const InstallationRemovalDataEffects &dataEffects = {});
 
 private:
 	std::atomic_bool _used = false;

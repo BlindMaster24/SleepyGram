@@ -30,6 +30,7 @@ struct EmergencyRecoveryRecord final {
 	std::vector<ScopedAccountLocator> accounts;
 	std::vector<uint8_t> sealedProfileVault;
 	std::vector<uint8_t> sealedAccountKeyring;
+	std::vector<uint8_t> installationDigest;
 };
 
 [[nodiscard]] std::optional<PreparedEmergencyRecoveryRecord> PrepareEmergencyRecoveryRecord(

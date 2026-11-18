@@ -1,6 +1,8 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/emergency_actions/installation_removal_handoff.h"
 
+#include "ayu/features/emergency_actions/installation_data_cleanup.h"
+
 #include <openssl/crypto.h>
 
 #include <algorithm>
@@ -85,8 +87,8 @@ bool ValidTicket(
 
 size_t ArtifactLimit(Kind kind) {
 	switch (kind) {
-	case Kind::LinuxPortable: return 4;
-	case Kind::WindowsPortable: return 5;
+	case Kind::LinuxPortable: return 5;
+	case Kind::WindowsPortable: return 6;
 	case Kind::MacBundle: return kMaxArtifacts;
 	default: return 0;
 	}
@@ -401,12 +403,16 @@ bool WriteInstallationRemovalHandoff(
 	const auto root = WirePath(receipt.packageRoot);
 	if (!write || !ValidId(receipt.installationId.value)
 		|| !ValidTicket(ticket, kind, secret) || !root || !ValidRoot(kind, *root)
+		|| receipt.dataCleanup.size() > kMaxInstallationRemovalDataBytes
 		|| receipt.artifacts.empty() || receipt.artifacts.size() > ArtifactLimit(kind)) {
 		return false;
 	}
 	auto size = kHeaderBytes + 1 + 3 * kLengthBytes + 2 + 2 * 8
 		+ receipt.installationId.value.size() + root->size() + ticket.operationId.value.size()
 		+ ticket.authentication.size() + secret.size();
+	if (!receipt.dataCleanup.empty()) {
+		size += kLengthBytes + receipt.dataCleanup.size();
+	}
 	auto artifacts = std::vector<WireArtifact>();
 	for (const auto &artifact : receipt.artifacts) {
 		auto path = WirePath(artifact.relativePath);
@@ -447,6 +453,9 @@ bool WriteInstallationRemovalHandoff(
 	writer.number(ticket.parentCreationTime, 8);
 	writer.bytes(ticket.authentication);
 	writer.bytes(secret);
+	if (!receipt.dataCleanup.empty()) {
+		writer.string(receipt.dataCleanup);
+	}
 	return buffer.data.size() == size
 		&& Transfer(std::span<const uint8_t>(buffer.data), write);
 }
@@ -515,6 +524,17 @@ std::optional<InstallationRemovalHandoff> ReadInstallationRemovalHandoff(
 	const auto creation = reader.number(8);
 	const auto proof = reader.take(InstallationArtifactDigest().size());
 	const auto secret = reader.take(kInstallationRemovalKeyBytes);
+	if (!reader.done()) {
+		const auto size = reader.number(kLengthBytes);
+		if (!size || !*size || *size > kMaxInstallationRemovalDataBytes) {
+			return std::nullopt;
+		}
+		const auto data = reader.take(size_t(*size));
+		if (data.empty()) {
+			return std::nullopt;
+		}
+		receipt.dataCleanup.assign(data.begin(), data.end());
+	}
 	if (!RequiredArtifacts(kind, paths) || !ValidId(operation) || !pid || !creation
 		|| !Nonzero(proof) || !reader.done()) {
 		return std::nullopt;
@@ -537,7 +557,8 @@ std::optional<InstallationRemovalHandoff> ReadInstallationRemovalHandoff(
 InstallationRemovalResult RunInstallationRemovalHandoff(
 		const InstallationId &expectedInstallation,
 		InstallationRemovalProcessHandle inheritedParent,
-		std::chrono::milliseconds timeout) {
+		std::chrono::milliseconds timeout,
+		bool requireDataCleanup) {
 	if (!ValidId(expectedInstallation.value) || timeout < std::chrono::milliseconds::zero()
 		|| timeout > std::chrono::minutes(5)) {
 		return InstallationRemovalResult::TicketRejected;
@@ -628,6 +649,22 @@ InstallationRemovalResult RunInstallationRemovalHandoff(
 		|| !IsNativePackage(handoff->receipt().kind)) {
 		return InstallationRemovalResult::TicketRejected;
 	}
+	const auto &receipt = handoff->receipt();
+	const auto hasData = !receipt.dataCleanup.empty();
+	const auto data = hasData ? DecodeInstallationDataCleanupPlan(receipt.dataCleanup) : std::nullopt;
+	if ((requireDataCleanup && !hasData)
+		|| (hasData && (!data || data->installationId != expectedInstallation))) {
+		return InstallationRemovalResult::TicketRejected;
+	}
+	auto effects = InstallationRemovalDataEffects();
+	if (data) {
+		const auto apply = [&](InstallationDataCleanupPhase phase) {
+			return ClearInstallationDataFiles(expectedInstallation, data->dataDirectory, *data, phase)
+				== InstallationDataCleanupResult::Complete;
+		};
+		effects.clear = [apply] { return apply(InstallationDataCleanupPhase::AfterExit); };
+		effects.finalize = [apply] { return apply(InstallationDataCleanupPhase::FinalizeRecovery); };
+	}
 	auto receiver = InstallationRemovalReceiver();
 	return receiver.RemoveAfterParentExit(
 		expectedInstallation,
@@ -636,7 +673,8 @@ InstallationRemovalResult RunInstallationRemovalHandoff(
 		handoff->secret(),
 		timeout,
 		acknowledge,
-		inheritedParent);
+		inheritedParent,
+		effects);
 #endif
 }
 

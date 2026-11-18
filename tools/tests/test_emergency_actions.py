@@ -18,6 +18,7 @@ TESTS = (
     "emergency_action_runtime_service",
     "emergency_execution_capsule",
     "emergency_recovery_record",
+    "installation_data_cleanup",
     "installation_removal",
     "installation_removal_handoff",
     "lock_screen_submission",

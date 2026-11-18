@@ -13,6 +13,7 @@ inline constexpr auto kMaxEmergencyExecutionAccounts = size_t(64);
 inline constexpr auto kMaxEmergencyExecutionSuccessorVaultBytes = size_t(80) * 1024 * 1024;
 inline constexpr auto kMaxEmergencyExecutionSuccessorKeyringBytes = size_t(4) * 1024 * 1024;
 inline constexpr auto kMaxEmergencyExecutionSafeGrantBytes = size_t(4) * 1024 * 1024;
+inline constexpr auto kEmergencyInstallationDigestBytes = size_t(32);
 
 enum class EmergencyScopedEnvironment : uint8_t {
 	Production = 1,
@@ -35,6 +36,7 @@ struct EmergencyExecutionSuccessor final {
 	std::string transactionId;
 	std::span<const uint8_t> sealedProfileVault;
 	std::span<const uint8_t> sealedAccountKeyring;
+	std::span<const uint8_t> installationDigest;
 };
 
 struct EmergencyExecutionSafeDestination final {

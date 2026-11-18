@@ -50,7 +50,7 @@ int RunHelper(
 	const auto duration = Number(delay);
 	return int((duration && *duration && *duration <= 300'000)
 		? RunInstallationRemovalHandoff(
-			Id(installation), parent, std::chrono::milliseconds(*duration))
+			Id(installation), parent, std::chrono::milliseconds(*duration), true)
 		: InstallationRemovalResult::TicketRejected);
 }
 

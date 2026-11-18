@@ -539,13 +539,14 @@ jobs:
             echo "::error::SleepyGram main executable must be arm64 only, found: $main_archs"
             exit 1
           fi
+          cp tdesktop/Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$app/Contents/Resources/"
           python3 tdesktop/.github/ci/build_artifact.py create \
             --platform macos-arm64 \
             --repo-root tdesktop \
             --build-dir tdesktop/out/Release \
             --output "$app/Contents/Resources/BuildManifest.json" \
-            --qt-version "$CI_QT_VERSION"
-          cp tdesktop/Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$app/Contents/Resources/"
+            --qt-version "$CI_QT_VERSION" \
+            --macos-bundle "$app"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
           ditto -c -k --sequesterRsrc --keepParent "$app" "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"

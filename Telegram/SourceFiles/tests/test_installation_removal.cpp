@@ -65,9 +65,9 @@ std::optional<EmergencyActionJournal> CompletedCleanup(bool finished) {
 	auto journal = MakeJournal(BuildDryRunPlan(OperationId("closed-and-cleared"), rule, live));
 	if (!journal || !FinishRemotePhase(*journal)
 		|| BeginEffect(*journal, JournalEffect::LocalDataClear, account) != TransitionResult::Applied
-		|| (finished && ResolveEffect(*journal, JournalEffect::LocalDataClear,
-			EffectResult::ConfirmedSuccess, account) != TransitionResult::Applied)
-		|| BeginEffect(*journal, JournalEffect::InstallationRemoval) != TransitionResult::Applied) {
+		|| (finished && (ResolveEffect(*journal, JournalEffect::LocalDataClear,
+			EffectResult::ConfirmedSuccess, account) != TransitionResult::Applied
+			|| BeginEffect(*journal, JournalEffect::InstallationRemoval) != TransitionResult::Applied))) {
 		return std::nullopt;
 	}
 	return journal;

@@ -150,6 +150,10 @@ bool ValidPayload(
 		|| successor.sealedProfileVault.size() > kMaxEmergencyExecutionSuccessorVaultBytes
 		|| successor.sealedAccountKeyring.empty()
 		|| successor.sealedAccountKeyring.size() > kMaxEmergencyExecutionSuccessorKeyringBytes
+		|| (plan.action == EmergencyAction::RemoveInstallation
+			? (successor.installationDigest.size() != kEmergencyInstallationDigestBytes
+				|| std::ranges::none_of(successor.installationDigest, [](uint8_t byte) { return byte != 0; }))
+			: !successor.installationDigest.empty())
 		|| (safeDestination
 			&& (plan.safeDestination != SafeDestinationKind::Profile
 				|| safeDestination->profileId != plan.safeProfileId
@@ -423,6 +427,7 @@ std::optional<SealedEmergencyExecutionCapsule> SealEmergencyExecutionCapsule(
 		writer.string(safeDestination->profileId.value);
 		writer.blob(safeDestination->sealedSetGrant);
 	}
+	writer.bytes(successor.installationDigest);
 	auto result = SealedEmergencyExecutionCapsule();
 	result.bytes.resize(kOverhead + plaintext.bytes.size());
 	auto buffer = std::span(result.bytes);
@@ -515,6 +520,10 @@ std::optional<OpenedEmergencyExecutionCapsule> OpenEmergencyExecutionCapsule(
 			|| !reader.blob(safe.sealedSetGrant, kMaxEmergencyExecutionSafeGrantBytes)) {
 			return std::nullopt;
 		}
+	}
+	if (plan.action == EmergencyAction::RemoveInstallation
+		&& !reader.bytes(successor.installationDigest, kEmergencyInstallationDigestBytes)) {
+		return std::nullopt;
 	}
 	if (!reader.finished()
 		|| !ValidPayload(generation, plan, data->accounts, successor, data->safeDestination)) {
