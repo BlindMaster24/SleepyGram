@@ -143,9 +143,7 @@ void BuildAvatarCorners(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 
 	auto *previewRaw = static_cast<AvatarCornersPreview*>(nullptr);
 	builder.add([&](const Builder::WidgetContext &ctx) -> SectionBuilder::WidgetToAdd {
-		auto preview = object_ptr<AvatarCornersPreview>(
-			ctx.container,
-			controller);
+		auto preview = object_ptr<AvatarCornersPreview>(ctx.container);
 		previewRaw = preview.data();
 		const auto vMargin = st::settingsButtonNoIcon.padding
 			- st::defaultDialogRow.padding;

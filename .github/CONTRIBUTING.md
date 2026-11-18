@@ -4,7 +4,7 @@ This document describes how you can contribute to SleepyGram Desktop.
 
 ## What contributions are accepted
 
-We accept focused bug fixes, build fixes, documentation improvements, and feature work that fits the SleepyGram direction: keeping useful AyuGram-style features working on top of current Telegram Desktop releases.
+We accept focused bug fixes, build fixes, documentation improvements, and feature work that fits the SleepyGram direction: keeping privacy and customization features working on top of current Telegram Desktop releases.
 
 Feature ideas are welcome in [issues](https://github.com/slpkbt/SleepyGram/issues). Keep requests concrete and explain the use case.
 
@@ -14,16 +14,7 @@ See the [build documentation](https://github.com/slpkbt/SleepyGram/blob/dev/docs
 
 ## Upstreams
 
-SleepyGram tracks two upstreams:
-
-- [Telegram Desktop](https://github.com/telegramdesktop/tdesktop) for the base client
-- [AyuGram Desktop](https://github.com/AyuGram/AyuGramDesktop) for the feature set inherited by SleepyGram
-
-When syncing manually, keep changes split clearly:
-
-- Telegram Desktop version syncs
-- AyuGram feature fixes
-- SleepyGram branding and product changes
+The desktop client tracks [Telegram Desktop](https://github.com/telegramdesktop/tdesktop). See [LEGAL](../LEGAL) for source attribution.
 
 ## Pull requests
 

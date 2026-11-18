@@ -32,7 +32,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
-#include "ayu/ui/ayu_logo.h"
 #include "styles/style_ayu_icons.h"
 
 
@@ -117,17 +116,17 @@ bool DarkTasbarValueValid/* = false*/;
 	static auto ScaledLogoDark = base::flat_map<int, QImage>();
 	static auto ScaledLogoLight = base::flat_map<int, QImage>();
 
-	static auto lastUsedIcon = AyuAssets::currentAppLogoName();
+	const auto &settings = AyuSettings::getInstance();
+	static auto lastUsedIcon = settings.appIcon();
 
-	if (lastUsedIcon != AyuAssets::currentAppLogoName()) {
-		lastUsedIcon = AyuAssets::currentAppLogoName();
+	if (lastUsedIcon != settings.appIcon()) {
+		lastUsedIcon = settings.appIcon();
 		ScaledLogo = base::flat_map<int, QImage>();
 		ScaledLogoNoMargin = base::flat_map<int, QImage>();
 		ScaledLogoDark = base::flat_map<int, QImage>();
 		ScaledLogoLight = base::flat_map<int, QImage>();
 	}
 
-	const auto &settings = AyuSettings::getInstance();
 	if (settings.hideNotificationBadge()) {
 		args.count = 0;
 	}

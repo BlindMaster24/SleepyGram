@@ -227,8 +227,9 @@ QIcon CreateIcon(Main::Session *session, bool returnNullIfDefault) {
 		return supportIcon;
 	}
 
-	const auto officialIcon = QIcon(
-		Ui::PixmapFromImage(base::duplicate(Logo())));
+	const auto &custom = OverridenIcon();
+	const auto officialIcon = QIcon(Ui::PixmapFromImage(
+		custom.isNull() ? Logo() : QImage(custom)));
 	if (!officialIcon.isNull() || returnNullIfDefault) {
 		return officialIcon;
 	}

@@ -1,5 +1,5 @@
 <RCC>
   <qresource prefix="/gui">
-    <file alias="art/icon_round512@2x.png">../../art/icon_round512@2x.png</file>
+    <file alias="art/icon_round512@2x.png">../../art/sleepygram/round.png</file>
   </qresource>
 </RCC>

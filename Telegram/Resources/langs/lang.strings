@@ -9216,7 +9216,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_CategoryGeneral" = "General";
 "ayu_CategoryAppearance" = "Appearance";
 "ayu_CategoryChats" = "Chats";
-"ayu_CategoryOther" = "Other";
 "ayu_CategoryGhostMode" = "Ghost Mode";
 "ayu_CategorySpy" = "Spy";
 "ayu_CategoryFilters" = "Filters";
@@ -9302,9 +9301,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_TranslationProvider" = "Translation Provider";
 "ayu_LinksHeader" = "Links";
 "ayu_LinksChannel" = "Channel";
-"ayu_LinksChats" = "Chats";
-"ayu_LinksTranslate" = "Translate";
-"ayu_LinksDocumentation" = "Documentation";
+"sleepy_source_code" = "Source Code";
+"sleepy_report_issue" = "Report an Issue";
+"sleepy_releases" = "SleepyGram Releases";
+"sleepy_avatar_preview" = "Preview avatar shape";
+"sleepy_archive_and_transfer" = "Archive and Transfer";
+"sleepy_maintenance" = "Maintenance";
 "ayu_CategoriesHeader" = "Categories";
 "ayu_CrashReporting" = "Crash Reporting";
 "ayu_CrashReportingDescription" = "When this option is enabled, you'll be prompted to send a report after the app crashes. You can decide whether to send it or not.";
@@ -9451,15 +9453,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_FiltersClearPopupActionText" = "Clear";
 "ayu_FiltersClearPopupAltActionText" = "Clear unknown";
 "ayu_AppIconHeader" = "App Icon";
-"ayu_IconDefault" = "Default";
-"ayu_IconAlternative" = "SleepyGram Alt";
-"ayu_IconDiscord" = "Discord";
-"ayu_IconSpotify" = "Spotify";
-"ayu_IconExtera" = "extera";
-"ayu_IconNothing" = "Nothing";
-"ayu_IconBard" = "Google Bard";
-"ayu_IconYaPlus" = "Yandex Plus";
-"ayu_IconAyuTyan" = "AyuTyan";
 "ayu_WALMode" = "Enable WAL mode";
 "ayu_PushNotificationCount" = "FCM notifications received";
 "ayu_AyuAttachments" = "SleepyGram Attachments Folder";
@@ -9533,7 +9526,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_WhyHiddenMenuText" = "Why hidden";
 "ayu_WhyHiddenDialogFilter" = "Hidden by this chat's filter: {rule}";
 "ayu_WhyHiddenSharedFilter" = "Hidden by a shared filter: {rule}";
-"ayu_WhyHiddenBlocked" = "Hidden because the sender is blocked and AyuGram is set to hide blocked senders.";
+"ayu_WhyHiddenBlocked" = "Hidden because the sender is blocked and SleepyGram is set to hide blocked senders.";
 "ayu_WhyHiddenShadowBan" = "Hidden by a local shadow ban.";
 "ayu_WhyHiddenNoLongerApplies" = "This message is no longer hidden by an active filter.";
 "ayu_OpenFilterSettings" = "Open filter settings";
@@ -9567,7 +9560,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_SuggestGhostModeStoryActionTextYes" = "Yes";
 "ayu_SuggestGhostModeStoryActionTextNo" = "No";
 "ayu_FirstLaunchAlert" = "SleepyGram is **free** software and should only be obtained from our **official sources**. You assume **full responsibility** for using this application with your account.";
-"ayu_ExteraChatsAlert" = "Don't ask questions related to **SleepyGram** in **exteraGram** chats.";
 "ayu_HideNextViewsDescriptionAyu" = "Hide my views forever, until Ghost Mode is disabled.";
 "ayu_EnableGhostModeStories" = "Enable Ghost Mode";
 "ayu_GhostModeIsActive" = "Ghost Mode is Active";
@@ -9645,13 +9637,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_MutualContactInfo" = "This contact is mutual.";
 "ayu_SessionInfoOfficialApp" = "Official app";
 "ayu_SettingsWatermark" = "SleepyGram is maintained by SleepyGram.";
-"ayu_SettingsDescription" = "Telegram Desktop fork focused on customization and ToS-breaking features.";
+"ayu_SettingsDescription" = "A customizable Telegram client with Ghost Mode and a local message archive.";
 "ayu_ConfirmationSticker" = "Do you want to send this sticker?";
 "ayu_ConfirmationGIF" = "Do you want to send this GIF?";
 "ayu_ConfirmationVoice" = "Do you want to send this voice message?";
 "ayu_ConfirmationRound" = "Do you want to send this round video?";
-"ayu_IntroAbout" = "Welcome to the SleepyGram Desktop.\nMake Telegram your own.";
-"ayu_AboutText1" = "ToS breaking Telegram client based on {api_link}.";
+"ayu_IntroAbout" = "Welcome to SleepyGram Desktop.\nMake Telegram your own.";
+"ayu_AboutText1" = "SleepyGram is a desktop messaging client built on the {api_link}.";
 "ayu_UpdateAyuGram" = "Update SleepyGram";
 "ayu_UtilityRestartRequired" = "The app will close in 5 seconds.";
 

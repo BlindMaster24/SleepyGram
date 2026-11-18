@@ -7,25 +7,24 @@
 #pragma once
 
 #include "ui/rp_widget.h"
-#include "ui/effects/animations.h"
 
-class IconPicker : public Ui::RpWidget
-{
+class IconPicker final : public Ui::RpWidget {
 public:
-	IconPicker(QWidget *parent);
-	~IconPicker() = default;
-
-	static constexpr int kColumns = 4;
+	explicit IconPicker(QWidget *parent);
 
 protected:
+	bool event(QEvent *e) override;
 	void paintEvent(QPaintEvent *e) override;
 	void mousePressEvent(QMouseEvent *e) override;
+	void keyPressEvent(QKeyEvent *e) override;
 
 private:
-	void drawIcon(QPainter &p, const QImage &icon, int x, int y, float strokeOpacity);
-	[[nodiscard]] int cellWidth() const;
+	static constexpr auto kIconCount = 5;
 
-	Ui::Animations::Simple _animation;
-	QString _wasSelected;
-	std::unordered_map<QString, QImage> _cachedIcons;
+	[[nodiscard]] QRect iconRect(int index) const;
+	[[nodiscard]] int iconAt(QPoint position) const;
+	void selectIcon(int index);
+
+	std::array<QImage, kIconCount> _images;
+
 };

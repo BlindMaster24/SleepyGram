@@ -8,114 +8,81 @@
 
 #include "ayu/ayu_settings.h"
 #include "styles/style_ayu_styles.h"
-#include "ui/rect.h"
 
-#include <QSvgRenderer>
-
-static QString LAST_LOADED_NAME;
-static QImage LAST_LOADED;
-static QImage LAST_LOADED_PAD;
+#include <QtCore/QFile>
+#include <QtCore/QSaveFile>
 
 namespace AyuAssets {
+namespace {
+
+[[nodiscard]] QString resourcePath(const QString &name, const QString &extension) {
+	return u":/gui/art/sleepygram/"_q + name + extension;
+}
+
+} // namespace
+
+const QString &normalizeIcon(const QString &name) {
+	if (name == MOONLIGHT_ICON) {
+		return MOONLIGHT_ICON;
+	} else if (name == MIDNIGHT_ICON) {
+		return MIDNIGHT_ICON;
+	} else if (name == AURORA_ICON) {
+		return AURORA_ICON;
+	} else if (name == DUSK_ICON) {
+		return DUSK_ICON;
+	}
+	return DEFAULT_ICON;
+}
+
+const QImage &brandLogo() {
+	static const auto logo = QImage(u":/gui/art/sleepygram_1024.png"_q);
+	return logo;
+}
 
 QString appIcoPath() {
-	const auto &settings = AyuSettings::getInstance();
 	return cWorkingDir()
-		+ u"tdata/AyuGram-"_q
-		+ settings.appIcon()
+		+ u"tdata/SleepyGram-"_q
+		+ AyuSettings::getInstance().appIcon()
 		+ u".ico"_q;
 }
 
 void loadAppIco() {
-	const auto &settings = AyuSettings::getInstance();
-	const auto iconPath = appIcoPath();
-
-	auto f = QFile(iconPath);
-	if (f.exists()) {
-		f.setPermissions(QFile::WriteOther);
-		f.remove();
+	const auto &name = AyuSettings::getInstance().appIcon();
+	auto source = QFile(name == DEFAULT_ICON
+		? u":/gui/art/icon256.ico"_q
+		: resourcePath(name, u".ico"_q));
+	if (!source.open(QIODevice::ReadOnly)) {
+		return;
 	}
-	f.close();
-	QFile::copy(qsl(":/gui/art/ayu/%1/app_icon.ico").arg(settings.appIcon()), iconPath);
-}
-
-QImage CreateImage(const QString &name, const QSize resultImageSize, const int padding = 0) {
-	const auto iconSize = resultImageSize.shrunkBy(QMargins(padding, padding, padding, padding));
-
-	const auto pngPath = qsl(":/gui/art/ayu/%1/app.png").arg(name);
-	if (QFile::exists(pngPath)) {
-		const auto loaded = QImage(pngPath).scaled(iconSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-		auto res = QImage(
-			resultImageSize * style::DevicePixelRatio(),
-			QImage::Format_ARGB32_Premultiplied);
-		res.setDevicePixelRatio(style::DevicePixelRatio());
-		res.fill(Qt::transparent);
-		{
-			auto p = QPainter(&res);
-			p.drawImage(QRect(padding, padding, iconSize.width(), iconSize.height()), loaded);
-		}
-		return res;
-	}
-
-	const auto svgPath = qsl(":/gui/art/ayu/%1/app.svg").arg(name);
-	if (!QFile::exists(svgPath)) {
-		return {};
-	}
-
-	auto svg = QSvgRenderer(svgPath);
-	auto image = QImage(
-		resultImageSize * style::DevicePixelRatio(),
-		QImage::Format_ARGB32_Premultiplied);
-	image.setDevicePixelRatio(style::DevicePixelRatio());
-	image.fill(Qt::transparent);
-	{
-		auto p = QPainter(&image);
-
-		QPainterPath path;
-		path.addRoundedRect(
-			QRect(padding, padding, iconSize.width(), iconSize.height()),
-			iconSize.width() / 2.0f,
-			iconSize.height() / 2.0f
-		);
-
-		p.save();
-
-		p.setRenderHint(QPainter::Antialiasing, true);
-		p.setClipPath(path);
-		p.setRenderHint(QPainter::Antialiasing, false);
-
-		svg.render(&p, QRect(padding, padding, iconSize.width(), iconSize.height()));
-
-		p.restore();
-	}
-	return image;
-}
-
-void loadIcons() {
-	const auto &settings = AyuSettings::getInstance();
-	if (LAST_LOADED_NAME != settings.appIcon()) {
-		LAST_LOADED_NAME = settings.appIcon();
-		LAST_LOADED = CreateImage(settings.appIcon(), Size(256));
-		LAST_LOADED_PAD = CreateImage(settings.appIcon(), Size(256), 12);
+	const auto bytes = source.readAll();
+	auto destination = QSaveFile(appIcoPath());
+	if (bytes.isEmpty()
+		|| !destination.open(QIODevice::WriteOnly)
+		|| destination.write(bytes) != bytes.size()
+		|| !destination.commit()) {
+		LOG(("Could not save SleepyGram taskbar icon."));
 	}
 }
 
 QImage loadPreview(const QString &name) {
-	return CreateImage(name, Size(st::iconPickerIconSize), st::iconPickerImagePadding);
+	const auto image = (name == DEFAULT_ICON)
+		? brandLogo()
+		: QImage(resourcePath(name, u".png"_q));
+	const auto size = st::iconPickerIconSize * style::DevicePixelRatio();
+	return image.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
 }
 
-QString currentAppLogoName() {
-	return LAST_LOADED_NAME;
+const QImage &currentAppLogo() {
+	const auto &name = AyuSettings::getInstance().appIcon();
+	static auto loadedName = QString();
+	static auto loadedImage = QImage();
+	if (name != loadedName) {
+		loadedName = name;
+		loadedImage = (name == DEFAULT_ICON)
+			? brandLogo()
+			: QImage(resourcePath(name, u".png"_q));
+	}
+	return loadedImage.isNull() ? brandLogo() : loadedImage;
 }
 
-QImage currentAppLogo() {
-	loadIcons();
-	return LAST_LOADED;
-}
-
-QImage currentAppLogoPad() {
-	loadIcons();
-	return LAST_LOADED_PAD;
-}
-
-}
+} // namespace AyuAssets

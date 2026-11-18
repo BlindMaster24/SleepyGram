@@ -11,6 +11,7 @@
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
 #include "ayu/ui/settings/settings_main.h"
+#include "ayu/ui/settings/settings_tools.h"
 #include "base/platform/base_platform_info.h"
 #include "core/application.h"
 #include "lang/lang_keys.h"
@@ -314,6 +315,7 @@ const auto kMeta = BuildHelper({
 	builder.addSkip();
 	BuildQoLToggles(builder, ayu);
 	builder.addSkip();
+	BuildSleepyTools(builder);
 });
 
 } // namespace

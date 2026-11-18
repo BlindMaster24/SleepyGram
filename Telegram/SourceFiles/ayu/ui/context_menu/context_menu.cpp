@@ -274,7 +274,7 @@ void AddAyuGramActions(PeerData *peerData,
 		peerData->id);
 
 	addCallback(Window::PeerMenuCallback::Args{
-		.text = u"AyuGram"_q,
+		.text = u"SleepyGram"_q,
 		.handler = nullptr,
 		.icon = &st::menuIconGroupReactions,
 		.fillSubmenu = [=](not_null<Ui::PopupMenu*> menu) {

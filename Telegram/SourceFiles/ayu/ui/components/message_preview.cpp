@@ -16,6 +16,7 @@
 #include "history/admin_log/history_admin_log_item.h"
 #include "history/view/history_view_element.h"
 #include "history/view/history_view_fake_items.h"
+#include "lang/lang_keys.h"
 #include "main/main_session.h"
 #include "styles/style_chat.h"
 #include "styles/style_settings.h"
@@ -73,15 +74,15 @@ MessagePreview::MessagePreview(
 		FullMsgId(),
 		u"Update wehn?"_q);
 
-	const auto ayugramUser = HistoryView::GenerateUser(
+	const auto releasesUser = HistoryView::GenerateUser(
 		history,
-		u"AyuGram Releases"_q);
+		tr::sleepy_releases(tr::now));
 	const auto messageItem = history->addNewLocalMessage({
 		.id = history->nextNonHistoryEntryId(),
 		.flags = (MessageFlag::FakeHistoryItem
 			| MessageFlag::HasFromId
 			| MessageFlag::HasReplyInfo),
-		.from = ayugramUser,
+		.from = releasesUser,
 		.replyTo = FullReplyTo{
 			.messageId = _state->reply->data()->fullId(),
 		},

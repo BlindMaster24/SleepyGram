@@ -19,3 +19,6 @@ to link the code of portions of this program with the OpenSSL library.
 More information about the Telegram project: https://telegram.org
 
 Full license: https://github.com/telegramdesktop/tdesktop/blob/master/LICENSE
+
+SleepyGram includes features originally developed by Radolyn for AyuGram Desktop.
+Source and attribution: https://github.com/AyuGram/AyuGramDesktop

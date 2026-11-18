@@ -90,7 +90,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_ayu_icons.h"
 #include "lang_auto.h"
 #include "ayu/ui/settings/settings_main.h"
-#include "ayu/ui/settings/settings_other.h"
+#include "ayu/ui/settings/settings_tools.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_info.h"
 

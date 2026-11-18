@@ -363,8 +363,8 @@ void BuildSectionButtons(SectionBuilder &builder) {
 	builder.addSectionButton({
 		.title = tr::ayu_AyuPreferences(),
 		.targetSection = AyuMain::Id(),
-		.icon = { &st::menuIconPremium },
-		.keywords = { u"ayu"_q },
+		.icon = { &st::menuIconSleepyGram },
+		.keywords = { u"sleepy"_q, u"sleepygram"_q },
 	});
 	builder.addSkip();
 	builder.addDivider();

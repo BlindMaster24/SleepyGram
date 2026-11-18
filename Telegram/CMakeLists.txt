@@ -189,8 +189,8 @@ set(ayugram_files
         ayu/ui/settings/settings_filters.h
         ayu/ui/settings/settings_main.cpp
         ayu/ui/settings/settings_main.h
-        ayu/ui/settings/settings_other.cpp
-        ayu/ui/settings/settings_other.h
+        ayu/ui/settings/settings_tools.cpp
+        ayu/ui/settings/settings_tools.h
         ayu/ui/settings/filters/settings_filters_list.cpp
         ayu/ui/settings/filters/settings_filters_list.h
         ayu/ui/settings/filters/per_dialog_filter.cpp
@@ -2947,60 +2947,9 @@ elseif (APPLE)
     target_link_frameworks(Telegram PRIVATE CoreBluetooth)
     target_link_frameworks_weak(Telegram PRIVATE UserNotifications)
 
-    set(icons_path ${CMAKE_CURRENT_SOURCE_DIR}/Telegram/Images.xcassets)
-    if (CMAKE_GENERATOR STREQUAL Xcode)
-        set(ayugram_icons
-            Default
-            Alt
-            Discord
-            Spotify
-            Extera
-            Nothing
-            Bard
-            Yaplus
-            Win95
-            Chibi
-            Chibi2
-            Extera2
-        )
-
-        foreach (icon ${ayugram_icons})
-            target_add_resource(Telegram "${CMAKE_CURRENT_SOURCE_DIR}/Telegram/AppIcon-${icon}.icon")
-            set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/Telegram/AppIcon-${icon}.icon" PROPERTIES
-                    XCODE_EXPLICIT_FILE_TYPE "folder.iconcomposer.icon"
-            )
-        endforeach()
-    else()
-        set(icon_path ${icons_path}/Icon.iconset)
-        find_program(ICONUTIL iconutil)
-        find_program(PNG2ICNS png2icns)
-        if (ICONUTIL)
-            add_custom_command(
-                OUTPUT AppIcon-Default.icns
-                COMMAND ${ICONUTIL}
-                ARGS
-                    --convert icns
-                    --output AppIcon-Default.icns
-                    ${icon_path}
-            )
-        elseif (PNG2ICNS)
-            add_custom_command(
-                OUTPUT AppIcon-Default.icns
-                COMMAND ${PNG2ICNS}
-                ARGS
-                    AppIcon-Default.icns
-                    ${icon_path}/icon_16x16.png
-                    ${icon_path}/icon_32x32.png
-                    ${icon_path}/icon_128x128.png
-                    ${icon_path}/icon_256x256.png
-                    ${icon_path}/icon_512x512.png
-            )
-        endif()
-        if (ICONUTIL OR PNG2ICNS)
-            set_source_files_properties(AppIcon-Default.icns PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
-            target_add_resource(Telegram AppIcon-Default.icns)
-        endif()
-    endif()
+    set(app_icon "${CMAKE_CURRENT_SOURCE_DIR}/Resources/art/SleepyGram.icns")
+    set_source_files_properties("${app_icon}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
+    target_add_resource(Telegram "${app_icon}")
 
     set(lang_packs
         en
@@ -3092,9 +3041,6 @@ set_target_properties(Telegram PROPERTIES
     XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER ${bundle_identifier}
     XCODE_ATTRIBUTE_CURRENT_PROJECT_VERSION ${desktop_app_version_string}
     XCODE_ATTRIBUTE_PRODUCT_NAME ${output_name}
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME AppIcon-Default
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES "AppIcon-Alt AppIcon-Discord AppIcon-Spotify AppIcon-Extera AppIcon-Nothing AppIcon-Bard AppIcon-Yaplus AppIcon-Win95 AppIcon-Chibi AppIcon-Chibi2 AppIcon-Extera2"
-    XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS YES
     XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME YES
     XCODE_ATTRIBUTE_COMBINE_HIDPI_IMAGES YES
     XCODE_ATTRIBUTE_COPY_PHASE_STRIP NO

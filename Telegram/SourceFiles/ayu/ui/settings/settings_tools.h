@@ -6,26 +6,17 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
-#include "settings/settings_common.h"
-#include "settings/settings_common_session.h"
-
 namespace Window {
 class SessionController;
 } // namespace Window
 
 namespace Settings {
 
-class AyuOther : public Section<AyuOther> {
-public:
-	AyuOther(QWidget *parent, not_null<Window::SessionController*> controller);
+namespace Builder {
+class SectionBuilder;
+} // namespace Builder
 
-	[[nodiscard]] rpl::producer<QString> title() override;
-
-private:
-	void setupContent();
-};
-
-[[nodiscard]] Type AyuOtherId();
+void BuildSleepyTools(Builder::SectionBuilder &builder);
 void ShowAccountTransferWizard(not_null<Window::SessionController*> controller);
 
 } // namespace Settings

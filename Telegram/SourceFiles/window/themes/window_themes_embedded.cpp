@@ -328,7 +328,8 @@ style::colorizer ColorizerForTheme(const QString &absolutePath) {
 	if (const auto accent = AyuFeatures::MessageShot::isChoosingTheme() ? AyuFeatures::MessageShot::getSelectedColorFromDefault() : colors.get(i->type)) {
 		return ColorizerFrom(*i, *accent);
 	}
-	return {};
+	const auto accent = DefaultEmbeddedAccent(*i);
+	return (accent != i->accentColor) ? ColorizerFrom(*i, accent) : style::colorizer();
 }
 
 void Colorize(EmbeddedScheme &scheme, const style::colorizer &colorizer) {
@@ -401,6 +402,15 @@ std::vector<EmbeddedScheme> EmbeddedThemes() {
 	};
 }
 
+QColor DefaultEmbeddedAccent(const EmbeddedScheme &scheme) {
+	if (scheme.type == EmbeddedType::Default) {
+		return style::ColorFromHex("684cbb");
+	} else if (scheme.type == EmbeddedType::Night) {
+		return style::ColorFromHex("9376de");
+	}
+	return scheme.accentColor;
+}
+
 std::vector<QColor> DefaultAccentColors(EmbeddedType type) {
 	const auto qColor = [](auto hex) {
 		return style::ColorFromHex(hex);
@@ -419,6 +429,7 @@ std::vector<QColor> DefaultAccentColors(EmbeddedType type) {
 		};
 	case EmbeddedType::Default:
 		return {
+			qColor("40a7e3"),
 			qColor("45bce7"),
 			qColor("52b440"),
 			qColor("d46c99"),
@@ -430,6 +441,7 @@ std::vector<QColor> DefaultAccentColors(EmbeddedType type) {
 		};
 	case EmbeddedType::Night:
 		return {
+			qColor("5288c1"),
 			qColor("58bfe8"),
 			qColor("466f42"),
 			qColor("aa6084"),

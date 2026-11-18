@@ -6,30 +6,20 @@
 // Copyright @Radolyn, 2026
 #pragma once
 
-#define ICON(name, value) const auto name##_ICON = QStringLiteral(value)
-
 namespace AyuAssets {
 
-ICON(DEFAULT, "default");
-ICON(ALT, "alt");
-ICON(DISCORD, "discord");
-ICON(SPOTIFY, "spotify");
-ICON(EXTERA, "extera");
-ICON(NOTHING, "nothing");
-ICON(BARD, "bard");
-ICON(YAPLUS, "yaplus");
-ICON(WIN95, "win95");
-ICON(CHIBI, "chibi");
-ICON(CHIBI2, "chibi2");
-ICON(EXTERA2, "extera2");
+inline const auto DEFAULT_ICON = u"default"_q;
+inline const auto MOONLIGHT_ICON = u"moonlight"_q;
+inline const auto MIDNIGHT_ICON = u"midnight"_q;
+inline const auto AURORA_ICON = u"aurora"_q;
+inline const auto DUSK_ICON = u"dusk"_q;
+
+[[nodiscard]] const QString &normalizeIcon(const QString &name);
+[[nodiscard]] const QImage &brandLogo();
+[[nodiscard]] QImage loadPreview(const QString &name);
+[[nodiscard]] const QImage &currentAppLogo();
 
 void loadAppIco();
-QString appIcoPath();
+[[nodiscard]] QString appIcoPath();
 
-QImage loadPreview(const QString& name);
-
-QString currentAppLogoName();
-QImage currentAppLogo();
-QImage currentAppLogoPad();
-
-}
+} // namespace AyuAssets

@@ -64,6 +64,7 @@ void Colorize(
 	const style::colorizer &colorizer);
 
 [[nodiscard]] std::vector<EmbeddedScheme> EmbeddedThemes();
+[[nodiscard]] QColor DefaultEmbeddedAccent(const EmbeddedScheme &scheme);
 [[nodiscard]] std::vector<QColor> DefaultAccentColors(EmbeddedType type);
 
 [[nodiscard]] Fn<void(style::palette&)> PreparePaletteCallback(

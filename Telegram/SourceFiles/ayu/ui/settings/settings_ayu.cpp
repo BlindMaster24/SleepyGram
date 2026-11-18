@@ -688,7 +688,7 @@ void BuildOther(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 const auto kMeta = BuildHelper({
 	.id = AyuGhost::Id(),
 	.parentId = AyuMain::Id(),
-	.title = u"AyuGram"_q,
+	.title = &tr::ayu_GhostModeToggle,
 	.icon = &st::menuIconGroupReactions,
 }, [](SectionBuilder &builder) {
 	auto ayu = AyuSectionBuilder(builder);
@@ -707,7 +707,7 @@ const auto kMeta = BuildHelper({
 } // namespace
 
 rpl::producer<QString> AyuGhost::title() {
-	return rpl::single(QString("AyuGram"));
+	return tr::ayu_GhostModeToggle();
 }
 
 AyuGhost::AyuGhost(

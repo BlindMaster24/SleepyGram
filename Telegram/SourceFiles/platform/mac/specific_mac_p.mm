@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_window.h"
 #include "platform/platform_specific.h"
 
+#include <QtGui/QIcon>
 #include <QtGui/QWindow>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QMenu>
@@ -33,12 +34,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #endif // __has_include(<QtCore/QOperatingSystemVersion>)
 #include <Cocoa/Cocoa.h>
 #include <CoreFoundation/CFURL.h>
+#include <CoreGraphics/CoreGraphics.h>
 #include <IOKit/IOKitLib.h>
 #include <IOKit/hidsystem/ev_keymap.h>
-
-// AyuGram includes
-#include "ayu/ayu_settings.h"
-
 
 using Platform::Q2NSString;
 using Platform::NS2QString;
@@ -244,26 +242,23 @@ ApplicationHiddenObserver *_hiddenObserver = nil;
 namespace Platform {
 
 void SetApplicationIcon(const QIcon &icon) {
-	const auto &settings = AyuSettings::getInstance();
-    if (settings.appIcon().isEmpty()) {
-        return;
-    }
-
-	const auto name = QString("AppIcon-") + settings.appIcon()[0].toUpper() + settings.appIcon().mid(1);
-    @autoreleasepool {
-        if (name == QString("AppIcon-Default")) {
-            NSApplication.sharedApplication.applicationIconImage = nil;
-            return;
-        }
-        
-        // NSString *iconPath = [NSBundle.mainBundle pathForResource:Q2NSString(name) ofType:@"icns"];
-        // NSImage *icon = [[NSImage alloc] initWithContentsOfFile:iconPath];
-		NSImage *icon = [NSBundle.mainBundle imageForResource:Q2NSString(name)];
-
-        if (icon) {
-            NSApplication.sharedApplication.applicationIconImage = icon;
-        }
-    }
+	@autoreleasepool {
+		const auto sizes = icon.availableSizes();
+		const auto pixels = sizes.isEmpty()
+			? QImage()
+			: icon.pixmap(sizes.back()).toImage();
+		const auto cgImage = pixels.toCGImage();
+		if (!cgImage) {
+			NSApplication.sharedApplication.applicationIconImage = nil;
+			return;
+		}
+		auto *native = [[NSImage alloc]
+			initWithCGImage:cgImage
+			size:NSZeroSize];
+		CGImageRelease(cgImage);
+		NSApplication.sharedApplication.applicationIconImage = native;
+		[native release];
+	}
 }
 
 rpl::producer<bool> ApplicationHiddenValue() {

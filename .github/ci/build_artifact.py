@@ -295,6 +295,7 @@ def verify_package(archive: Path, platform_name: str) -> dict[str, object]:
         required = {
             "SleepyGram.app/Contents/Info.plist",
             "SleepyGram.app/Contents/Resources/Telegram.rcc",
+            "SleepyGram.app/Contents/Resources/SleepyGram.icns",
             "SleepyGram.app/Contents/Resources/BuildManifest.json",
         }
         if not any(name.startswith("SleepyGram.app/Contents/MacOS/") for name in names):

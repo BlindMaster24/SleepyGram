@@ -4,7 +4,7 @@
 // but be respectful and credit the original author.
 //
 // Copyright @Radolyn, 2026
-#include "ayu/ui/settings/settings_other.h"
+#include "ayu/ui/settings/settings_tools.h"
 
 #include "lang_auto.h"
 #include "ayu/ayu_settings.h"
@@ -14,7 +14,6 @@
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/ayu_builder.h"
 #include "ayu/ui/settings/settings_ayu_utils.h"
-#include "ayu/ui/settings/settings_main.h"
 #include "boxes/abstract_box.h"
 #include "core/application.h"
 #include "core/file_utilities.h"
@@ -22,7 +21,6 @@
 #include "data/data_session.h"
 #include "main/main_session.h"
 #include "settings/settings_builder.h"
-#include "settings/settings_common.h"
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "styles/style_settings.h"
@@ -55,9 +53,6 @@ namespace {
 
 void BuildCrashReporting(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 #ifndef TDESKTOP_DISABLE_AUTOUPDATE
-	builder.addSkip();
-	builder.addSubsectionTitle(tr::ayu_CategoryOther());
-
 	ayu.addSettingToggle({
 		.id = u"ayu/crashReporting"_q,
 		.altIds = { u"ayu/crashlytics"_q },
@@ -490,9 +485,10 @@ void ExportTransferSettings(
 		}));
 }
 
-void BuildOtherThings(SectionBuilder &builder) {
+void BuildTools(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	const auto controller = builder.controller();
 
+	builder.addSubsectionTitle(tr::sleepy_archive_and_transfer());
 	builder.addButton({
 		.id = u"ayu/archiveSearch"_q,
 		.title = tr::ayu_ArchiveSearchTitle(),
@@ -595,6 +591,10 @@ void BuildOtherThings(SectionBuilder &builder) {
 		},
 	});
 	builder.addSkip();
+	builder.addDivider();
+	builder.addSkip();
+	builder.addSubsectionTitle(tr::sleepy_maintenance());
+	BuildCrashReporting(builder, ayu);
 	builder.addButton({
 		.id = u"ayu/registerUrlScheme"_q,
 		.title = tr::ayu_RegisterURLScheme(),
@@ -624,20 +624,14 @@ void BuildOtherThings(SectionBuilder &builder) {
 	builder.addSkip();
 }
 
-const auto kMeta = BuildHelper({
-	.id = AyuOther::Id(),
-	.parentId = AyuMain::Id(),
-	.title = &tr::ayu_CategoryOther,
-	.icon = &st::menuIconFave,
-}, [](SectionBuilder &builder) {
-	auto ayu = AyuSectionBuilder(builder);
-
-	builder.addSkip();
-	BuildCrashReporting(builder, ayu);
-	BuildOtherThings(builder);
-});
-
 } // namespace
+
+void BuildSleepyTools(Builder::SectionBuilder &builder) {
+	auto ayu = AyuSectionBuilder(builder);
+	builder.addDivider();
+	builder.addSkip();
+	BuildTools(builder, ayu);
+}
 
 void ShowAccountTransferWizard(
 		not_null<Window::SessionController*> controller) {
@@ -654,27 +648,6 @@ void ShowAccountTransferWizard(
 		},
 		.confirmText = tr::ayu_AccountTransferPrepare(),
 	}));
-}
-
-rpl::producer<QString> AyuOther::title() {
-	return tr::ayu_CategoryOther();
-}
-
-AyuOther::AyuOther(
-	QWidget *parent,
-	not_null<Window::SessionController*> controller)
-: Section(parent, controller) {
-	setupContent();
-}
-
-void AyuOther::setupContent() {
-	const auto content = Ui::CreateChild<Ui::VerticalLayout>(this);
-	build(content, kMeta.build);
-	Ui::ResizeFitChild(this, content);
-}
-
-Type AyuOtherId() {
-	return AyuOther::Id();
 }
 
 } // namespace Settings

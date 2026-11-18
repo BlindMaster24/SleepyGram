@@ -506,6 +506,9 @@ jobs:
           main="$app/Contents/MacOS/$executable"
           test -f "$main"
           test -f "$app/Contents/Resources/Telegram.rcc"
+          icon=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app/Contents/Info.plist")
+          test "$icon" = SleepyGram.icns
+          cmp "tdesktop/Telegram/Resources/art/$icon" "$app/Contents/Resources/$icon"
           python3 tdesktop/.github/ci/prepare_macos_swift_runtime.py --bundle "$app" --minimum 11.0
           while IFS= read -r -d '' binary; do
             if file -b "$binary" | grep -q 'Mach-O'; then

@@ -314,6 +314,10 @@ std::optional<QByteArray> ReadPaletteContent(
 	return schemeContent;
 }
 
+[[nodiscard]] uint32 PaletteCacheChecksum() {
+	return style::palette::Checksum() ^ uint32(0x534C5059);
+}
+
 bool LoadTheme(
 		const QByteArray &content,
 		const style::colorizer &colorizer,
@@ -404,7 +408,7 @@ bool LoadTheme(
 		} else {
 			cache->colors = style::main_palette::save();
 		}
-		cache->paletteChecksum = style::palette::Checksum();
+		cache->paletteChecksum = PaletteCacheChecksum();
 		cache->contentChecksum = base::crc32(content.constData(), content.size());
 	}
 	return true;
@@ -413,7 +417,7 @@ bool LoadTheme(
 bool InitializeFromCache(
 		const QByteArray &content,
 		const Cached &cache) {
-	if (cache.paletteChecksum != style::palette::Checksum()) {
+	if (cache.paletteChecksum != PaletteCacheChecksum()) {
 		return false;
 	}
 	if (cache.contentChecksum != base::crc32(content.constData(), content.size())) {
@@ -1450,7 +1454,7 @@ void KeepFromEditor(
 	auto &cache = saved.cache;
 	auto &object = saved.object;
 	cache.colors = style::main_palette::save();
-	cache.paletteChecksum = style::palette::Checksum();
+	cache.paletteChecksum = PaletteCacheChecksum();
 	cache.contentChecksum = base::crc32(content.constData(), content.size());
 	cache.background = themeParsed.background;
 	cache.tiled = themeParsed.tiled;

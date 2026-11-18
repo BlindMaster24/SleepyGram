@@ -262,7 +262,9 @@ bool validatePreferences(const json &preferences, QString *error) {
 	if (icon != "default" && icon != "alt" && icon != "discord"
 		&& icon != "spotify" && icon != "extera" && icon != "nothing"
 		&& icon != "bard" && icon != "yaplus" && icon != "win95"
-		&& icon != "chibi" && icon != "chibi2" && icon != "extera2") {
+		&& icon != "chibi" && icon != "chibi2" && icon != "extera2"
+		&& icon != "moonlight" && icon != "midnight"
+		&& icon != "aurora" && icon != "dusk") {
 		*error = u"The selected app icon is unsupported."_q;
 		return false;
 	}
@@ -821,16 +823,16 @@ void AyuSettings::load() {
 			});
 			p["useGlobalGhostMode"] = true;
 
-			LOG(("AyuGramSettings: migrated ghost mode settings to per-account format"));
+			LOG(("SleepyGram settings: migrated ghost mode settings to per-account format"));
 		}
 
 		try {
 			from_json(p, settings);
 		} catch (...) {
-			LOG(("AyuGramSettings: failed to parse settings file"));
+			LOG(("SleepyGram settings: failed to parse settings file"));
 		}
 	} catch (...) {
-		LOG(("AyuGramSettings: failed to read settings file (not json-like)"));
+		LOG(("SleepyGram settings: failed to read settings file (not json-like)"));
 	}
 
 	if (cGhost()) {
@@ -992,7 +994,7 @@ bool AyuSettings::applyTransfer(const QByteArray &data, uint64 accountId) {
 	}
 	if (!AyuDatabase::replaceAllRegexFilters(parsed.filters, parsed.exclusions)) {
 		if (!restoreSettingsFile(previousSettingsFileExists, previousSettingsFile)) {
-			LOG(("AyuGramSettings: could not restore settings file after filter import failure"));
+			LOG(("SleepyGram settings: could not restore settings file after filter import failure"));
 		}
 		return false;
 	}
@@ -1040,13 +1042,13 @@ bool AyuSettings::applyTransfer(const QByteArray &data, uint64 accountId) {
 				settings._ghostAccounts.erase(liveGhostKey);
 			}
 		} catch (const std::exception &) {
-			LOG(("AyuGramSettings: failed to restore live settings after apply failure"));
+			LOG(("SleepyGram settings: failed to restore live settings after apply failure"));
 		}
 		if (!AyuDatabase::replaceAllRegexFilters(previousFilters, previousExclusions)) {
-			LOG(("AyuGramSettings: failed to restore filters after settings apply failure"));
+			LOG(("SleepyGram settings: failed to restore filters after settings apply failure"));
 		}
 		if (!restoreSettingsFile(previousSettingsFileExists, previousSettingsFile)) {
-			LOG(("AyuGramSettings: failed to restore settings after apply failure"));
+			LOG(("SleepyGram settings: failed to restore settings after apply failure"));
 		}
 		return false;
 	}
@@ -1550,8 +1552,9 @@ void AyuSettings::setShowPrivateChatReactions(bool val) {
 }
 
 void AyuSettings::setAppIcon(const QString &val) {
-	if (_appIcon.current() == val) return;
-	_appIcon = val;
+	const auto &name = AyuAssets::normalizeIcon(val);
+	if (_appIcon.current() == name) return;
+	_appIcon = name;
 	save();
 }
 
@@ -2161,7 +2164,8 @@ void from_json(const nlohmann::json &j, AyuSettings &s) {
 	s._showChannelReactions = j.value("showChannelReactions", defaults._showChannelReactions.current());
 	s._showGroupReactions = j.value("showGroupReactions", defaults._showGroupReactions.current());
 	s._showPrivateChatReactions = j.value("showPrivateChatReactions", defaults._showPrivateChatReactions.current());
-	s._appIcon = j.value("appIcon", defaults._appIcon.current());
+	s._appIcon = AyuAssets::normalizeIcon(
+		j.value("appIcon", defaults._appIcon.current()));
 	s._simpleQuotesAndReplies = j.value("simpleQuotesAndReplies", defaults._simpleQuotesAndReplies.current());
 	s._hideFastShare = j.value("hideFastShare", defaults._hideFastShare.current());
 	s._replaceBottomInfoWithIcons = j.value("replaceBottomInfoWithIcons", defaults._replaceBottomInfoWithIcons.current());

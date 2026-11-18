@@ -279,7 +279,8 @@ void ColorsPalette::show(Type type) {
 		_outer->hide(anim::type::instant);
 		return;
 	}
-	list.insert(list.begin(), scheme->accentColor);
+	const auto defaultAccent = Window::Theme::DefaultEmbeddedAccent(*scheme);
+	list.insert(list.begin(), defaultAccent);
 	const auto &settings = Core::App().settings();
 	const auto messageShotSelected = AyuFeatures::MessageShot::isChoosingTheme()
 		? AyuFeatures::MessageShot::getSelectedColorFromDefault()
@@ -289,7 +290,7 @@ void ColorsPalette::show(Type type) {
 		: (settings.systemAccentColorEnabled()
 			? Window::Theme::SystemAccentColor()
 			: settings.themesAccentColors().get(type));
-	const auto current = color.value_or(scheme->accentColor);
+	const auto current = color.value_or(defaultAccent);
 	const auto i = ranges::find(list, current);
 	if (i == end(list)) {
 		list.back() = current;
@@ -2311,22 +2312,17 @@ void SetupDefaultThemes(
 		if (scheme == end(kSchemesList)) {
 			return;
 		}
-		const auto color = settings.systemAccentColorEnabled()
+		auto color = settings.systemAccentColorEnabled()
 			? Window::Theme::SystemAccentColor()
 			: settings.themesAccentColors().get(type);
+		if (AyuFeatures::MessageShot::isChoosingTheme()) {
+			color = AyuFeatures::MessageShot::getSelectedColorFromDefault();
+		}
 		if (i != end(checks)) {
-			if (AyuFeatures::MessageShot::isChoosingTheme()) {
-				if (const auto color = AyuFeatures::MessageShot::getSelectedColorFromDefault()) {
-					const auto colorizer = ColorizerFrom(*scheme, color.value());
-					i->second->setColors(ColorsFromScheme(*scheme, colorizer));
-				} else {
-					i->second->setColors(ColorsFromScheme(*scheme));
-				}
-				return;
-			}
-
-			if (color) {
-				const auto colorizer = ColorizerFrom(*scheme, *color);
+			const auto accent = color.value_or(
+				Window::Theme::DefaultEmbeddedAccent(*scheme));
+			if (accent != scheme->accentColor) {
+				const auto colorizer = ColorizerFrom(*scheme, accent);
 				i->second->setColors(ColorsFromScheme(*scheme, colorizer));
 			} else {
 				i->second->setColors(ColorsFromScheme(*scheme));

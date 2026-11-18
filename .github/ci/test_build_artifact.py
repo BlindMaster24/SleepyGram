@@ -1,21 +1,42 @@
 from argparse import Namespace
 from hashlib import sha256
+import json
 import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from build_artifact import (
     MACOS_INSTALLER,
     PLATFORMS,
     _parse_gitlinks,
     submodule_revisions,
+    verify_package,
     verify_release,
 )
 
 
 class ReleaseInstallerTests(unittest.TestCase):
+    def test_requires_native_icon_in_the_macos_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            archive = Path(temporary) / PLATFORMS["macos-arm64"][0]
+            with ZipFile(archive, "w") as package:
+                package.writestr("SleepyGram.app/Contents/Info.plist", b"plist")
+                package.writestr("SleepyGram.app/Contents/MacOS/SleepyGram", b"binary")
+                package.writestr("SleepyGram.app/Contents/Resources/Telegram.rcc", b"resources")
+                package.writestr(
+                    "SleepyGram.app/Contents/Resources/BuildManifest.json",
+                    json.dumps({"schema_version": 1, "platform": "macos-arm64"}),
+                )
+            with self.assertRaisesRegex(RuntimeError, r"SleepyGram\.icns"):
+                verify_package(archive, "macos-arm64")
+
+            with ZipFile(archive, "a") as package:
+                package.writestr("SleepyGram.app/Contents/Resources/SleepyGram.icns", b"icns")
+            self.assertEqual(verify_package(archive, "macos-arm64")["platform"], "macos-arm64")
+
     def test_requires_the_dmg_verified_by_the_mac_build(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

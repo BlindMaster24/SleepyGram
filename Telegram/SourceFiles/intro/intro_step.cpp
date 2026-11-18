@@ -470,9 +470,14 @@ void Step::paintCover(QPainter &p, int top) {
 	st::introCoverLeft.paint(p, left, coverHeight - st::introCoverLeft.height(), width());
 	st::introCoverRight.paint(p, width() - right - st::introCoverRight.width(), coverHeight - st::introCoverRight.height(), width());
 
-	auto planeTop = top + st::introCoverIconTop;
-	const auto ayuGramIcon = Ui::PixmapFromImage(AyuAssets::currentAppLogo());
-	QIcon(ayuGramIcon).paint(&p, QRect(width() / 2 - ayuGramIcon.width() / 2, planeTop - 16, ayuGramIcon.width(), st::introCoverIcon.height()));
+	const auto logoSize = st::introBrandLogoSize;
+	const auto logoRect = QRect(
+		(width() - logoSize) / 2,
+		top + st::introBrandLogoTop,
+		logoSize,
+		logoSize);
+	const auto smooth = PainterHighQualityEnabler(p);
+	p.drawImage(logoRect, AyuAssets::brandLogo());
 }
 
 int Step::contentLeft() const {
