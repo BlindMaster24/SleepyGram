@@ -124,6 +124,11 @@ struct ScopedAccountConnection final {
 	const AccountPaths &paths,
 	const MTP::AuthKeyPtr &key);
 
+[[nodiscard]] std::optional<std::vector<QByteArray>> ReadScopedWebviewTokens(
+	const AccountPaths &paths,
+	const MTP::AuthKeyPtr &key,
+	UserId expectedUser);
+
 struct MessageDraft {
 	FullReplyTo reply;
 	SuggestOptions suggest;

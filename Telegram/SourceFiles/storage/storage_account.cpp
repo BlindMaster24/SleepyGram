@@ -156,9 +156,10 @@ struct MigrationPaths final {
 	QString targetRoot;
 };
 
-struct LegacyWebviewMapSection final {
+struct WebviewMapSection final {
 	qsizetype offset = -1;
 	qsizetype length = 0;
+	std::array<QByteArray, 2> tokens;
 };
 
 bool Present(const QFileInfo &info) {
@@ -396,7 +397,7 @@ MigrationResult InspectMap(
 		UserId expectedUser,
 		std::map<QString, MigrationRecordType> &files,
 		AccountStorageMode mode,
-		LegacyWebviewMapSection *legacyWebview) {
+		WebviewMapSection *webview) {
 	const auto keys = [&](int count, MigrationRecordType kind) {
 		for (auto i = 0; i != count; ++i) {
 			auto key = FileKey();
@@ -504,15 +505,17 @@ MigrationResult InspectMap(
 				return MigrationResult::InvalidSource;
 			}
 			const auto legacy = Webview::LegacyStorageIdToken();
-			if (legacyWebview) {
+			if (webview) {
 				const auto valid = [&](const QByteArray &token) {
-					return token.isEmpty() || token == legacy || token.size() == 16;
+					return token.isEmpty() || token.size() == 16
+						|| (mode == AccountStorageMode::Legacy && token == legacy);
 				};
 				if (!valid(bots) || !valid(other)) {
 					return MigrationResult::UnsupportedData;
 				}
-				legacyWebview->offset = start;
-				legacyWebview->length = stream.device()->pos() - start;
+				webview->offset = start;
+				webview->length = stream.device()->pos() - start;
+				webview->tokens = { std::move(bots), std::move(other) };
 				break;
 			} else if (mode == AccountStorageMode::Legacy
 				&& ClassifyLegacyWebviewTokens(bots, other) == LegacyWebviewStorageProof::Unsupported) {
@@ -581,14 +584,14 @@ MigrationResult InspectMigrationRecord(
 		std::map<QString, MigrationRecordType> &files,
 		AccountStorageMode mode = AccountStorageMode::Legacy,
 		MTP::Environment *environment = nullptr,
-		LegacyWebviewMapSection *legacyWebview = nullptr) {
+		WebviewMapSection *webview = nullptr) {
 	auto stream = QDataStream(record.data);
 	if (!BeginMigrationRecord(stream)) {
 		return MigrationResult::InvalidSource;
 	}
 	switch (type) {
 	case MigrationRecordType::Map:
-		return InspectMap(stream, expectedUser, files, mode, legacyWebview);
+		return InspectMap(stream, expectedUser, files, mode, webview);
 	case MigrationRecordType::Authorization: {
 		const auto user = ReadAuthorizationUser(stream);
 		if (!user) {
@@ -706,7 +709,7 @@ MigrationResult CompareMigrationRecords(
 		map)) {
 		return MigrationResult::InvalidSource;
 	}
-	auto legacyWebview = LegacyWebviewMapSection();
+	auto legacyWebview = WebviewMapSection();
 	const auto mapResult = InspectMigrationRecord(
 		map,
 		MigrationRecordType::Map,
@@ -1049,7 +1052,8 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 		const AccountPaths &paths,
 		const MTP::AuthKeyPtr &key,
 		ScopedAccountConnection *connection,
-		std::unique_ptr<MTP::Config> *configOut = nullptr) {
+		std::unique_ptr<MTP::Config> *configOut = nullptr,
+		WebviewMapSection *webview = nullptr) {
 	const auto root = QFileInfo(paths.authPath).path();
 	if (!key
 		|| !MatchesScopedPaths(paths)
@@ -1108,7 +1112,9 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 			MigrationRecordType::Map,
 			userId,
 			files,
-			AccountStorageMode::Scoped) != MigrationResult::Success) {
+			AccountStorageMode::Scoped,
+			nullptr,
+			webview) != MigrationResult::Success) {
 		return std::nullopt;
 	}
 	for (const auto &[name, type] : files) {
@@ -1177,6 +1183,25 @@ std::unique_ptr<ScopedAccountConnection> ReadScopedAccountConnection(
 		return nullptr;
 	}
 	return result;
+}
+
+std::optional<std::vector<QByteArray>> ReadScopedWebviewTokens(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		UserId expectedUser) {
+	auto webview = WebviewMapSection();
+	const auto account = ReadScopedAccount(paths, key, nullptr, nullptr, &webview);
+	if (!account || account->userId != expectedUser) {
+		return std::nullopt;
+	}
+	auto tokens = std::vector<QByteArray>();
+	for (auto &token : webview.tokens) {
+		if (!token.isEmpty() && token != QByteArray(16, '\0')
+			&& (tokens.empty() || token != tokens.front())) {
+			tokens.push_back(std::move(token));
+		}
+	}
+	return tokens;
 }
 
 Account::Account(not_null<Main::Account*> owner, const QString &dataName)

@@ -263,6 +263,11 @@ void CheckFreshWebviewMigration() {
 		&& webview == 0x19 && bots.size() == 16 && other.size() == 16
 		&& bots != other && other != QByteArray(16, 'b'),
 		u"Both browser stores get distinct identifiers and earlier map records survive"_q);
+	Check(ReadScopedWebviewTokens(*target, newKey, kFixtureUser)
+		== std::vector<QByteArray>{ bots, other }
+		&& !ReadScopedWebviewTokens(*target, oldKey, kFixtureUser)
+		&& !ReadScopedWebviewTokens(*target, newKey, UserId(kFixtureUser.bare + 1)),
+		u"Cleanup can discover only the authenticated account's named browser stores"_q);
 }
 
 void RunStorageAccountMigration() {
