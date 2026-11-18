@@ -194,6 +194,7 @@ envForThirdPartyKey = hashlib.sha1(envForThirdPartyKeyString.encode('utf-8')).he
 modifiedEnv = os.environ.copy()
 if mac and macRelease:
     modifiedEnv.pop('TOOLCHAINS', None)
+if win or (mac and macRelease):
     modifiedEnv['PREPARE_DIR'] = scriptPath
 for key in environment:
     modifiedEnv[key] = environment[key]
@@ -562,6 +563,7 @@ mac:
 """)
 
 stage('msys64', """
+version: """ + computeFileHash(os.path.join(scriptPath, 'prepare_windows_msys2.py')) + """
 win:
     SET PATH=%THIRDPARTY_DIR%\\msys64\\usr\\bin;%PATH%
     SET CHERE_INVOKING=enabled_from_arguments
@@ -571,14 +573,7 @@ win:
     msys64.exe
     del msys64.exe
 
-    bash -c "pacman-key --init; pacman-key --populate; pacman -Syu --noconfirm"
-    pacman -Syu --noconfirm ^
-        make ^
-        mingw-w64-ucrt-x86_64-diffutils ^
-        mingw-w64-ucrt-x86_64-gperf ^
-        mingw-w64-ucrt-x86_64-nasm ^
-        mingw-w64-ucrt-x86_64-perl ^
-        mingw-w64-ucrt-x86_64-pkgconf
+    python "%PREPARE_DIR%/prepare_windows_msys2.py" "%THIRDPARTY_DIR%\\msys64"
 """, 'ThirdParty')
 
 stage('python', """
