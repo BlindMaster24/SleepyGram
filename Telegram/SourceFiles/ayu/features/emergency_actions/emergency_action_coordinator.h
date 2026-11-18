@@ -24,6 +24,8 @@ struct CoordinatorReport final {
 	size_t localAttempts = 0;
 	bool safeDestinationAttempted = false;
 	bool remoteDeadlineReached = false;
+	bool localCleanupComplete = false;
+	bool safeDestinationReady = false;
 };
 
 class CoordinatorClock {
@@ -47,25 +49,31 @@ public:
 class LocalAccountEffect {
 public:
 	virtual ~LocalAccountEffect() = default;
+	// Success means all target data is durably cleared, including on a retry.
 	[[nodiscard]] virtual EffectResult clear(const AccountId &accountId) = 0;
 };
 
 class SafeDestinationEffect {
 public:
 	virtual ~SafeDestinationEffect() = default;
+	// Recovery may repeat activation if its outcome could not be checkpointed.
 	[[nodiscard]] virtual EffectResult activate(
 		SafeDestinationKind kind,
 		const ProfileId &profileId) = 0;
 };
 
-// This coordinator is fixture-only and has no production side-effect adapters.
 [[nodiscard]] CoordinatorReport RunResetCoordinator(
 	EmergencyActionJournal &journal,
-	JournalStore &store,
+	const JournalStore::ExecutionLease &lease,
 	RemoteSessionEffect &remote,
 	LocalAccountEffect &local,
 	SafeDestinationEffect &destination,
-	const CoordinatorClock &clock,
-	RetryMode retryMode = RetryMode::SafeOnly);
+	const CoordinatorClock &clock);
+
+[[nodiscard]] CoordinatorReport ResumeResetCoordinator(
+	EmergencyActionJournal &journal,
+	const JournalStore::ExecutionLease &lease,
+	LocalAccountEffect &local,
+	SafeDestinationEffect &destination);
 
 } // namespace Ayu::EmergencyActions

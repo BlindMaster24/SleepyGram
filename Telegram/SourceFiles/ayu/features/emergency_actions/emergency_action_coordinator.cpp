@@ -11,21 +11,31 @@ namespace {
 
 constexpr auto kRemotePhaseBudget = std::chrono::seconds(5);
 
-bool CanBegin(const JournalEffectState &state, RetryMode mode) {
+bool CanBeginLocal(const JournalEffectState &state) {
 	return state.state == EffectState::Pending
 		|| state.state == EffectState::FailedRetryable
-		|| (state.state == EffectState::Unconfirmed
-			&& mode == RetryMode::ExplicitlyRetryUnconfirmed);
+		|| state.state == EffectState::Unconfirmed;
+}
+
+bool IsSeedJournal(const EmergencyActionJournal &journal) {
+	const auto unstarted = [](const JournalEffectState &effect) {
+		return effect.state == EffectState::NotRequested
+			|| effect.state == EffectState::Pending;
+	};
+	return unstarted(journal.safeDestinationActivation)
+		&& std::ranges::all_of(journal.accounts, [&](const JournalAccount &account) {
+			return unstarted(account.localDataClear)
+				&& unstarted(account.remoteSessionRevoke);
+		});
 }
 
 bool Claim(
 		EmergencyActionJournal &journal,
 		JournalStore &store,
 		JournalEffect effect,
-		std::optional<AccountId> accountId,
-		RetryMode retryMode) {
+		std::optional<AccountId> accountId) {
 	auto candidate = journal;
-	if (BeginEffect(candidate, effect, std::move(accountId), retryMode)
+	if (BeginEffect(candidate, effect, std::move(accountId))
 		!= TransitionResult::Applied
 		|| !SaveJournal(store, candidate)) {
 		return false;
@@ -40,18 +50,26 @@ bool SaveOutcome(
 		JournalEffect effect,
 		EffectResult outcome,
 		std::optional<AccountId> accountId) {
-	return ResolveEffect(journal, effect, outcome, std::move(accountId))
-		== TransitionResult::Applied
-		&& SaveJournal(store, journal);
+	auto candidate = journal;
+	if (ResolveEffect(candidate, effect, outcome, std::move(accountId))
+		!= TransitionResult::Applied
+		|| !SaveJournal(store, candidate)) {
+		return false;
+	}
+	journal = std::move(candidate);
+	return true;
 }
 
 CoordinatorReport Report(
-		EmergencyActionJournal &journal,
+		const EmergencyActionJournal &journal,
 		CoordinatorReport result) {
 	result.journalStatus = Status(journal);
-	if (result.result != CoordinatorResult::CheckpointFailed
-		&& result.result != CoordinatorResult::Rejected
-		&& result.result != CoordinatorResult::UnsupportedAction) {
+	result.localCleanupComplete = LocalCleanupComplete(journal);
+	const auto activation = journal.safeDestinationActivation.state;
+	result.safeDestinationReady = result.localCleanupComplete
+		&& (activation == EffectState::NotRequested
+			|| activation == EffectState::Succeeded);
+	if (result.result == CoordinatorResult::Partial) {
 		result.result = (result.journalStatus == JournalStatus::Complete)
 			? CoordinatorResult::Complete
 			: CoordinatorResult::Partial;
@@ -59,39 +77,19 @@ CoordinatorReport Report(
 	return result;
 }
 
-} // namespace
-
-CoordinatorReport RunResetCoordinator(
+bool RunRemotePhase(
 		EmergencyActionJournal &journal,
 		JournalStore &store,
 		RemoteSessionEffect &remote,
-		LocalAccountEffect &local,
-		SafeDestinationEffect &destination,
 		const CoordinatorClock &clock,
-		RetryMode retryMode) {
-	auto report = CoordinatorReport();
-	if (EncodeJournal(journal).empty()) {
-		return Report(journal, report);
-	}
-	if (journal.action != EmergencyAction::ResetAccountData) {
-		report.result = CoordinatorResult::UnsupportedAction;
-		return Report(journal, report);
-	}
-	report.result = CoordinatorResult::Partial;
-	const auto recovered = RecoverInterruptedEffects(journal);
-	if (recovered && !SaveJournal(store, journal)) {
-		report.result = CoordinatorResult::CheckpointFailed;
-		return Report(journal, report);
-	}
+		CoordinatorReport &report) {
 	const auto deadline = clock.now() + kRemotePhaseBudget;
 	for (auto i = size_t(0); i != journal.accounts.size(); ++i) {
 		const auto accountId = journal.accounts[i].accountId;
 		const auto target = journal.accounts[i].remoteSessionTarget;
 		const auto sessionIds = journal.accounts[i].sessionIdsForRevoke;
 		const auto state = journal.accounts[i].remoteSessionRevoke;
-		const auto localState = journal.accounts[i].localDataClear;
-		if (!CanBegin(state, retryMode)
-			|| localState.state == EffectState::Succeeded) {
+		if (state.state != EffectState::Pending) {
 			continue;
 		}
 		if (clock.now() >= deadline) {
@@ -102,10 +100,8 @@ CoordinatorReport RunResetCoordinator(
 				journal,
 				store,
 				JournalEffect::RemoteSessionRevoke,
-				accountId,
-				retryMode)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+				accountId)) {
+			return false;
 		}
 		++report.remoteAttempts;
 		auto outcome = EffectResult::Unconfirmed;
@@ -124,27 +120,68 @@ CoordinatorReport RunResetCoordinator(
 				JournalEffect::RemoteSessionRevoke,
 				outcome,
 				accountId)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+			return false;
 		}
 		if (clock.now() >= deadline) {
 			report.remoteDeadlineReached = true;
 		}
 	}
+	return true;
+}
+
+CoordinatorReport Run(
+		EmergencyActionJournal &journal,
+		JournalStore &store,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		RemoteSessionEffect *remote = nullptr,
+		const CoordinatorClock *clock = nullptr) {
+	auto report = CoordinatorReport();
+	const auto saved = LoadJournal(store, journal.operationId);
+	if (!saved || EncodeJournal(*saved) != EncodeJournal(journal)) {
+		return report;
+	}
+	if (journal.action != EmergencyAction::ResetAccountData) {
+		report.result = CoordinatorResult::UnsupportedAction;
+		return report;
+	}
+	if (remote && !IsSeedJournal(journal)) {
+		return report;
+	}
+	report.result = CoordinatorResult::Partial;
+	const auto failed = [&] {
+		report.result = CoordinatorResult::CheckpointFailed;
+		return Report(journal, report);
+	};
+	auto candidate = journal;
+	if (RecoverInterruptedEffects(candidate)) {
+		if (!SaveJournal(store, candidate)) {
+			return failed();
+		}
+		journal = std::move(candidate);
+	}
+	if (remote && !RunRemotePhase(journal, store, *remote, *clock, report)) {
+		return failed();
+	}
+	candidate = journal;
+	if (FinishRemotePhase(candidate)) {
+		if (!SaveJournal(store, candidate)) {
+			return failed();
+		}
+		journal = std::move(candidate);
+	}
 	for (auto i = size_t(0); i != journal.accounts.size(); ++i) {
 		const auto accountId = journal.accounts[i].accountId;
 		const auto state = journal.accounts[i].localDataClear;
-		if (!CanBegin(state, retryMode)) {
+		if (!CanBeginLocal(state)) {
 			continue;
 		}
 		if (!Claim(
 				journal,
 				store,
 				JournalEffect::LocalDataClear,
-				accountId,
-				retryMode)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+				accountId)) {
+			return failed();
 		}
 		++report.localAttempts;
 		auto outcome = EffectResult::Unconfirmed;
@@ -159,26 +196,17 @@ CoordinatorReport RunResetCoordinator(
 				JournalEffect::LocalDataClear,
 				outcome,
 				accountId)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+			return failed();
 		}
 	}
-	const auto localComplete = std::ranges::all_of(
-		journal.accounts,
-		[](const JournalAccount &account) {
-			return account.localDataClear.state == EffectState::Succeeded
-				|| account.localDataClear.state == EffectState::NotRequested;
-		});
-	if (localComplete
-		&& CanBegin(journal.safeDestinationActivation, retryMode)) {
+	if (LocalCleanupComplete(journal)
+		&& CanBeginLocal(journal.safeDestinationActivation)) {
 		if (!Claim(
 				journal,
 				store,
 				JournalEffect::SafeDestinationActivation,
-				std::nullopt,
-				retryMode)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+				std::nullopt)) {
+			return failed();
 		}
 		report.safeDestinationAttempted = true;
 		auto outcome = EffectResult::Unconfirmed;
@@ -195,11 +223,30 @@ CoordinatorReport RunResetCoordinator(
 				JournalEffect::SafeDestinationActivation,
 				outcome,
 				std::nullopt)) {
-			report.result = CoordinatorResult::CheckpointFailed;
-			return Report(journal, report);
+			return failed();
 		}
 	}
 	return Report(journal, report);
+}
+
+} // namespace
+
+CoordinatorReport RunResetCoordinator(
+		EmergencyActionJournal &journal,
+		const JournalStore::ExecutionLease &lease,
+		RemoteSessionEffect &remote,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination,
+		const CoordinatorClock &clock) {
+	return Run(journal, lease.store(), local, destination, &remote, &clock);
+}
+
+CoordinatorReport ResumeResetCoordinator(
+		EmergencyActionJournal &journal,
+		const JournalStore::ExecutionLease &lease,
+		LocalAccountEffect &local,
+		SafeDestinationEffect &destination) {
+	return Run(journal, lease.store(), local, destination);
 }
 
 } // namespace Ayu::EmergencyActions

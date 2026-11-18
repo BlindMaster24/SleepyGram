@@ -48,6 +48,18 @@ struct FixtureStore final : JournalStore {
 	bool failNextWrite = false;
 	int writes = 0;
 
+	std::unique_ptr<ExecutionLease> tryAcquireExecution() override {
+		return nullptr;
+	}
+
+	std::optional<std::vector<OperationId>> operationIds() override {
+		auto ids = std::vector<OperationId>();
+		for (const auto &[id, bytes] : values) {
+			ids.emplace_back(id);
+		}
+		return ids;
+	}
+
 	JournalCreateResult createAtomically(
 			const OperationId &operationId,
 			std::span<const std::byte> bytes) override {
@@ -119,10 +131,10 @@ void DurableJournalRoundTripsExactPlanTargets() {
 			AccountId("account-a"))
 		&& HasEffect(ResumeEffects(*source), JournalEffect::RemoteSessionRevoke,
 			AccountId("account-a"))
-		&& HasEffect(ResumeEffects(*source), JournalEffect::SafeDestinationActivation));
+		&& !HasEffect(ResumeEffects(*source), JournalEffect::SafeDestinationActivation));
 }
 
-void NetworkUnknownRequiresExplicitRetry() {
+void NetworkUnknownCannotBeRetried() {
 	auto journal = MakeJournal(Plan()).value();
 	Check("remote-starts-once", BeginEffect(
 		journal,
@@ -144,20 +156,20 @@ void NetworkUnknownRequiresExplicitRetry() {
 		Status(journal) == JournalStatus::NeedsAttention
 		&& !HasEffect(ResumeEffects(journal), JournalEffect::RemoteSessionRevoke,
 			AccountId("account-a")));
-	Check("unknown-outcome-retry-is-explicit", BeginEffect(
+	Check("unknown-outcome-cannot-restart", BeginEffect(
 		journal,
 		JournalEffect::RemoteSessionRevoke,
-		AccountId("account-a")) == TransitionResult::Rejected
-		&& BeginEffect(
+		AccountId("account-a")) == TransitionResult::Rejected);
+	journal = MakeJournal(Plan()).value();
+	Check("fresh-attempt-records-confirmed-network-success", BeginEffect(
+		journal,
+		JournalEffect::RemoteSessionRevoke,
+		AccountId("account-a")) == TransitionResult::Applied
+		&& ResolveEffect(
 			journal,
 			JournalEffect::RemoteSessionRevoke,
-			AccountId("account-a"),
-			RetryMode::ExplicitlyRetryUnconfirmed) == TransitionResult::Applied);
-	Check("confirmed-network-success-is-distinct", ResolveEffect(
-		journal,
-		JournalEffect::RemoteSessionRevoke,
-		EffectResult::ConfirmedSuccess,
-		AccountId("account-a")) == TransitionResult::Applied
+			EffectResult::ConfirmedSuccess,
+			AccountId("account-a")) == TransitionResult::Applied
 		&& journal.accounts.front().remoteSessionRevoke.networkOutcome
 			== NetworkOutcome::SuccessConfirmed);
 }
@@ -168,22 +180,18 @@ void RecoveryAndLocalTransitionsAreIdempotent() {
 		journal,
 		JournalEffect::LocalDataClear,
 		AccountId("account-a")) == TransitionResult::Applied);
-	Check("interrupted-local-effect-recovers-as-unknown",
+	Check("interrupted-local-effect-recovers-as-retryable",
 		RecoverInterruptedEffects(journal) == 1
 		&& RecoverInterruptedEffects(journal) == 0
-		&& journal.accounts.front().localDataClear.state == EffectState::Unconfirmed);
-	Check("recovered-local-effect-is-not-retried-implicitly",
-		!HasEffect(ResumeEffects(journal), JournalEffect::LocalDataClear,
-			AccountId("account-a"))
-		&& HasEffect(ResumeEffects(journal, RetryMode::ExplicitlyRetryUnconfirmed),
-			JournalEffect::LocalDataClear,
+		&& journal.accounts.front().localDataClear.state == EffectState::FailedRetryable);
+	Check("recovered-local-effect-can-be-retried-offline",
+		HasEffect(ResumeEffects(journal), JournalEffect::LocalDataClear,
 			AccountId("account-a")));
 	Check("local-clear-retry-and-completion",
 		BeginEffect(
 			journal,
 			JournalEffect::LocalDataClear,
-			AccountId("account-a"),
-			RetryMode::ExplicitlyRetryUnconfirmed) == TransitionResult::Applied
+			AccountId("account-a")) == TransitionResult::Applied
 		&& ResolveEffect(
 			journal,
 			JournalEffect::LocalDataClear,
@@ -194,6 +202,8 @@ void RecoveryAndLocalTransitionsAreIdempotent() {
 		JournalEffect::LocalDataClear,
 		EffectResult::ConfirmedSuccess,
 		AccountId("account-a")) == TransitionResult::AlreadyApplied);
+	Check("destination-is-eligible-after-durable-local-cleanup",
+		HasEffect(ResumeEffects(journal), JournalEffect::SafeDestinationActivation));
 }
 
 void CodecRejectsMalformedAndFutureData() {
@@ -202,7 +212,7 @@ void CodecRejectsMalformedAndFutureData() {
 	truncated.pop_back();
 	Check("truncated-journal-rejected", !DecodeJournal(truncated));
 	auto future = bytes;
-	future[4] = std::byte(3);
+	future[4] = std::byte(4);
 	Check("unknown-version-rejected", !DecodeJournal(future));
 	Check("oversized-journal-rejected",
 		!DecodeJournal(std::vector<std::byte>(kMaxJournalBytes + 1)));
@@ -279,7 +289,7 @@ void StoreUsesAtomicStorageBoundary() {
 
 int main() {
 	DurableJournalRoundTripsExactPlanTargets();
-	NetworkUnknownRequiresExplicitRetry();
+	NetworkUnknownCannotBeRetried();
 	RecoveryAndLocalTransitionsAreIdempotent();
 	CodecRejectsMalformedAndFutureData();
 	LegacyJournalDecodesToExactFrozenSessionTargets();

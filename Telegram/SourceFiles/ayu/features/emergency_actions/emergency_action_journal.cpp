@@ -3,18 +3,36 @@
 
 #include <algorithm>
 #include <array>
-#include <limits>
+#include <atomic>
+#include <chrono>
+#include <fstream>
 #include <ranges>
+#include <string_view>
 #include <utility>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <cerrno>
+#include <cstdio>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 namespace Ayu::EmergencyActions {
 namespace {
 
 constexpr auto kMagic = std::array<uint8_t, 4>{ 'A', 'E', 'J', '1' };
-constexpr auto kVersion = uint16_t(2);
+constexpr auto kVersion = uint16_t(3);
 constexpr auto kMaxIdBytes = size_t(128);
 constexpr auto kMaxAccounts = size_t(64);
 constexpr auto kMaxSessionsPerAccount = size_t(128);
+constexpr auto kJournalExtension = ".journal";
 
 bool ValidId(const std::string &value) {
 	return !value.empty()
@@ -52,8 +70,17 @@ bool ValidState(const JournalEffectState &value, bool network) {
 		return value.networkOutcome == (network
 			? NetworkOutcome::Unconfirmed
 			: NetworkOutcome::NotAttempted);
+	case EffectState::Skipped:
+		return network && value.networkOutcome == NetworkOutcome::NotAttempted;
 	}
 	return false;
+}
+
+bool LocalPhaseStarted(const EmergencyActionJournal &journal) {
+	return std::ranges::any_of(journal.accounts, [](const JournalAccount &account) {
+		const auto state = account.localDataClear.state;
+		return state != EffectState::NotRequested && state != EffectState::Pending;
+	});
 }
 
 bool ValidJournal(const EmergencyActionJournal &journal) {
@@ -72,7 +99,8 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 		return false;
 	}
 	if ((journal.safeDestination == SafeDestinationKind::Profile)
-		!= journal.safeProfileId.valid()) {
+		? !ValidId(journal.safeProfileId.value)
+		: journal.safeProfileId.valid()) {
 		return false;
 	}
 	auto ids = std::vector<AccountId>();
@@ -119,7 +147,16 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 		!= (journal.safeDestinationActivation.state == EffectState::NotRequested)) {
 		return false;
 	}
-	return true;
+	const auto activation = journal.safeDestinationActivation.state;
+	if (activation != EffectState::NotRequested
+		&& activation != EffectState::Pending
+		&& !LocalCleanupComplete(journal)) {
+		return false;
+	}
+	return !LocalPhaseStarted(journal)
+		|| std::ranges::none_of(journal.accounts, [](const JournalAccount &account) {
+			return account.remoteSessionRevoke.state == EffectState::InProgress;
+		});
 }
 
 JournalEffectState *FindEffect(
@@ -156,6 +193,17 @@ JournalEffectState *FindEffect(
 
 bool IsNetworkEffect(JournalEffect effect) {
 	return effect == JournalEffect::RemoteSessionRevoke;
+}
+
+bool IsIdempotentEffect(JournalEffect effect) {
+	return effect == JournalEffect::LocalDataClear
+		|| effect == JournalEffect::SafeDestinationActivation;
+}
+
+bool CanBeginEffect(EffectState state, JournalEffect effect) {
+	return state == EffectState::Pending
+		|| (state == EffectState::FailedRetryable && !IsNetworkEffect(effect))
+		|| (state == EffectState::Unconfirmed && IsIdempotentEffect(effect));
 }
 
 class Writer final {
@@ -207,7 +255,7 @@ public:
 		return true;
 	}
 
-	bool string(std::string *value) {
+	bool string(std::string *value, bool allowEmpty = false) {
 		uint16_t size = 0;
 		if (!u16(&size) || size > kMaxIdBytes
 			|| size > _bytes.size() - _offset) {
@@ -222,7 +270,7 @@ public:
 			}
 			value->push_back(char(ch));
 		}
-		return ValidId(*value);
+		return (allowEmpty && value->empty()) || ValidId(*value);
 	}
 
 	[[nodiscard]] bool done() const {
@@ -239,9 +287,15 @@ void WriteState(Writer &writer, const JournalEffectState &state) {
 	writer.byte(uint8_t(state.networkOutcome));
 }
 
-bool ReadState(Reader &reader, JournalEffectState *state) {
+bool ReadState(
+		Reader &reader,
+		JournalEffectState *state,
+		uint16_t version) {
+	const auto maxState = (version < 3)
+		? EffectState::Unconfirmed
+		: EffectState::Skipped;
 	uint8_t value = 0;
-	if (!reader.byte(&value) || value > uint8_t(EffectState::Unconfirmed)) {
+	if (!reader.byte(&value) || value > uint8_t(maxState)) {
 		return false;
 	}
 	state->state = EffectState(value);
@@ -250,6 +304,253 @@ bool ReadState(Reader &reader, JournalEffectState *state) {
 	}
 	state->networkOutcome = NetworkOutcome(value);
 	return true;
+}
+
+std::filesystem::path JournalFilename(const OperationId &id) {
+	constexpr auto digits = std::string_view("abcdefghijklmnopqrstuvwxyz234567");
+	auto result = std::string();
+	auto buffer = uint32_t(0);
+	auto bits = 0;
+	for (const auto ch : id.value) {
+		buffer = (buffer << 8) | uint8_t(ch);
+		bits += 8;
+		while (bits >= 5) {
+			bits -= 5;
+			result += digits[(buffer >> bits) & 31];
+		}
+	}
+	if (bits) {
+		result += digits[(buffer << (5 - bits)) & 31];
+	}
+	return result + kJournalExtension;
+}
+
+std::vector<std::byte> ReadBytes(
+		const std::filesystem::path &path,
+		size_t maximumBytes) {
+	auto error = std::error_code();
+	if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error))) {
+		return {};
+	}
+	const auto size = std::filesystem::file_size(path, error);
+	if (error || !size || size > std::min(maximumBytes, kMaxJournalBytes)) {
+		return {};
+	}
+	auto input = std::ifstream(path, std::ios::binary);
+	auto bytes = std::vector<std::byte>(size);
+	if (!input.read(reinterpret_cast<char *>(bytes.data()), bytes.size())
+		|| input.peek() != std::char_traits<char>::eof()
+		|| input.bad()) {
+		return {};
+	}
+	return bytes;
+}
+
+#ifdef _WIN32
+using NativeHandle = HANDLE;
+const auto kInvalidHandle = INVALID_HANDLE_VALUE;
+
+void CloseHandleIfValid(NativeHandle handle) {
+	CloseHandle(handle);
+}
+
+bool SyncDirectory(const std::filesystem::path &) {
+	return true;
+}
+
+bool MakePrivateDirectory(const std::filesystem::path &path) {
+	return CreateDirectoryW(path.c_str(), nullptr)
+		|| GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
+NativeHandle OpenExecutionLock(const std::filesystem::path &path) {
+	return CreateFileW(
+		path.c_str(),
+		GENERIC_READ | GENERIC_WRITE,
+		0,
+		nullptr,
+		OPEN_ALWAYS,
+		FILE_FLAG_OPEN_REPARSE_POINT,
+		nullptr);
+}
+
+NativeHandle OpenTemporaryFile(const std::filesystem::path &path) {
+	return CreateFileW(
+		path.c_str(),
+		GENERIC_WRITE,
+		0,
+		nullptr,
+		CREATE_NEW,
+		FILE_ATTRIBUTE_NORMAL,
+		nullptr);
+}
+
+bool WriteAndSync(NativeHandle file, std::span<const std::byte> bytes) {
+	auto written = DWORD(0);
+	return WriteFile(file, bytes.data(), DWORD(bytes.size()), &written, nullptr)
+		&& written == bytes.size()
+		&& FlushFileBuffers(file);
+}
+
+JournalCreateResult Publish(
+		const std::filesystem::path &source,
+		const std::filesystem::path &target,
+		bool replace) {
+	const auto flags = MOVEFILE_WRITE_THROUGH
+		| (replace ? MOVEFILE_REPLACE_EXISTING : 0);
+	if (MoveFileExW(source.c_str(), target.c_str(), flags)) {
+		return JournalCreateResult::Created;
+	}
+	const auto error = GetLastError();
+	return (error == ERROR_ALREADY_EXISTS || error == ERROR_FILE_EXISTS)
+		? JournalCreateResult::AlreadyExists
+		: JournalCreateResult::Failed;
+}
+
+auto NativeProcessId() {
+	return GetCurrentProcessId();
+}
+#else
+using NativeHandle = int;
+constexpr auto kInvalidHandle = -1;
+
+void CloseHandleIfValid(NativeHandle handle) {
+	close(handle);
+}
+
+bool MakePrivateDirectory(const std::filesystem::path &path) {
+	return mkdir(path.c_str(), S_IRWXU) == 0 || errno == EEXIST;
+}
+
+bool SyncDirectory(const std::filesystem::path &path) {
+	const auto fd = open(path.empty() ? "." : path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	if (fd == kInvalidHandle) {
+		return false;
+	}
+	const auto synced = fsync(fd) == 0;
+	close(fd);
+	return synced;
+}
+
+NativeHandle OpenExecutionLock(const std::filesystem::path &path) {
+	const auto fd = open(path.c_str(), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC,
+		S_IRUSR | S_IWUSR);
+	if (fd == kInvalidHandle) {
+		return kInvalidHandle;
+	}
+	if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+		close(fd);
+		return kInvalidHandle;
+	}
+	return fd;
+}
+
+NativeHandle OpenTemporaryFile(const std::filesystem::path &path) {
+	return open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
+		S_IRUSR | S_IWUSR);
+}
+
+bool WriteAndSync(NativeHandle file, std::span<const std::byte> bytes) {
+	while (!bytes.empty()) {
+		const auto written = write(file, bytes.data(), bytes.size());
+		if (written < 0 && errno == EINTR) {
+			continue;
+		}
+		if (written <= 0) {
+			return false;
+		}
+		bytes = bytes.subspan(written);
+	}
+	return fsync(file) == 0;
+}
+
+JournalCreateResult Publish(
+		const std::filesystem::path &source,
+		const std::filesystem::path &target,
+		bool replace) {
+	const auto result = replace
+		? rename(source.c_str(), target.c_str())
+		: link(source.c_str(), target.c_str());
+	if (result != 0) {
+		return (errno == EEXIST)
+			? JournalCreateResult::AlreadyExists
+			: JournalCreateResult::Failed;
+	}
+	return SyncDirectory(target.parent_path())
+		? JournalCreateResult::Created
+		: JournalCreateResult::Failed;
+}
+
+auto NativeProcessId() {
+	return getpid();
+}
+#endif
+
+class NativeFile final {
+public:
+	explicit NativeFile(NativeHandle handle) : _handle(handle) {
+	}
+	NativeFile(const NativeFile &) = delete;
+	NativeFile &operator=(const NativeFile &) = delete;
+
+	~NativeFile() {
+		close();
+	}
+
+	void close() {
+		if (_handle != kInvalidHandle) {
+			CloseHandleIfValid(std::exchange(_handle, kInvalidHandle));
+		}
+	}
+
+private:
+	NativeHandle _handle;
+
+};
+
+class FileExecutionLease final : public JournalStore::ExecutionLease {
+public:
+	FileExecutionLease(JournalStore &store, NativeHandle file)
+	: ExecutionLease(store)
+	, _file(file) {
+	}
+
+private:
+	NativeFile _file;
+
+};
+
+bool PrepareDirectory(const std::filesystem::path &path) {
+	auto error = std::error_code();
+	return MakePrivateDirectory(path)
+		&& std::filesystem::is_directory(std::filesystem::symlink_status(path, error))
+		&& SyncDirectory(path.parent_path());
+}
+
+JournalCreateResult WriteAtomically(
+		const std::filesystem::path &target,
+		std::span<const std::byte> bytes,
+		bool replace) {
+	static auto counter = std::atomic<uint64_t>();
+	const auto process = std::to_string(NativeProcessId());
+	const auto now = std::chrono::steady_clock::now().time_since_epoch().count();
+	const auto temp = target.parent_path() / (process
+		+ "-" + std::to_string(now)
+		+ "-" + std::to_string(counter.fetch_add(1, std::memory_order_relaxed))
+		+ ".tmp");
+	const auto handle = OpenTemporaryFile(temp);
+	if (handle == kInvalidHandle) {
+		return JournalCreateResult::Failed;
+	}
+	auto file = NativeFile(handle);
+	const auto written = WriteAndSync(handle, bytes);
+	file.close();
+	const auto result = written
+		? Publish(temp, target, replace)
+		: JournalCreateResult::Failed;
+	auto error = std::error_code();
+	std::filesystem::remove(temp, error);
+	return result;
 }
 
 } // namespace
@@ -326,7 +627,8 @@ JournalStatus Status(const EmergencyActionJournal &journal) {
 	states.push_back(journal.safeDestinationActivation.state);
 	if (std::ranges::any_of(states, [](EffectState state) {
 		return state == EffectState::Unconfirmed
-			|| state == EffectState::FailedRetryable;
+			|| state == EffectState::FailedRetryable
+			|| state == EffectState::Skipped;
 	})) {
 		return JournalStatus::NeedsAttention;
 	}
@@ -344,8 +646,7 @@ JournalStatus Status(const EmergencyActionJournal &journal) {
 }
 
 std::vector<PendingEffect> ResumeEffects(
-		const EmergencyActionJournal &journal,
-		RetryMode retryMode) {
+		const EmergencyActionJournal &journal) {
 	auto result = std::vector<PendingEffect>();
 	if (!ValidJournal(journal)) {
 		return result;
@@ -353,16 +654,20 @@ std::vector<PendingEffect> ResumeEffects(
 	const auto add = [&](const JournalEffectState &state,
 			JournalEffect effect,
 			std::optional<AccountId> accountId = std::nullopt) {
-		if (state.state == EffectState::Pending
-			|| state.state == EffectState::FailedRetryable
-			|| (state.state == EffectState::Unconfirmed
-				&& retryMode == RetryMode::ExplicitlyRetryUnconfirmed)) {
+		if (effect == JournalEffect::SafeDestinationActivation
+			&& !LocalCleanupComplete(journal)) {
+			return;
+		}
+		if (CanBeginEffect(state.state, effect)) {
 			result.push_back({ .accountId = std::move(accountId), .effect = effect });
 		}
 	};
+	const auto localStarted = LocalPhaseStarted(journal);
 	for (const auto &account : journal.accounts) {
 		add(account.localDataClear, JournalEffect::LocalDataClear, account.accountId);
-		add(account.remoteSessionRevoke, JournalEffect::RemoteSessionRevoke, account.accountId);
+		if (!localStarted) {
+			add(account.remoteSessionRevoke, JournalEffect::RemoteSessionRevoke, account.accountId);
+		}
 	}
 	add(journal.installationRemoval, JournalEffect::InstallationRemoval);
 	add(journal.safeDestinationActivation, JournalEffect::SafeDestinationActivation);
@@ -374,29 +679,51 @@ size_t RecoverInterruptedEffects(EmergencyActionJournal &journal) {
 		return 0;
 	}
 	auto recovered = size_t(0);
-	const auto recover = [&](JournalEffectState &state, bool network) {
+	const auto recover = [&](JournalEffectState &state, JournalEffect effect) {
 		if (state.state == EffectState::InProgress) {
-			state.state = EffectState::Unconfirmed;
-			state.networkOutcome = network
+			state.state = IsIdempotentEffect(effect)
+				? EffectState::FailedRetryable
+				: EffectState::Unconfirmed;
+			state.networkOutcome = IsNetworkEffect(effect)
 				? NetworkOutcome::Unconfirmed
 				: NetworkOutcome::NotAttempted;
 			++recovered;
 		}
 	};
 	for (auto &account : journal.accounts) {
-		recover(account.localDataClear, false);
-		recover(account.remoteSessionRevoke, true);
+		recover(account.localDataClear, JournalEffect::LocalDataClear);
+		recover(account.remoteSessionRevoke, JournalEffect::RemoteSessionRevoke);
 	}
-	recover(journal.installationRemoval, false);
-	recover(journal.safeDestinationActivation, false);
+	recover(journal.installationRemoval, JournalEffect::InstallationRemoval);
+	recover(journal.safeDestinationActivation, JournalEffect::SafeDestinationActivation);
 	return recovered;
+}
+
+bool FinishRemotePhase(EmergencyActionJournal &journal) {
+	if (!ValidJournal(journal)) {
+		return false;
+	}
+	auto changed = false;
+	for (auto &account : journal.accounts) {
+		if (account.remoteSessionRevoke.state == EffectState::Pending) {
+			account.remoteSessionRevoke.state = EffectState::Skipped;
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+bool LocalCleanupComplete(const EmergencyActionJournal &journal) {
+	return std::ranges::all_of(journal.accounts, [](const JournalAccount &account) {
+		const auto state = account.localDataClear.state;
+		return state == EffectState::Succeeded || state == EffectState::NotRequested;
+	});
 }
 
 TransitionResult BeginEffect(
 		EmergencyActionJournal &journal,
 		JournalEffect effect,
-		std::optional<AccountId> accountId,
-		RetryMode retryMode) {
+		std::optional<AccountId> accountId) {
 	if (!ValidJournal(journal)) {
 		return TransitionResult::Rejected;
 	}
@@ -404,26 +731,20 @@ TransitionResult BeginEffect(
 	if (!state) {
 		return TransitionResult::Rejected;
 	}
-	if (effect == JournalEffect::RemoteSessionRevoke) {
-		const auto account = std::ranges::find(
-			journal.accounts,
-			*accountId,
-			&JournalAccount::accountId);
-		if (account->localDataClear.state == EffectState::Succeeded) {
-			return TransitionResult::Rejected;
-		}
+	if ((effect == JournalEffect::RemoteSessionRevoke && LocalPhaseStarted(journal))
+		|| (effect == JournalEffect::LocalDataClear
+			&& std::ranges::any_of(journal.accounts, [](const JournalAccount &account) {
+				return account.remoteSessionRevoke.state == EffectState::InProgress;
+			}))
+		|| (effect == JournalEffect::SafeDestinationActivation
+			&& !LocalCleanupComplete(journal))) {
+		return TransitionResult::Rejected;
 	}
 	if (state->state == EffectState::InProgress
 		|| state->state == EffectState::Succeeded) {
 		return TransitionResult::AlreadyApplied;
 	}
-	if (state->state == EffectState::Unconfirmed
-		&& retryMode != RetryMode::ExplicitlyRetryUnconfirmed) {
-		return TransitionResult::Rejected;
-	}
-	if (state->state != EffectState::Pending
-		&& state->state != EffectState::FailedRetryable
-		&& state->state != EffectState::Unconfirmed) {
+	if (!CanBeginEffect(state->state, effect)) {
 		return TransitionResult::Rejected;
 	}
 	state->state = EffectState::InProgress;
@@ -525,7 +846,7 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		}
 	}
 	uint16_t version = 0;
-	if (!reader.u16(&version) || (version != 1 && version != kVersion)) {
+	if (!reader.u16(&version) || version < 1 || version > kVersion) {
 		return std::nullopt;
 	}
 	auto result = EmergencyActionJournal();
@@ -547,8 +868,7 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		return std::nullopt;
 	}
 	result.safeDestination = SafeDestinationKind(value);
-	if (!reader.string(&result.safeProfileId.value)
-		&& result.safeDestination == SafeDestinationKind::Profile) {
+	if (!reader.string(&result.safeProfileId.value, true)) {
 		return std::nullopt;
 	}
 	uint16_t count = 0;
@@ -568,8 +888,8 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 			}
 			account.remoteSessionTarget = RemoteSessionTargetKind(value);
 		}
-		if (!ReadState(reader, &account.localDataClear)
-			|| !ReadState(reader, &account.remoteSessionRevoke)) {
+		if (!ReadState(reader, &account.localDataClear, version)
+			|| !ReadState(reader, &account.remoteSessionRevoke, version)) {
 			return std::nullopt;
 		}
 		uint16_t sessionCount = 0;
@@ -593,13 +913,82 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		}
 		result.accounts.push_back(std::move(account));
 	}
-	if (!ReadState(reader, &result.installationRemoval)
-		|| !ReadState(reader, &result.safeDestinationActivation)
+	if (!ReadState(reader, &result.installationRemoval, version)
+		|| !ReadState(reader, &result.safeDestinationActivation, version)
 		|| !reader.done()
 		|| !ValidJournal(result)) {
 		return std::nullopt;
 	}
 	return result;
+}
+
+FileJournalStore::FileJournalStore(std::filesystem::path directory)
+: _directory(std::move(directory)) {
+}
+
+std::unique_ptr<JournalStore::ExecutionLease> FileJournalStore::tryAcquireExecution() {
+	if (!PrepareDirectory(_directory)) {
+		return nullptr;
+	}
+	const auto handle = OpenExecutionLock(_directory / "execution.lock");
+	return (handle == kInvalidHandle)
+		? nullptr
+		: std::make_unique<FileExecutionLease>(*this, handle);
+}
+
+std::optional<std::vector<OperationId>> FileJournalStore::operationIds() {
+	auto result = std::vector<OperationId>();
+	auto error = std::error_code();
+	auto i = std::filesystem::directory_iterator(_directory, error);
+	const auto end = std::filesystem::directory_iterator();
+	while (!error && i != end) {
+		const auto &path = i->path();
+		if (path.extension() == kJournalExtension) {
+			const auto bytes = ReadBytes(path, kMaxJournalBytes);
+			const auto journal = DecodeJournal(bytes);
+			if (!journal || path.filename() != JournalFilename(journal->operationId)) {
+				return std::nullopt;
+			}
+			result.push_back(journal->operationId);
+		}
+		i.increment(error);
+	}
+	if (error) {
+		return std::nullopt;
+	}
+	std::ranges::sort(result);
+	return result;
+}
+
+JournalCreateResult FileJournalStore::createAtomically(
+		const OperationId &operationId,
+		std::span<const std::byte> bytes) {
+	const auto journal = DecodeJournal(bytes);
+	if (!journal || journal->operationId != operationId || !PrepareDirectory(_directory)) {
+		return JournalCreateResult::Failed;
+	}
+	return WriteAtomically(_directory / JournalFilename(operationId), bytes, false);
+}
+
+std::vector<std::byte> FileJournalStore::read(
+		const OperationId &operationId,
+		size_t maximumBytes) {
+	return ValidId(operationId.value)
+		? ReadBytes(_directory / JournalFilename(operationId), maximumBytes)
+		: std::vector<std::byte>();
+}
+
+bool FileJournalStore::writeAtomically(
+		const OperationId &operationId,
+		std::span<const std::byte> bytes) {
+	const auto journal = DecodeJournal(bytes);
+	if (!journal || journal->operationId != operationId) {
+		return false;
+	}
+	const auto path = _directory / JournalFilename(operationId);
+	auto error = std::error_code();
+	return std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error))
+		&& WriteAtomically(path, bytes, true) == JournalCreateResult::Created;
 }
 
 bool SaveJournal(

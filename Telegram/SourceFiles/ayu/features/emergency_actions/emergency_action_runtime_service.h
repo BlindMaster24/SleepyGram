@@ -6,6 +6,7 @@
 
 #include <functional>
 #include <optional>
+#include <vector>
 
 namespace Ayu::EmergencyActions {
 
@@ -24,10 +25,20 @@ struct RuntimeServiceReport final {
 	std::optional<CoordinatorReport> coordinator;
 };
 
+struct ResetRecoveryReport final {
+	bool canStartAccounts = false;
+	std::vector<CoordinatorReport> operations;
+};
+
+[[nodiscard]] ResetRecoveryReport ResumePendingResetOperations(
+	JournalStore &store,
+	const InstallationId &installationId,
+	LocalAccountEffect &local,
+	SafeDestinationEffect &destination);
+
 using LiveInstallationReader = std::function<
 	std::optional<LiveInstallation>()>;
 
-// This concrete orchestration layer has no production side-effect adapters.
 // It accepts only verified fixed-size credentials and the lock-screen token.
 class EmergencyActionRuntimeService final {
 public:

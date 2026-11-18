@@ -1,11 +1,19 @@
 #include "ayu/features/emergency_actions/emergency_action_runtime_service.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -80,11 +88,29 @@ RuleConfiguration Configuration() {
 }
 
 struct FixtureStore final : JournalStore {
+	struct Lease final : ExecutionLease {
+		explicit Lease(JournalStore &store) : ExecutionLease(store) {
+		}
+	};
+
 	std::map<std::string, std::vector<std::byte>> values;
 	int creates = 0;
 	int seedWrites = 0;
 	int writes = 0;
 	bool failCreate = false;
+	bool executionBusy = false;
+
+	std::unique_ptr<ExecutionLease> tryAcquireExecution() override {
+		return executionBusy ? nullptr : std::make_unique<Lease>(*this);
+	}
+
+	std::optional<std::vector<OperationId>> operationIds() override {
+		auto ids = std::vector<OperationId>();
+		for (const auto &[id, bytes] : values) {
+			ids.emplace_back(id);
+		}
+		return ids;
+	}
 
 	JournalCreateResult createAtomically(
 			const OperationId &id,
@@ -151,10 +177,11 @@ struct FakeRemote final : RemoteSessionEffect {
 };
 
 struct FakeLocal final : LocalAccountEffect {
-	explicit FakeLocal(FixtureStore *store) : store(store) {
+	explicit FakeLocal(JournalStore *store) : store(store) {
 	}
 
-	FixtureStore *store = nullptr;
+	JournalStore *store = nullptr;
+	EffectResult outcome = EffectResult::ConfirmedSuccess;
 	int calls = 0;
 	bool claimWasDurable = false;
 
@@ -167,15 +194,15 @@ struct FakeLocal final : LocalAccountEffect {
 				return account.accountId == accountId
 					&& account.localDataClear.state == EffectState::InProgress;
 			});
-		return EffectResult::ConfirmedSuccess;
+		return outcome;
 	}
 };
 
 struct FakeDestination final : SafeDestinationEffect {
-	explicit FakeDestination(FixtureStore *store) : store(store) {
+	explicit FakeDestination(JournalStore *store) : store(store) {
 	}
 
-	FixtureStore *store = nullptr;
+	JournalStore *store = nullptr;
 	int calls = 0;
 	bool claimWasDurable = false;
 
@@ -272,10 +299,93 @@ void NonLockScreenAndStaleReviewCannotStartEffects() {
 		&& f.local.calls == 0 && f.destination.calls == 0);
 	f.live.profiles.front().accountIds.push_back(AccountId("account-runtime"));
 	const auto stale = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
-	Check("changed-live-targets-require-new-explicit-review",
+	Check("live-safe-profile-cannot-contain-a-selected-account",
 		stale.status == RuntimeServiceStatus::StaleReview
 		&& f.store.seedWrites == 0 && f.remote.calls == 0
 		&& f.local.calls == 0 && f.destination.calls == 0);
+}
+
+LiveAccount AddedAccount() {
+	return {
+		.id = AccountId("added-later"),
+		.currentSessionId = SessionId("added-current"),
+		.sessionIds = { SessionId("added-current") },
+	};
+}
+
+void ResetAllResolvesLiveAccountsOnce() {
+	auto f = Fixture();
+	auto &rule = f.config.emergencyRules.front().rule;
+	rule.targetScope = TargetScope::AllAccounts;
+	rule.selectedAccountIds.clear();
+	const auto preview = PreviewEmergencyRule(
+		f.config,
+		EmergencyActionId("action-runtime"),
+		f.live,
+		OperationId("operation-reviewed"));
+	if (!preview || !ConfirmEmergencyRule(f.config, *preview, f.live, true)) {
+		Check("reset-all-fixture-confirms", false);
+		return;
+	}
+	f.live.accounts.push_back(AddedAccount());
+	f.live.profiles.front().accountIds.push_back(f.live.accounts.back().id);
+	const auto unsafe = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("reset-all-revalidates-that-the-safe-profile-is-empty",
+		unsafe.status == RuntimeServiceStatus::StaleReview && f.store.seedWrites == 0);
+	f.live.profiles.front().accountIds.clear();
+	const auto first = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	const auto saved = LoadJournal(f.store, OperationId("operation-reviewed"));
+	Check("reset-all-includes-accounts-added-after-review",
+		first.status == RuntimeServiceStatus::Coordinated
+		&& preview->plan.accounts.size() == 1 && saved && saved->accounts.size() == 2
+		&& saved->accounts[0].accountId == AccountId("account-runtime")
+		&& saved->accounts[1].accountId == AccountId("added-later")
+		&& saved->accounts[1].remoteSessionTarget == RemoteSessionTargetKind::None
+		&& f.local.calls == 2 && f.remote.calls == 1);
+	f.live = LiveInstallation();
+	const auto replay = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("reset-all-replay-uses-frozen-accounts-without-a-live-snapshot",
+		replay.status == RuntimeServiceStatus::Coordinated
+		&& f.store.seedWrites == 1 && f.local.calls == 2 && f.remote.calls == 1);
+}
+
+void SelectedRuleDoesNotWidenOnLiveChanges() {
+	auto f = Fixture();
+	auto &rule = f.config.emergencyRules.front().rule;
+	rule.remoteSessionPolicies.front().kind = RemoteSessionTargetKind::SelectedSessions;
+	rule.remoteSessionPolicies.front().selectedSessionIds = { SessionId("other-session") };
+	const auto preview = PreviewEmergencyRule(
+		f.config,
+		EmergencyActionId("action-runtime"),
+		f.live,
+		OperationId("operation-reviewed"));
+	if (!preview || !ConfirmEmergencyRule(f.config, *preview, f.live, true)) {
+		Check("selected-rule-fixture-confirms", false);
+		return;
+	}
+	f.live.accounts.push_back(AddedAccount());
+	f.live.accounts.front().sessionIds.back() = SessionId("replacement-session");
+	rule.selectedAccountIds.push_back(f.live.accounts.back().id);
+	const auto changed = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("changed-selected-rule-cannot-use-an-old-confirmation",
+		changed.status == RuntimeServiceStatus::NoEmergencyMatch && f.store.seedWrites == 0);
+	rule.selectedAccountIds.pop_back();
+	const auto first = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	const auto saved = LoadJournal(f.store, OperationId("operation-reviewed"));
+	Check("selected-rule-targets-only-confirmed-accounts-and-exact-session-ids",
+		first.status == RuntimeServiceStatus::Coordinated
+		&& saved && saved->accounts.size() == 1
+		&& saved->accounts[0].accountId == AccountId("account-runtime")
+		&& saved->accounts[0].sessionIdsForRevoke.empty()
+		&& f.local.calls == 1 && f.remote.calls == 0);
+	if (saved) {
+		auto widened = *saved;
+		widened.accounts.front().accountId = AccountId("added-later");
+		const auto overwritten = SaveJournal(f.store, widened);
+		const auto replay = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+		Check("selected-replay-rejects-a-journal-for-an-unselected-account",
+			overwritten && replay.status == RuntimeServiceStatus::Rejected);
+	}
 }
 
 void FailedFirstJournalWriteStartsNoEffects() {
@@ -289,6 +399,12 @@ void FailedFirstJournalWriteStartsNoEffects() {
 		Check("fixture-rule-confirms-for-journal-failure", false);
 		return;
 	}
+	f.store.executionBusy = true;
+	const auto busy = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
+	Check("overlapping-submit-does-not-create-or-run-an-operation",
+		busy.status == RuntimeServiceStatus::CheckpointFailed
+		&& f.store.creates == 0 && f.remote.calls == 0 && f.local.calls == 0);
+	f.store.executionBusy = false;
 	f.store.failCreate = true;
 	const auto result = f.service.Submit(LockScreenSubmit(), Verifier(0x20));
 	Check("journal-must-be-created-before-any-effect", result.status
@@ -297,11 +413,152 @@ void FailedFirstJournalWriteStartsNoEffects() {
 		&& f.destination.calls == 0);
 }
 
+class FixtureDirectory final {
+public:
+	FixtureDirectory()
+	: path(std::filesystem::temp_directory_path() / ("sleepygram-journal-test-"
+		+ std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())))
+	, owned(std::filesystem::create_directory(path)) {
+	}
+
+	~FixtureDirectory() {
+		if (owned) {
+			auto error = std::error_code();
+			std::filesystem::remove_all(path, error);
+		}
+	}
+
+	const std::filesystem::path path;
+	const bool owned;
+};
+
+void OfflineStartupFinishesLocalCleanupFromDisk() {
+	const auto fixtureDirectory = FixtureDirectory();
+	if (!fixtureDirectory.owned) {
+		Check("temporary-fixture-directory-created", false);
+		return;
+	}
+	const auto plan = BuildDryRunPlan(OperationId("operation-reviewed"), Rule(), Live());
+	auto journal = MakeJournal(plan).value();
+	const auto path = fixtureDirectory.path / "journal";
+	{
+		auto store = FileJournalStore(path);
+		auto reopened = FileJournalStore(path);
+		const auto lease = store.tryAcquireExecution();
+		Check("separate-file-stores-share-one-execution-lease",
+			lease && !reopened.tryAcquireExecution());
+		const auto seed = EncodeJournal(journal);
+		Check("native-store-creates-the-slot-without-overwrite",
+			store.createAtomically(journal.operationId, seed) == JournalCreateResult::Created
+			&& reopened.createAtomically(journal.operationId, seed)
+				== JournalCreateResult::AlreadyExists
+			&& reopened.read(journal.operationId, seed.size() - 1).empty());
+		Check("fixture-persists-an-interrupted-local-stage",
+			FinishRemotePhase(journal)
+			&& BeginEffect(
+				journal,
+				JournalEffect::LocalDataClear,
+				AccountId("account-runtime")) == TransitionResult::Applied
+			&& SaveJournal(store, journal));
+	}
+	auto store = FileJournalStore(path);
+	auto local = FakeLocal(&store);
+	auto destination = FakeDestination(&store);
+	const auto foreign = ResumePendingResetOperations(
+		store, InstallationId("another-installation"), local, destination);
+	Check("cold-start-rejects-a-foreign-installation-journal",
+		!foreign.canStartAccounts && local.calls == 0 && destination.calls == 0);
+	local.outcome = EffectResult::ConfirmedFailure;
+	const auto first = ResumePendingResetOperations(store, plan.installationId, local, destination);
+	Check("local-cleanup-failure-blocks-account-startup",
+		!first.canStartAccounts && local.calls == 1 && local.claimWasDurable
+		&& destination.calls == 0);
+	local.outcome = EffectResult::ConfirmedSuccess;
+	const auto second = ResumePendingResetOperations(store, plan.installationId, local, destination);
+	const auto saved = LoadJournal(store, journal.operationId);
+	Check("offline-retry-opens-safe-destination-with-remote-still-unconfirmed",
+		second.canStartAccounts && second.operations.size() == 1
+		&& second.operations[0].result == CoordinatorResult::Partial
+		&& second.operations[0].localCleanupComplete
+		&& second.operations[0].safeDestinationReady
+		&& local.calls == 2 && destination.calls == 1 && destination.claimWasDurable
+		&& saved && saved->accounts[0].remoteSessionRevoke.state == EffectState::Skipped
+		&& saved->accounts[0].localDataClear.state == EffectState::Succeeded);
+	const auto third = ResumePendingResetOperations(store, plan.installationId, local, destination);
+	Check("subsequent-startup-does-not-repeat-completed-local-effects",
+		third.canStartAccounts && local.calls == 2 && destination.calls == 1);
+	std::ofstream(path / "invalid.journal", std::ios::binary) << "truncated";
+	const auto corrupt = ResumePendingResetOperations(store, plan.installationId, local, destination);
+	Check("corrupt-durable-journal-blocks-account-startup", !corrupt.canStartAccounts);
+}
+
+#ifndef _WIN32
+void ExecutionLeaseRecoversAfterProcessDeath() {
+	const auto directory = FixtureDirectory();
+	if (!directory.owned) {
+		Check("temporary-lease-fixture-created", false);
+		return;
+	}
+	auto ready = std::array<int, 2>();
+	if (pipe(ready.data()) != 0) {
+		Check("fixture-pipe-created", false);
+		return;
+	}
+	const auto path = directory.path / "journal";
+	const auto plan = BuildDryRunPlan(OperationId("operation-reviewed"), Rule(), Live());
+	auto journal = MakeJournal(plan).value();
+	const auto child = fork();
+	if (child == 0) {
+		close(ready[0]);
+		auto store = FileJournalStore(path);
+		const auto lease = store.tryAcquireExecution();
+		const auto readyToInterrupt = char(lease
+			&& store.createAtomically(journal.operationId, EncodeJournal(journal))
+				== JournalCreateResult::Created
+			&& BeginEffect(
+				journal,
+				JournalEffect::RemoteSessionRevoke,
+				AccountId("account-runtime")) == TransitionResult::Applied
+			&& SaveJournal(store, journal));
+		if (write(ready[1], &readyToInterrupt, 1) != 1 || !readyToInterrupt) {
+			_exit(1);
+		}
+		pause();
+		_exit(1);
+	}
+	close(ready[1]);
+	auto locked = char(0);
+	const auto running = child > 0 && read(ready[0], &locked, 1) == 1 && locked;
+	close(ready[0]);
+	auto store = FileJournalStore(path);
+	Check("lease-excludes-a-different-process", running && !store.tryAcquireExecution());
+	if (child > 0) {
+		kill(child, SIGKILL);
+		waitpid(child, nullptr, 0);
+	}
+	Check("lease-is-available-after-process-death", running && store.tryAcquireExecution());
+	auto local = FakeLocal(&store);
+	auto destination = FakeDestination(&store);
+	const auto resumed = ResumePendingResetOperations(store, plan.installationId, local, destination);
+	const auto saved = LoadJournal(store, journal.operationId);
+	Check("process-death-preserves-remote-ambiguity-and-recovers-offline",
+		running && resumed.canStartAccounts && local.calls == 1 && destination.calls == 1
+		&& saved && saved->accounts[0].remoteSessionRevoke.state == EffectState::Unconfirmed
+		&& saved->accounts[0].remoteSessionRevoke.networkOutcome == NetworkOutcome::Unconfirmed);
+}
+#endif
+
 } // namespace
 
 int main() {
 	ConfigureReviewAndColdSubmitRunOnce();
 	NonLockScreenAndStaleReviewCannotStartEffects();
+	ResetAllResolvesLiveAccountsOnce();
+	SelectedRuleDoesNotWidenOnLiveChanges();
 	FailedFirstJournalWriteStartsNoEffects();
+	OfflineStartupFinishesLocalCleanupFromDisk();
+#ifndef _WIN32
+	ExecutionLeaseRecoversAfterProcessDeath();
+#endif
 	return failures ? 1 : 0;
 }
