@@ -9,6 +9,8 @@ namespace Ayu::EmergencyActions {
 struct ScopedSessionBinding final {
 	AccountId accountId;
 	ProfileSets::AccountId scopedAccountId;
+	uint64_t expectedUserId = 0;
+	bool testEnvironment = false;
 };
 
 } // namespace Ayu::EmergencyActions

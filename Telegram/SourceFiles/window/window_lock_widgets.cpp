@@ -26,6 +26,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/toast/toast.h"
 #include "ui/ui_utility.h"
 #include "window/window_controller.h"
+#include "window/window_emergency_rules.h"
 #include "window/window_slide_animation.h"
 #include "window/window_session_controller.h"
 #include "main/main_domain.h"
@@ -39,6 +40,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtWidgets/QVBoxLayout>
 
 // AyuGram includes
+#include "ayu/features/profile_sets/profile_emergency_settings.h"
 #include "ayu/features/profile_sets/profile_generation.h"
 
 
@@ -92,6 +94,8 @@ private:
 	void setChangeDone(GenerationError error);
 	void setSubmitting(bool submitting);
 	void clearEditor();
+	void showEmergencyRules();
+	void clearEmergencyRules();
 	void lockProfile();
 	void clearProfile();
 
@@ -112,6 +116,7 @@ private:
 	const not_null<PreLaunchButton*> _cancel;
 	const not_null<PreLaunchButton*> _unlock;
 	const not_null<PreLaunchButton*> _lock;
+	QWidget *_emergencyRules = nullptr;
 	std::optional<SetChangeKind> _setChange;
 	std::optional<ProfileSets::SetId> _setId;
 	bool _checking = false;
@@ -164,6 +169,8 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 	_lock->setText(u"Lock"_q);
 	const auto addSet = new PreLaunchButton(this);
 	addSet->setText(u"Add set"_q);
+	const auto emergencyRules = new PreLaunchButton(this);
+	emergencyRules->setText(u"Emergency rules"_q);
 	_editSet->setText(u"Edit"_q);
 	_removeSet->setText(u"Remove"_q);
 	const auto close = new PreLaunchButton(this, false);
@@ -178,6 +185,9 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 	});
 	connect(addSet, &QPushButton::clicked, this, [this] {
 		beginSetChange(SetChangeKind::Add);
+	});
+	connect(emergencyRules, &QPushButton::clicked, this, [this] {
+		showEmergencyRules();
 	});
 	connect(_editSet.get(), &QPushButton::clicked, this, [this] {
 		beginSetChange(SetChangeKind::Edit);
@@ -200,6 +210,7 @@ ScopedProfileLockWindow::ScopedProfileLockWindow(
 	setActions->addWidget(addSet);
 	setActions->addWidget(_editSet.get());
 	setActions->addWidget(_removeSet.get());
+	setActions->addWidget(emergencyRules);
 	layout->addWidget(_setActions.get());
 	const auto editor = new QVBoxLayout(_editor.get());
 	editor->setContentsMargins(0, 0, 0, 0);
@@ -226,6 +237,7 @@ ScopedProfileLockWindow::~ScopedProfileLockWindow() {
 
 void ScopedProfileLockWindow::showForm(QString status) {
 	_status->setText(status);
+	_status->show();
 	_sets->hide();
 	_setActions->hide();
 	_editor->hide();
@@ -264,7 +276,7 @@ void ScopedProfileLockWindow::submit() {
 	_passcode->setEnabled(false);
 	_unlock->setEnabled(false);
 	const auto weak = QPointer<ScopedProfileLockWindow>(this);
-	ProfileSets::AuthenticateScopedProfilePasscode(
+	ProfileSets::SubmitScopedProfileLockPasscode(
 		_sidecar,
 		std::move(passcode),
 		[weak](std::optional<ProfileSets::OpenedProfileGeneration> generation,
@@ -283,7 +295,12 @@ void ScopedProfileLockWindow::authenticationDone(
 	}
 	_checking = false;
 	if (!generation) {
-		if (error == ProfileSets::ProfileGenerationError::WrongPassword) {
+		if (error == ProfileSets::ProfileGenerationError::EmergencyResetComplete) {
+			cSetPasscodeBadTries(0);
+			showForm(u"Enter your passcode."_q);
+		} else if (error == ProfileSets::ProfileGenerationError::EmergencyRecoveryRequired) {
+			_status->setText(u"Restart SleepyGram to continue."_q);
+		} else if (error == ProfileSets::ProfileGenerationError::WrongPassword) {
 			cSetPasscodeBadTries(cPasscodeBadTries() + 1);
 			cSetPasscodeLastTry(crl::now());
 			showForm(u"Wrong passcode."_q);
@@ -326,7 +343,9 @@ void ScopedProfileLockWindow::showSetList() {
 		return;
 	}
 	clearEditor();
+	clearEmergencyRules();
 	_status->setText(metadata->sets.empty() ? u"No sets yet."_q : u"Sets"_q);
+	_status->show();
 	_sets->clear();
 	for (const auto &set : metadata->sets) {
 		_sets->addItem(set.name);
@@ -512,12 +531,86 @@ void ScopedProfileLockWindow::clearEditor() {
 	_cancel->hide();
 }
 
+void ScopedProfileLockWindow::showEmergencyRules() {
+	if (!_domain->preparedScopedAdminMetadata() || _closing || _checking
+		|| _setChange || _emergencyRules || Core::Quitting()) {
+		return;
+	}
+	const auto transactionId = _domain->preparedScopedProfileTransactionId();
+	if (transactionId.isEmpty()) {
+		return;
+	}
+	const auto weak = QPointer<ScopedProfileLockWindow>(this);
+	const auto allowed = [weak, transactionId] {
+		return weak && !weak->_closing && !Core::Quitting()
+			&& weak->_domain->preparedScopedAdminMetadata()
+			&& weak->_domain->preparedScopedProfileTransactionId() == transactionId;
+	};
+	_emergencyRules = CreateEmergencyRulesPanel(this, {
+		.authorized = allowed,
+		.load = [sidecar = _sidecar, transactionId](
+				QString masterPasscode,
+				EmergencyRulesLoadDone done) {
+			ProfileSets::LoadProfileEmergencySettings(
+				sidecar,
+				transactionId,
+				std::move(masterPasscode),
+				[done = std::move(done), transactionId](
+						EmergencyRulesResult result,
+						std::optional<EmergencyRulesSnapshot> snapshot) {
+					if (result == EmergencyRulesResult::Success
+						&& snapshot && snapshot->transactionId != transactionId) {
+						done(EmergencyRulesResult::Stale, std::nullopt);
+					} else {
+						done(result, std::move(snapshot));
+					}
+				});
+		},
+		.save = [sidecar = _sidecar](
+				EmergencyRulesSaveRequest request,
+				EmergencyRulesSaveDone done) {
+			ProfileSets::SaveProfileEmergencySettings(
+				sidecar,
+				std::move(request),
+				std::move(done));
+		},
+		.closed = [weak] {
+			if (weak) {
+				weak->showSetList();
+			}
+		},
+		.lock = [weak](EmergencyRulesResult result) {
+			if (weak) {
+				weak->clearProfile();
+				weak->showForm((result == EmergencyRulesResult::Success)
+					? u"Changes saved. Enter your passcode."_q
+					: u"Local data changed. Enter your passcode again."_q);
+			}
+		},
+	});
+	const auto column = static_cast<QVBoxLayout*>(layout());
+	column->insertWidget(column->count() - 1, _emergencyRules);
+	_status->hide();
+	_sets->hide();
+	_setActions->hide();
+	_emergencyRules->show();
+}
+
+void ScopedProfileLockWindow::clearEmergencyRules() {
+	if (const auto panel = std::exchange(_emergencyRules, nullptr)) {
+		layout()->removeWidget(panel);
+		panel->hide();
+		panel->deleteLater();
+	}
+}
+
 void ScopedProfileLockWindow::lockProfile() {
 	clearProfile();
 	showForm(u"Enter your passcode."_q);
 }
 
 void ScopedProfileLockWindow::clearProfile() {
+	clearEmergencyRules();
 	clearEditor();
 	_sets->clear();
 	_domain->clearPreparedScopedProfile();

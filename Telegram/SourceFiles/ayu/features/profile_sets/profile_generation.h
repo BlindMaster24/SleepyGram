@@ -51,6 +51,8 @@ enum class ProfileGenerationError : uchar {
 	ValidationFailed,
 	SettingsRejected,
 	PublicationUncertain,
+	EmergencyResetComplete,
+	EmergencyRecoveryRequired,
 	PasswordInUse,
 };
 
@@ -150,6 +152,11 @@ using ProfilePasswordDone = Fn<void(
 	ProfileGenerationError)>;
 
 void AuthenticateScopedProfilePasscode(
+	MigrationController sidecar,
+	QString passcode,
+	ProfilePasswordDone done);
+
+void SubmitScopedProfileLockPasscode(
 	MigrationController sidecar,
 	QString passcode,
 	ProfilePasswordDone done);

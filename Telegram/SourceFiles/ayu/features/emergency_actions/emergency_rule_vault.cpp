@@ -34,6 +34,9 @@ constexpr auto kMaxNormalCredentials = size_t(256);
 constexpr auto kMaxAccounts = size_t(64);
 constexpr auto kMaxSessionsPerAccount = size_t(128);
 constexpr auto kMaxSessionsPerRule = size_t(256);
+constexpr auto kMaxSnapshotSessions = kMaxSessionsPerRule + kMaxAccounts;
+constexpr auto kMaxSafeProfileAccounts = size_t(256);
+constexpr auto kReviewedSnapshotVersion = uint64_t(1);
 
 template <size_t Size>
 class Secret final {
@@ -58,7 +61,13 @@ struct SlotSecrets final {
 
 struct MasterRule final {
 	NamedEmergencyRule named;
+	std::optional<LiveInstallation> reviewedLive;
 	std::unique_ptr<SlotSecrets> secrets;
+};
+
+struct RuleRecord final {
+	EmergencyRuleDetails details;
+	std::optional<LiveInstallation> reviewedLive;
 };
 
 bool ValidId(std::string_view value) {
@@ -296,6 +305,8 @@ bool ValidRule(
 	const auto &rule = record.rule;
 	if (!ValidId(record.actionId.value) || !ValidId(record.operationId.value)
 		|| !ValidId(rule.id.value) || !record.revision
+		|| (record.executionCapsuleDigest
+			&& !ValidKey(*record.executionCapsuleDigest))
 		|| (!rule.safeProfileId.value.empty() && !ValidId(rule.safeProfileId.value))
 		|| rule.installationId != installation
 		|| unsigned(rule.action) > unsigned(EmergencyAction::RemoveInstallation)
@@ -326,7 +337,124 @@ bool ValidRule(
 		== DryRunStatus::Ready;
 }
 
-bool WriteRule(Writer &writer, const EmergencyRuleDetails &record) {
+std::optional<LiveInstallation> ProjectReviewedLive(
+		const LiveInstallation &live,
+		const DryRunPlan &plan) {
+	if (plan.accounts.size() > kMaxAccounts
+		|| plan.safeProfileAccountIds.size() > kMaxSafeProfileAccounts) {
+		return std::nullopt;
+	}
+	auto result = LiveInstallation{ .id = live.id };
+	auto sessions = size_t(0);
+	for (const auto &target : plan.accounts) {
+		const auto account = std::ranges::find(live.accounts, target.accountId, &LiveAccount::id);
+		const auto &remote = target.sessionIdsForRevokeRequest;
+		sessions += remote.size() + 1;
+		if (account == live.accounts.end()
+			|| !ValidId(account->id.value) || !ValidId(account->currentSessionId.value)
+			|| remote.size() > kMaxSessionsPerAccount || sessions > kMaxSnapshotSessions
+			|| !std::ranges::all_of(remote, [](const auto &session) {
+				return ValidId(session.value);
+			})) {
+			return std::nullopt;
+		}
+		auto row = LiveAccount{
+			.id = account->id,
+			.currentSessionId = account->currentSessionId,
+			.sessionIds = { account->currentSessionId },
+		};
+		row.sessionIds.insert(row.sessionIds.end(), remote.begin(), remote.end());
+		result.accounts.push_back(std::move(row));
+	}
+	if (plan.safeDestination == SafeDestinationKind::Profile) {
+		if (!ValidId(plan.safeProfileId.value)
+			|| !std::ranges::all_of(plan.safeProfileAccountIds, [](const auto &id) {
+				return ValidId(id.value);
+			})) {
+			return std::nullopt;
+		}
+		result.profiles.push_back({ plan.safeProfileId, plan.safeProfileAccountIds });
+	}
+	return result;
+}
+
+bool ValidReviewedLive(const EmergencyRuleDetails &record, const LiveInstallation &snapshot) {
+	const auto plan = BuildDryRunPlan(record.operationId, record.rule, snapshot);
+	const auto projected = ProjectReviewedLive(snapshot, plan);
+	return MakeJournal(plan) && projected
+		&& std::ranges::equal(snapshot.accounts, projected->accounts,
+			[](const auto &first, const auto &second) {
+				return first.id == second.id
+					&& first.currentSessionId == second.currentSessionId
+					&& first.sessionIds == second.sessionIds;
+			})
+		&& std::ranges::equal(snapshot.profiles, projected->profiles,
+			[](const auto &first, const auto &second) {
+				return first.id == second.id && first.accountIds == second.accountIds;
+			});
+}
+
+bool WriteReviewedLive(Writer &writer, const LiveInstallation &live) {
+	return writer.number(kReviewedSnapshotVersion, 1)
+		&& writer.number(live.accounts.size(), 2)
+		&& std::ranges::all_of(live.accounts, [&](const auto &account) {
+			const auto otherSessions = std::span(account.sessionIds).subspan(1);
+			return writer.string(account.id.value)
+				&& writer.string(account.currentSessionId.value)
+				&& writer.number(otherSessions.size(), 2)
+				&& std::ranges::all_of(otherSessions, [&](const auto &session) {
+					return writer.string(session.value);
+				});
+		})
+		&& writer.number(live.profiles.size(), 1)
+		&& std::ranges::all_of(live.profiles, [&](const auto &profile) {
+			return writer.string(profile.id.value) && WriteIds(writer, profile.accountIds);
+		});
+}
+
+std::optional<LiveInstallation> ReadReviewedLive(
+		Reader &reader,
+		const EmergencyRuleDetails &record) {
+	auto version = uint64_t(0);
+	auto accounts = uint64_t(0);
+	if (!reader.number(version, 1) || version != kReviewedSnapshotVersion
+		|| !reader.number(accounts, 2) || accounts > kMaxAccounts) {
+		return std::nullopt;
+	}
+	auto live = LiveInstallation{ .id = record.rule.installationId };
+	live.accounts.resize(size_t(accounts));
+	auto sessions = size_t(0);
+	for (auto &account : live.accounts) {
+		if (!reader.string(account.id.value)
+			|| !reader.string(account.currentSessionId.value)
+			|| !ReadIds(reader, account.sessionIds, kMaxSessionsPerAccount)) {
+			return std::nullopt;
+		}
+		sessions += account.sessionIds.size() + 1;
+		if (sessions > kMaxSnapshotSessions) {
+			return std::nullopt;
+		}
+		account.sessionIds.insert(account.sessionIds.begin(), account.currentSessionId);
+	}
+	auto profiles = uint64_t(0);
+	if (!reader.number(profiles, 1) || profiles > 1) {
+		return std::nullopt;
+	}
+	if (profiles) {
+		auto profile = LiveProfile();
+		if (!reader.string(profile.id.value)
+			|| !ReadIds(reader, profile.accountIds, kMaxSafeProfileAccounts)) {
+			return std::nullopt;
+		}
+		live.profiles.push_back(std::move(profile));
+	}
+	return ValidReviewedLive(record, live) ? std::optional(std::move(live)) : std::nullopt;
+}
+
+bool WriteRule(
+		Writer &writer,
+		const EmergencyRuleDetails &record,
+		const std::optional<LiveInstallation> &reviewedLive) {
 	const auto &rule = record.rule;
 	return writer.string(record.actionId.value)
 		&& writer.string(record.operationId.value)
@@ -341,14 +469,19 @@ bool WriteRule(Writer &writer, const EmergencyRuleDetails &record) {
 			return writer.string(policy.accountId.value)
 				&& writer.number(uint8_t(policy.kind), 1)
 				&& WriteIds(writer, policy.selectedSessionIds);
-		});
+		})
+		&& writer.number(record.executionCapsuleDigest.has_value(), 1)
+		&& (!record.executionCapsuleDigest
+			|| (reviewedLive && writer.write(*record.executionCapsuleDigest)
+				&& WriteReviewedLive(writer, *reviewedLive)));
 }
 
-std::optional<EmergencyRuleDetails> ReadRule(
+std::optional<RuleRecord> ReadRule(
 		std::span<const uint8_t> bytes,
 		const InstallationId &installation) {
 	auto reader = Reader(bytes);
-	auto record = EmergencyRuleDetails();
+	auto result = RuleRecord();
+	auto &record = result.details;
 	auto &rule = record.rule;
 	rule.installationId = installation;
 	auto action = uint64_t(0);
@@ -377,10 +510,24 @@ std::optional<EmergencyRuleDetails> ReadRule(
 		}
 		policy.kind = RemoteSessionTargetKind(kind);
 	}
+	// Earlier v1 slots left zero padding here.
+	auto hasCapsule = uint64_t(0);
+	if (!reader.number(hasCapsule, 1) || hasCapsule > 1) {
+		return std::nullopt;
+	}
+	if (hasCapsule) {
+		if (!reader.read(record.executionCapsuleDigest.emplace())) {
+			return std::nullopt;
+		}
+		result.reviewedLive = ReadReviewedLive(reader, record);
+		if (!result.reviewedLive) {
+			return std::nullopt;
+		}
+	}
 	if (!reader.finished() || !ValidRule(record, installation)) {
 		return std::nullopt;
 	}
-	return record;
+	return result;
 }
 
 bool ValidBlob(
@@ -418,7 +565,7 @@ std::optional<SealedEmergencyRules> SealMasterRules(
 		const auto &rule = rules[i];
 		auto plaintext = Secret<kRuleBytes>();
 		auto writer = Writer(plaintext.data);
-		if (!WriteRule(writer, rule.named.details)
+		if (!WriteRule(writer, rule.named.details, rule.reviewedLive)
 			|| !index.string(rule.named.name)
 			|| !index.write(rule.secrets->verifier.data)
 			|| !index.write(rule.secrets->key.data)
@@ -484,7 +631,7 @@ std::optional<std::vector<MasterRule>> OpenMasterRules(
 		if (!opened) {
 			return std::nullopt;
 		}
-		rule.named.details = std::move(*opened);
+		rule.named.details = std::move(opened->details);
 		result.push_back(std::move(rule));
 	}
 	return index.finished() ? std::optional(std::move(result)) : std::nullopt;
@@ -532,12 +679,20 @@ std::optional<SealedEmergencyRules> SealEmergencyRules(
 			.rule = draft->rule,
 			.operationId = reviewed.operationId,
 			.revision = draft->revision,
+			.executionCapsuleDigest = entry.executionCapsuleDigest,
 		};
 		if (!ValidRule(record, generation.installationId)
 			|| !operationIds.insert(record.operationId).second
 			|| BuildDryRunPlan(record.operationId, record.rule, reviewedLive) != reviewed
 			|| !MakeJournal(reviewed)) {
 			return std::nullopt;
+		}
+		auto snapshot = std::optional<LiveInstallation>();
+		if (record.executionCapsuleDigest) {
+			snapshot = ProjectReviewedLive(reviewedLive, reviewed);
+			if (!snapshot || BuildDryRunPlan(record.operationId, record.rule, *snapshot) != reviewed) {
+				return std::nullopt;
+			}
 		}
 		auto secrets = std::make_unique<SlotSecrets>();
 		if (!DeriveSlotKey(entry.key, false, secrets->key)
@@ -549,6 +704,7 @@ std::optional<SealedEmergencyRules> SealEmergencyRules(
 		secrets->verifier.data = entry.verifier;
 		rules.push_back({
 			.named = { .name = entry.name, .details = std::move(record) },
+			.reviewedLive = std::move(snapshot),
 			.secrets = std::move(secrets),
 		});
 	}
@@ -566,7 +722,7 @@ EmergencyRuleAuthentication AuthenticateEmergencyRule(
 	if (!DeriveSlotKey(derivedKey, false, key)) {
 		return WrongPasscode();
 	}
-	auto opened = std::optional<EmergencyRuleDetails>();
+	auto opened = std::optional<RuleRecord>();
 	auto plaintext = Secret<kRuleBytes>();
 	for (auto i = size_t(0); i != kMaxSealedEmergencyRules; ++i) {
 		if (OpenSlot(key, authority.generation, i, RuleSlot(sealed, i), plaintext.data)) {
@@ -582,7 +738,10 @@ EmergencyRuleAuthentication AuthenticateEmergencyRule(
 	if (!opened) {
 		return WrongPasscode();
 	}
-	return EmergencyRuleTicket(authority, std::move(*opened));
+	return EmergencyRuleTicket(
+		authority,
+		std::move(opened->details),
+		std::move(opened->reviewedLive));
 }
 
 std::optional<std::vector<NamedEmergencyRule>> OpenEmergencyRulesForMaster(
@@ -638,7 +797,8 @@ std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 	for (const auto &rule : *rules) {
 		const auto &details = rule.named.details;
 		const auto &verifier = rule.secrets->verifier.data;
-		if (Same(rule.secrets->key.data, nextMasterSlotKey.data)
+		if (details.executionCapsuleDigest
+			|| Same(rule.secrets->key.data, nextMasterSlotKey.data)
 			|| Same(verifier, nextMaster.verifier)
 			|| std::ranges::any_of(nextMaster.normalCredentials, [&](const auto &normal) {
 				return Same(normal.verifier, verifier);

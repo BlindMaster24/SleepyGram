@@ -34,6 +34,10 @@ namespace details {
 [[nodiscard]] bool ValidProfileVaultSalt(const QByteArray &salt);
 [[nodiscard]] DerivedCredential ProfileVaultCredentialFromKdfOutput(
 	QByteArrayView material);
+[[nodiscard]] DerivedCredential DeriveProfileVaultCredentialOnWorker(
+	const QByteArray &salt,
+	KdfParameters parameters,
+	QString &password);
 
 } // namespace details
 
@@ -105,6 +109,7 @@ enum class ProfileVaultError : uchar {
 	TooLarge,
 	RandomFailure,
 	InvalidAccountRemoval,
+	InvalidAccountEnrollment,
 };
 
 [[nodiscard]] bool ValidProfileVaultKdf(KdfParameters kdf);
@@ -140,6 +145,15 @@ void DeriveProfileVaultCredential(
 	const ProfileVault &vault,
 	const DerivedCredential &admin,
 	const std::vector<AccountId> &remove,
+	ProfileVaultError *error = nullptr);
+// The destination stays bound to its original passcode and must still be empty.
+[[nodiscard]] std::optional<ProfileVault> EnrollProfileVaultAccount(
+	const ProfileVault &vault,
+	const DerivedCredential &admin,
+	SetId targetSet,
+	const DerivedCredential &setCredential,
+	const AccountKey &account,
+	const AccountVaultLocator &locator,
 	ProfileVaultError *error = nullptr);
 [[nodiscard]] ProfileVaultAccess OpenProfileVault(
 	const ProfileVault &vault,

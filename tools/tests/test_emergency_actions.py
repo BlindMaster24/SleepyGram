@@ -16,6 +16,8 @@ TESTS = (
     "emergency_rule_dispatch",
     "emergency_action_coordinator",
     "emergency_action_runtime_service",
+    "emergency_execution_capsule",
+    "emergency_recovery_record",
     "lock_screen_submission",
     "mtproto_session_effect",
     "scoped_account_clear",

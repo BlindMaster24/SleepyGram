@@ -50,6 +50,7 @@ const auto kLegacyArchiveFiles = std::array{
 	u"ayudata.db-shm"_q,
 };
 const auto kLegacyArchiveJournal = u"ayudata.db-journal"_q;
+const auto kLegacyAyuPreferences = u"ayu_settings.json"_q;
 
 using Entry = LegacyRetirementEntry;
 using Plan = LegacyRetirementPlan;
@@ -101,6 +102,9 @@ bool LegacyArchiveFile(const QString &name) {
 }
 
 qint64 MaximumFileBytes(const QString &relative) {
+	if (relative == kLegacyAyuPreferences) {
+		return 16 * 1024 * 1024;
+	}
 	const auto slash = relative.indexOf('/');
 	return (LegacyArchiveFile(relative)
 		|| (slash >= 0 && relative.startsWith(u"user_"_q)
@@ -214,6 +218,9 @@ bool ValidEntries(const Plan &plan, const Layout &layout) {
 			continue;
 		}
 		if (slash < 0) {
+			if (path == kLegacyAyuPreferences) {
+				continue;
+			}
 			if (LegacyArchiveFile(path)) {
 				archiveFiles.emplace(path);
 				continue;
@@ -399,6 +406,16 @@ bool AppendLegacyArchive(Plan &plan, LegacyArchiveRetirement archive) {
 	return true;
 }
 
+bool AppendAyuPreferences(Plan &plan, const QByteArray &verified) {
+	const auto path = plan.dataDirectory + '/' + kLegacyAyuPreferences;
+	if (verified.isEmpty()) {
+		return !Present(QFileInfo(path));
+	}
+	return verified.size() == 32
+		&& AppendFile(plan, kLegacyAyuPreferences)
+		&& plan.entries.back().sha256 == verified;
+}
+
 bool MatchesCurrentSource(const Plan &plan, const Layout &layout) {
 	if (!CanonicalDirectory(plan.dataDirectory)) {
 		return false;
@@ -406,6 +423,10 @@ bool MatchesCurrentSource(const Plan &plan, const Layout &layout) {
 	auto byPath = std::map<QString, const Entry*>();
 	for (const auto &entry : plan.entries) {
 		byPath.emplace(entry.relativePath, &entry);
+	}
+	if (Present(QFileInfo(plan.dataDirectory + '/' + kLegacyAyuPreferences))
+		&& !byPath.contains(kLegacyAyuPreferences)) {
+		return false;
 	}
 	if (Present(QFileInfo(plan.dataDirectory + '/' + kLegacyArchiveJournal))) {
 		return false;
@@ -719,7 +740,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		const QByteArray &transactionId,
 		std::span<const int> legacyAccountIndices,
 		std::span<const VerifiedLegacyRetirementAccount> verifiedAccounts,
-		LegacyArchiveRetirement archive) {
+		LegacyArchiveRetirement archive,
+		const QByteArray &verifiedAyuSettingsSha256) {
 	if (legacyAccountIndices.size() != verifiedAccounts.size()
 		|| legacyAccountIndices.size() > kMaximumAccounts
 		|| !CanonicalDirectory(dataDirectory)) {
@@ -735,7 +757,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 	const auto layout = BuildLayout(plan);
 	if (!layout
 		|| !AppendSuffixedFiles(plan, u"key_"_q + dataName)
-		|| !AppendLegacyArchive(plan, archive)) {
+		|| !AppendLegacyArchive(plan, archive)
+		|| !AppendAyuPreferences(plan, verifiedAyuSettingsSha256)) {
 		return std::nullopt;
 	}
 	auto verified = std::set<int>();

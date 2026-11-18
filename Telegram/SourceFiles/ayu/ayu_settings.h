@@ -22,6 +22,10 @@ namespace Main {
 class Session;
 }
 
+namespace Storage {
+class Account;
+}
+
 enum class PeerIdDisplay {
 	Hidden = 0,
 	TelegramApi = 1,
@@ -666,6 +670,16 @@ public:
 private:
 	AyuSettings();
 
+	struct ScopedAccountPreferences final {
+		QString root;
+		QByteArray persisted;
+	};
+	[[nodiscard]] bool ensureScopedAccount(uint64 userId);
+	[[nodiscard]] bool ensureScopedAccount(uint64 userId, Storage::Account &local);
+	[[nodiscard]] static GhostModeAccountSettings &unavailableScopedGhost();
+	[[nodiscard]] GhostModeAccountSettings &ghostForLoadedAccount(uint64 userId);
+	void saveScopedAccounts();
+
 	[[nodiscard]] uint64 getOverriddenGhostUserId(uint64 userId) const { return _useGlobalGhostMode.current() ? 0 : userId; }
 
 	rpl::variable<bool> _saveDeletedMessages = true;
@@ -760,6 +774,9 @@ private:
 	std::map<uint64, std::unique_ptr<GhostModeAccountSettings>> _ghostAccounts;
 	std::map<uint64, Ayu::GhostReadState> _ghostReadStates;
 	std::map<std::pair<uint64, uint64>, int> _deletedMessagePolicies;
+	std::map<uint64, ScopedAccountPreferences> _scopedAccountPreferences;
+	bool _loadedScopedPreferences = false;
+	bool _scopedGlobalWritable = false;
 
 	MessageShotSettings _messageShotSettings;
 };

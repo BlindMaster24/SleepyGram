@@ -1,6 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/profile_sets/profile_staging.h"
 
+#include "ayu/ayu_preferences_migration.h"
 #include "ayu/data/archive_migration.h"
 #include "ayu/data/ayu_database.h"
 #include "ayu/features/profile_sets/profile_migration.h"
@@ -24,7 +25,8 @@ ProfileStagingResult StageWhilePreparing(
 		const QByteArray &legacyPasscode,
 		std::span<const ProfileStagingAccount> accounts,
 		const QByteArray &transactionId,
-		LegacyRetirementPlan *retirement) {
+		LegacyRetirementPlan *retirement,
+		const Preferences::LegacyPartition *preferences) {
 	using Result = ProfileStagingResult;
 	const auto root = QDir::cleanPath(dataDirectory);
 	if (workspace.accountStorageRoot() != root + u"/profile-sets/accounts"_q) {
@@ -82,6 +84,17 @@ ProfileStagingResult StageWhilePreparing(
 				? Result::UnsupportedAccountData
 				: Result::AccountStageFailed;
 		}
+		if (preferences) {
+			const auto user = account.userId.bare;
+			const auto payload = preferences->accounts.find(user);
+			const auto directory = QDir(workspace.accountStorageRoot()).filePath(
+				AccountVaultDataName(account.locator));
+			if (payload == end(preferences->accounts)
+				|| !Preferences::StageScopedAccountPreferences(
+					directory, user, ProfileAccountStorageKey(account.key), payload->second)) {
+				return Result::AccountStageFailed;
+			}
+		}
 		if (retirement) {
 			verifiedAccounts.push_back({
 				.index = account.slot,
@@ -106,7 +119,8 @@ ProfileStagingResult StageWhilePreparing(
 			: LegacyArchiveRetirement::ExpectedAbsent;
 		auto captured = CaptureLegacyRetirementPlan(
 			root, dataName, transactionId, legacy->accountIndices,
-			verifiedAccounts, archive);
+			verifiedAccounts, archive,
+			preferences ? preferences->sourceSha256 : QByteArray());
 		if (!captured) {
 			return Result::RetirementVerificationFailed;
 		}
@@ -124,12 +138,13 @@ ProfileStagingResult StageScopedProfileData(
 		const QByteArray &legacyPasscode,
 		std::span<const ProfileStagingAccount> accounts,
 		const QByteArray &transactionId,
-		LegacyRetirementPlan *retirement) {
+		LegacyRetirementPlan *retirement,
+		const Preferences::LegacyPartition *preferences) {
 	auto staged = ProfileStagingResult::InvalidWorkspace;
 	const auto verify = [&] {
 		staged = StageWhilePreparing(
 			workspace, dataDirectory, dataName, legacyPasscode, accounts,
-			transactionId, retirement);
+			transactionId, retirement, preferences);
 		return staged == ProfileStagingResult::Success;
 	};
 	const auto ran = (!transactionId.isEmpty() && workspace.LoadStaged())

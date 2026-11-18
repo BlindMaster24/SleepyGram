@@ -336,6 +336,10 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 		SetError(error, ProfileGenerationError::InvalidSidecar);
 		return std::nullopt;
 	}
+	if (!committed->emergencyRecovery.isEmpty() || !committed->legacyRetirement.isEmpty()) {
+		SetError(error, ProfileGenerationError::InvalidSidecar);
+		return std::nullopt;
+	}
 	if (!expectedTransactionId.isEmpty()
 		&& committed->transactionId != expectedTransactionId) {
 		SetError(error, ProfileGenerationError::StaleGeneration);

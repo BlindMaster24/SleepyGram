@@ -4,6 +4,7 @@
 #include "base/basic_types.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
 #include <QtCore/QFileInfo>
@@ -87,8 +88,10 @@ struct Fixture final {
 	}
 
 	std::optional<LegacyRetirementPlan> capture(
-			LegacyArchiveRetirement archive = LegacyArchiveRetirement::ExpectedAbsent) const {
-		return CaptureLegacyRetirementPlan(path, name, transaction, slotIndices, accounts, archive);
+			LegacyArchiveRetirement archive = LegacyArchiveRetirement::ExpectedAbsent,
+			const QByteArray &preferences = {}) const {
+		return CaptureLegacyRetirementPlan(
+			path, name, transaction, slotIndices, accounts, archive, preferences);
 	}
 };
 
@@ -274,6 +277,39 @@ void CheckLegacyCache() {
 		&& run() == Result::Complete, "resume cache retirement while preserving other account path");
 }
 
+void CheckLegacyPreferences() {
+	auto fixture = Fixture();
+	if (!fixture.setup()) {
+		Check(false, "settings fixture setup");
+		return;
+	}
+	const auto preferences = fixture.path + u"/ayu_settings.json"_q;
+	const auto unrelated = fixture.path + u"/preferences.yaml"_q;
+	const auto data = QByteArray("{\"showMessageSeconds\":true}");
+	const auto digest = QCryptographicHash::hash(data, QCryptographicHash::Sha256);
+	const auto absent = LegacyArchiveRetirement::ExpectedAbsent;
+	if (!Write(preferences, data) || !Write(unrelated, "unrelated: settings")) {
+		Check(false, "write synthetic settings");
+		return;
+	}
+	Check(!fixture.capture() && !fixture.capture(absent, QByteArray(32, 'x')),
+		"present Ayu JSON requires the exact verified source digest");
+	const auto plan = fixture.capture(absent, digest);
+	if (!plan) {
+		Check(false, "capture verified source JSON");
+		return;
+	}
+	const auto run = [&] {
+		return RetireLegacyProfileFiles(fixture.path, fixture.transaction, *plan);
+	};
+	const auto keys = fixture.path + u"/key_datas"_q;
+	Check(Write(preferences, data + ' ') && run() == Result::UnexpectedSource
+		&& QFileInfo::exists(keys), "changed Ayu JSON blocks all retirement mutations");
+	Check(Write(preferences, data) && run() == Result::Complete
+		&& !QFileInfo::exists(preferences) && QFileInfo::exists(unrelated)
+		&& run() == Result::Complete, "verified Ayu JSON retires without unrelated YAML");
+}
+
 void CheckLinks() {
 #if !defined Q_OS_WIN
 	auto fixture = Fixture();
@@ -328,6 +364,7 @@ int main(int argc, char *argv[]) {
 	CheckReplay();
 	CheckLegacyArchive();
 	CheckLegacyCache();
+	CheckLegacyPreferences();
 	CheckLinks();
 	return Failed ? 1 : 0;
 }

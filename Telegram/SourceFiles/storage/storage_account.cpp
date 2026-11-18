@@ -49,6 +49,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QTemporaryDir>
 #include <map>
 
+// AyuGram includes
+#include "ayu/ayu_preferences_migration.h"
+
+
 namespace Storage {
 namespace {
 
@@ -695,6 +699,13 @@ MigrationResult CompareMigrationRecords(
 	auto expectedEntries = write
 		? QStringList{ u"data"_q }
 		: QStringList{ u"auths"_q, u"data"_q };
+	if (!write && entries.contains(u"ayuprefss"_q)) {
+		const auto preferences = QFileInfo(root + u"/ayuprefss"_q);
+		if (!preferences.isFile() || preferences.isSymLink() || preferences.isJunction()) {
+			return MigrationResult::VerificationFailed;
+		}
+		expectedEntries.insert(1, u"ayuprefss"_q);
+	}
 	if (!write && entries.contains(u"user"_q)) {
 		expectedEntries.push_back(u"user"_q);
 	}
@@ -951,7 +962,7 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 		return std::nullopt;
 	}
 	const auto userId = ReadAuthorizationUser(authStream, connection);
-	if (!userId) {
+	if (!userId || !Ayu::Preferences::ReadScopedAccountPreferences(root, userId.bare, key)) {
 		return std::nullopt;
 	}
 
@@ -1005,6 +1016,7 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 		environment = decoded->environment();
 	}
 	if (connection) {
+		connection->userId = userId;
 		connection->config = std::move(decoded);
 	} else if (configOut) {
 		*configOut = std::move(decoded);

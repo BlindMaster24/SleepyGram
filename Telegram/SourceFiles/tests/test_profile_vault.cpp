@@ -336,6 +336,108 @@ int RunChecks() {
 		&& !PruneProfileVaultAccounts(
 			*parsed, Credential(0xFFFFFFFF), { { 4, 7 } }, &error)
 		&& error == ProfileVaultError::InvalidAccountRemoval);
+
+	const auto enrolledAccount = AccountKey{
+		.id = { 4, 3 },
+		.key = QByteArray(kAccountKeySize, 'C'),
+	};
+	const auto enrolledLocator = AccountVaultLocator{
+		.id = enrolledAccount.id,
+		.value = QByteArray(kAccountVaultLocatorSize, 'Z'),
+	};
+	const auto target = SetId{ 1, 1 };
+	const auto enroll = [&](const ProfileVault &source,
+			const DerivedCredential &master,
+			const DerivedCredential &proof,
+			const AccountKey &account,
+			const AccountVaultLocator &locator) {
+		return EnrollProfileVaultAccount(
+			source, master, target, proof, account, locator, &error);
+	};
+	const auto masterCredential = Credential(0xFFFFFFFF);
+	const auto targetCredential = Credential(1);
+	const auto enrolled = enroll(
+		*pruned,
+		masterCredential,
+		targetCredential,
+		enrolledAccount,
+		enrolledLocator);
+	check("account-enrollment-keeps-vault-id-and-unrelated-grants",
+		enrolled && error == ProfileVaultError::None
+		&& enrolled->id == pruned->id
+		&& enrolled->grants[1] == pruned->grants[1]
+		&& enrolled->grants[2] == pruned->grants[2]);
+	const auto enrolledBytes = enrolled ? SerializeProfileVault(*enrolled) : QByteArray();
+	const auto enrolledReadback = ParseProfileVault(enrolledBytes);
+	if (enrolledReadback) {
+		const auto adminAfterEnrollment = OpenProfileVault(
+			*enrolledReadback, masterCredential);
+		const auto targetAfterEnrollment = OpenProfileVault(
+			*enrolledReadback, targetCredential);
+		const auto otherEmpty = OpenProfileVault(*enrolledReadback, Credential(3));
+		const auto adminAccess = std::get_if<AdminVaultAccess>(&adminAfterEnrollment);
+		const auto targetAccess = std::get_if<SetVaultAccess>(&targetAfterEnrollment);
+		const auto otherAccess = std::get_if<SetVaultAccess>(&otherEmpty);
+		check("only-target-set-and-master-receive-enrolled-account",
+			adminAccess && adminAccess->accounts.size() == 2
+			&& adminAccess->locators == std::vector{ locators.back(), enrolledLocator }
+			&& adminAccess->metadata.sets[0].accounts == std::vector{ enrolledAccount.id }
+			&& targetAccess && targetAccess->id == target
+			&& targetAccess->accounts == std::vector{ enrolledAccount }
+			&& targetAccess->locators == std::vector{ enrolledLocator }
+			&& prunedFirstAccess && targetAccess->settingsKey == prunedFirstAccess->settingsKey
+			&& otherAccess && otherAccess->accounts.empty() && otherAccess->locators.empty());
+	} else {
+		check("enrolled-vault-round-trip", false);
+	}
+
+	check("enrollment-rejects-ordinary-passcode-as-master",
+		!enroll(*pruned, targetCredential, targetCredential, enrolledAccount, enrolledLocator)
+		&& error == ProfileVaultError::WrongPassword);
+	check("enrollment-rejects-another-empty-set-credential",
+		!enroll(*pruned, masterCredential, Credential(3), enrolledAccount, enrolledLocator)
+		&& error == ProfileVaultError::WrongPassword);
+	auto wrongProof = targetCredential;
+	wrongProof.key.fill('!');
+	check("enrollment-authenticates-set-key-not-only-its-verifier",
+		!enroll(*pruned, masterCredential, wrongProof, enrolledAccount, enrolledLocator)
+		&& error == ProfileVaultError::AuthenticationFailed);
+	check("enrollment-refuses-a-nonempty-target",
+		!enroll(*parsed, masterCredential, targetCredential, enrolledAccount, enrolledLocator)
+		&& error == ProfileVaultError::InvalidAccountEnrollment);
+	check("enrollment-rejects-mismatched-account-locator",
+		!enroll(*pruned, masterCredential, targetCredential, enrolledAccount, locators.front())
+		&& error == ProfileVaultError::InvalidAccountEnrollment);
+	auto duplicateId = enrolledAccount;
+	duplicateId.id = locators.back().id;
+	check("enrollment-rejects-duplicate-account-id",
+		!enroll(*pruned, masterCredential, targetCredential, duplicateId,
+			{ duplicateId.id, enrolledLocator.value })
+		&& error == ProfileVaultError::InvalidAccountEnrollment);
+	check("enrollment-rejects-duplicate-locator-value",
+		!enroll(*pruned, masterCredential, targetCredential, enrolledAccount,
+			{ enrolledAccount.id, locators.back().value })
+		&& error == ProfileVaultError::InvalidAccountEnrollment);
+	auto duplicateKey = enrolledAccount;
+	duplicateKey.key = QByteArray(kAccountKeySize, 'B');
+	check("enrollment-rejects-duplicate-account-key",
+		!enroll(*pruned, masterCredential, targetCredential, duplicateKey, enrolledLocator)
+		&& error == ProfileVaultError::InvalidAccountEnrollment);
+
+	const auto resetAll = PruneProfileVaultAccounts(
+		*parsed,
+		masterCredential,
+		{ locators.front().id, locators.back().id });
+	const auto afterReset = resetAll
+		? enroll(*resetAll, masterCredential, targetCredential, enrolledAccount, enrolledLocator)
+		: std::nullopt;
+	const auto otherAfterReset = afterReset
+		? OpenProfileVault(*afterReset, Credential(2))
+		: ProfileVaultAccess(WrongPassword());
+	const auto otherAfterResetAccess = std::get_if<SetVaultAccess>(&otherAfterReset);
+	check("can-enroll-after-total-reset-without-refilling-old-sets",
+		afterReset && otherAfterResetAccess && otherAfterResetAccess->accounts.empty());
+
 	check("changed-passcode-requires-matching-replacement-credential",
 		!UpdateProfileVault(
 			*membership,

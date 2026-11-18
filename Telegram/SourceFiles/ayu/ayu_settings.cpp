@@ -5,6 +5,7 @@
 //
 // Copyright @Radolyn, 2026
 #include "ayu/ayu_settings.h"
+#include "ayu/ayu_preferences_migration.h"
 
 #include "ayu/ayu_infra.h"
 #include "ayu/data/ayu_database.h"
@@ -42,7 +43,9 @@
 #include <ranges>
 #include <set>
 #include <QApplication>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QSaveFile>
 #include <QUuid>
 #include "unicode/regex.h"
@@ -50,6 +53,20 @@
 using json = nlohmann::json;
 
 namespace {
+
+Storage::Account *FindScopedAccount(uint64 userId) {
+	if (!userId || !Local::usesScopedSettings()) {
+		return nullptr;
+	}
+	for (const auto &entry : Core::App().domain().accounts()) {
+		const auto session = entry.account ? entry.account->maybeSession() : nullptr;
+		if (session && session->userId().bare == userId
+			&& session->local().usesScopedStorage()) {
+			return &session->local();
+		}
+	}
+	return nullptr;
+}
 
 auto ChatReadReceiptPolicyGenerations = std::map<
 	std::pair<uint64, uint64>,
@@ -721,6 +738,9 @@ void MessageShotSettings::setEmbeddedTheme(int type, uint32 accentColor) {
 }
 
 void MessageShotSettings::setCloudTheme(uint64 accountId, uint64 id, uint64 accessHash, uint64 documentId, const QString &title) {
+	if (Local::usesScopedSettings()) {
+		return;
+	}
 	if (_embeddedThemeType.current() == -1
 		&& _embeddedThemeAccentColor.current() == 0
 		&& _cloudThemeAccountId.current() == accountId
@@ -797,11 +817,30 @@ AyuSettings &AyuSettings::getInstance() {
 }
 
 void AyuSettings::load() {
+	auto &settings = getInstance();
+	const auto scoped = Local::usesScopedSettings();
 	auto protectedBytes = std::optional<QByteArray>();
 	auto file = std::ifstream();
-	if (Local::usesScopedSettings()) {
+	if (scoped) {
+		if (settings._loadedScopedPreferences) {
+			return;
+		}
+		settings._loadedScopedPreferences = true;
+		settings._scopedAccountPreferences.clear();
+		settings._ghostAccounts.clear();
+		settings._ghostReadStates.clear();
+		settings._countFilteredUnreadInBadge.clear();
+		settings._deletedMessagePolicies.clear();
+		settings._shadowBanIds.clear();
+		settings._messageShotSettings.clearCloudThemeData();
+		ChatReadReceiptPolicyGenerations.clear();
 		protectedBytes = Local::readScopedPreferences();
-		if (!protectedBytes || protectedBytes->isEmpty()) {
+		if (!protectedBytes) {
+			return;
+		} else if (protectedBytes->isEmpty()) {
+			settings._scopedGlobalWritable = true;
+			return;
+		} else if (!Ayu::Preferences::ValidateScopedGlobalPreferences(*protectedBytes)) {
 			return;
 		}
 	} else {
@@ -810,8 +849,6 @@ void AyuSettings::load() {
 			return;
 		}
 	}
-
-	auto &settings = getInstance();
 
 	try {
 		json p;
@@ -822,7 +859,7 @@ void AyuSettings::load() {
 			file.close();
 		}
 
-		if (!p.contains("ghostModeSettings")) {
+		if (!scoped && !p.contains("ghostModeSettings")) {
 			p["ghostModeSettings"] = nlohmann::json::object({
 				{"0", {
 					{"sendReadMessages", p.value("sendReadMessages", true)},
@@ -842,6 +879,7 @@ void AyuSettings::load() {
 
 		try {
 			from_json(p, settings);
+			settings._scopedGlobalWritable = scoped;
 		} catch (...) {
 			LOG(("SleepyGram settings: failed to parse settings file"));
 		}
@@ -865,7 +903,22 @@ void AyuSettings::save() {
 	auto &settings = getInstance();
 	json p = settings;
 	if (Local::usesScopedSettings()) {
-		if (!Local::writeScopedPreferences(QByteArray::fromStdString(p.dump(4)))) {
+		settings.saveScopedAccounts();
+		if (!settings._scopedGlobalWritable) {
+			return;
+		}
+		auto commonGhost = json::object();
+		const auto &ghosts = p["ghostModeSettings"];
+		if (ghosts.contains("0")) {
+			commonGhost["0"] = ghosts["0"];
+		}
+		p["ghostModeSettings"] = std::move(commonGhost);
+		p.erase("ghostReadState");
+		p.erase("countFilteredUnreadInBadge");
+		p.erase("deletedMessagePolicies");
+		const auto globals = QByteArray::fromStdString(p.dump());
+		if (!Ayu::Preferences::ValidateScopedGlobalPreferences(globals)
+			|| !Local::writeScopedPreferences(globals)) {
 			LOG(("SleepyGram settings: failed to save scoped settings"));
 		}
 		return;
@@ -878,6 +931,9 @@ void AyuSettings::save() {
 }
 
 QByteArray AyuSettings::exportTransfer(uint64 accountId) {
+	if (Local::usesScopedSettings()) {
+		return {};
+	}
 	const auto current = json(getInstance());
 	auto preferences = json::object();
 	for (const auto &key : transferSettingKeys()) {
@@ -1096,22 +1152,151 @@ bool AyuSettings::applyTransfer(const QByteArray &data, uint64 accountId) {
 }
 
 void AyuSettings::reset() {
+	if (Local::usesScopedSettings()) {
+		auto &settings = getInstance();
+		auto fresh = AyuSettings();
+		fresh._ghostAccounts = std::move(settings._ghostAccounts);
+		fresh._ghostAccounts.erase(0);
+		fresh._ghostReadStates = std::move(settings._ghostReadStates);
+		fresh._countFilteredUnreadInBadge = std::move(settings._countFilteredUnreadInBadge);
+		fresh._deletedMessagePolicies = std::move(settings._deletedMessagePolicies);
+		fresh._scopedAccountPreferences = std::move(settings._scopedAccountPreferences);
+		fresh._loadedScopedPreferences = settings._loadedScopedPreferences;
+		fresh._scopedGlobalWritable = settings._scopedGlobalWritable;
+		settings = std::move(fresh);
+		save();
+		return;
+	}
 	getInstance() = AyuSettings();
 	save();
 }
 
+bool AyuSettings::ensureScopedAccount(uint64 userId) {
+	if (!Local::usesScopedSettings()) {
+		return true;
+	}
+	const auto local = FindScopedAccount(userId);
+	return local && ensureScopedAccount(userId, *local);
+}
+
+GhostModeAccountSettings &AyuSettings::unavailableScopedGhost() {
+	static const auto result = [] {
+		auto ghost = std::make_unique<GhostModeAccountSettings>();
+		ghost->_sendReadMessages = false;
+		ghost->_sendReadStories = false;
+		ghost->_sendOnlinePackets = false;
+		ghost->_sendUploadProgress = false;
+		return ghost;
+	}();
+	return *result;
+}
+
+bool AyuSettings::ensureScopedAccount(uint64 userId, Storage::Account &local) {
+	if (!userId || !local.usesScopedStorage()) {
+		return false;
+	}
+	const auto root = QFileInfo(QDir::cleanPath(local.basePath())).path();
+	const auto cached = _scopedAccountPreferences.find(userId);
+	if (cached != end(_scopedAccountPreferences)) {
+		return cached->second.root == root;
+	}
+	const auto read = Ayu::Preferences::ReadScopedAccountPreferences(
+		root, userId, local.scopedPreferencesKey());
+	const auto decoded = !read
+		? std::nullopt
+		: read->isEmpty()
+		? std::optional(Ayu::Preferences::AccountData())
+		: Ayu::Preferences::DecodeAccountData(*read, userId);
+	if (!decoded) {
+		return false;
+	}
+	if (decoded->ghostMode) {
+		auto ghost = std::make_unique<GhostModeAccountSettings>();
+		from_json(*decoded->ghostMode, *ghost);
+		_ghostAccounts.emplace(userId, std::move(ghost));
+	}
+	auto watermarks = std::map<Ayu::GhostReadScope, Ayu::GhostReadWatermark>();
+	for (const auto &mark : decoded->watermarks) {
+		watermarks.emplace(
+			Ayu::GhostReadScope{ userId, mark.peerId, mark.topicRootId },
+			Ayu::GhostReadWatermark{ mark.readTill, mark.manuallyUnread });
+	}
+	_ghostReadStates[userId].replace(std::move(watermarks));
+	if (decoded->filteredUnread) {
+		_countFilteredUnreadInBadge[userId] = true;
+	}
+	for (const auto &[peer, policy] : decoded->deletedPolicies) {
+		_deletedMessagePolicies.emplace(std::pair(userId, peer), policy);
+	}
+	_scopedAccountPreferences.emplace(userId, ScopedAccountPreferences{
+		.root = root,
+		.persisted = Ayu::Preferences::EncodeAccountData(userId, *decoded),
+	});
+	return true;
+}
+
+void AyuSettings::saveScopedAccounts() {
+	for (auto &[userId, binding] : _scopedAccountPreferences) {
+		const auto local = FindScopedAccount(userId);
+		if (!local || QFileInfo(QDir::cleanPath(local->basePath())).path() != binding.root) {
+			continue;
+		}
+		auto data = Ayu::Preferences::AccountData();
+		const auto ghost = _ghostAccounts.find(userId);
+		if (ghost != end(_ghostAccounts)) {
+			data.ghostMode = json(*ghost->second);
+		}
+		const auto state = _ghostReadStates.find(userId);
+		if (state != end(_ghostReadStates)) {
+			for (const auto &[scope, value] : state->second.all()) {
+				data.watermarks.push_back({
+					scope.peerId, scope.topicRootId, value.readTill, value.manuallyUnread,
+				});
+			}
+		}
+		const auto filtered = _countFilteredUnreadInBadge.find(userId);
+		data.filteredUnread = (filtered != end(_countFilteredUnreadInBadge)) && filtered->second;
+		for (auto i = _deletedMessagePolicies.lower_bound({ userId, 0 })
+			; i != end(_deletedMessagePolicies) && i->first.first == userId
+			; ++i) {
+			data.deletedPolicies.emplace(i->first.second, i->second);
+		}
+		auto payload = Ayu::Preferences::EncodeAccountData(userId, data);
+		if (payload == binding.persisted) {
+			continue;
+		}
+		if (Ayu::Preferences::WriteScopedAccountPreferences(
+			binding.root, userId, local->scopedPreferencesKey(), payload)) {
+			binding.persisted = std::move(payload);
+		} else {
+			LOG(("SleepyGram settings: failed to save scoped account preferences"));
+		}
+	}
+}
+
 GhostModeAccountSettings &AyuSettings::ghost(not_null<Main::Session*> session) {
-	return ghost(session->userId().bare);
+	auto &settings = getInstance();
+	const auto userId = session->userId().bare;
+	if (Local::usesScopedSettings() && !settings.ensureScopedAccount(userId, session->local())) {
+		return unavailableScopedGhost();
+	}
+	return settings.ghostForLoadedAccount(userId);
 }
 
 GhostModeAccountSettings &AyuSettings::ghost(uint64 userId) {
 	auto &settings = getInstance();
-	auto overriddenId = settings.getOverriddenGhostUserId(userId);
+	if (userId && !settings.ensureScopedAccount(userId)) {
+		return unavailableScopedGhost();
+	}
+	return settings.ghostForLoadedAccount(userId);
+}
 
-	auto it = settings._ghostAccounts.find(overriddenId);
-	if (it == settings._ghostAccounts.end()) {
+GhostModeAccountSettings &AyuSettings::ghostForLoadedAccount(uint64 userId) {
+	const auto overriddenId = getOverriddenGhostUserId(userId);
+	auto it = _ghostAccounts.find(overriddenId);
+	if (it == _ghostAccounts.end()) {
 		auto account = std::make_unique<GhostModeAccountSettings>();
-		it = settings._ghostAccounts.emplace(overriddenId, std::move(account)).first;
+		it = _ghostAccounts.emplace(overriddenId, std::move(account)).first;
 	}
 
 	return *it->second;
@@ -1159,6 +1344,10 @@ void AyuSettings::setChatReadReceiptPolicy(
 bool AyuSettings::shouldSendReadMessages(
 		not_null<Main::Session*> session,
 		uint64 peerId) {
+	if (Local::usesScopedSettings()
+		&& !getInstance().ensureScopedAccount(session->userId().bare, session->local())) {
+		return false;
+	}
 	switch (chatReadReceiptPolicy(session, peerId)) {
 	case ChatReadReceiptPolicy::ReadLocally: return false;
 	case ChatReadReceiptPolicy::SendReceipts: return true;
@@ -1176,10 +1365,13 @@ uint64 AyuSettings::chatReadReceiptPolicyGeneration(
 }
 
 const Ayu::GhostReadState &AyuSettings::ghostReadState(uint64 accountId) {
-	const auto &states = getInstance()._ghostReadStates;
-	const auto i = states.find(accountId);
-	if (i != states.end()) {
-		return i->second;
+	auto &settings = getInstance();
+	if (settings.ensureScopedAccount(accountId)) {
+		const auto &states = settings._ghostReadStates;
+		const auto i = states.find(accountId);
+		if (i != states.end()) {
+			return i->second;
+		}
 	}
 	static const auto Empty = Ayu::GhostReadState();
 	return Empty;
@@ -1190,10 +1382,12 @@ void AyuSettings::advanceGhostRead(
 		uint64 peerId,
 		uint64 topicRootId,
 		int64 readTill) {
-	if (!accountId || !peerId || readTill <= 0) {
+	auto &settings = getInstance();
+	if (!accountId || !peerId || readTill <= 0
+		|| !settings.ensureScopedAccount(accountId)) {
 		return;
 	}
-	auto &state = getInstance()._ghostReadStates[accountId];
+	auto &state = settings._ghostReadStates[accountId];
 	const auto previous = state.find(accountId, peerId, topicRootId);
 	if (previous
 		&& previous->readTill >= readTill
@@ -1212,10 +1406,11 @@ void AyuSettings::markGhostReadManuallyUnread(
 		uint64 accountId,
 		uint64 peerId,
 		uint64 topicRootId) {
-	if (!accountId || !peerId) {
+	auto &settings = getInstance();
+	if (!accountId || !peerId || !settings.ensureScopedAccount(accountId)) {
 		return;
 	}
-	auto &state = getInstance()._ghostReadStates[accountId];
+	auto &state = settings._ghostReadStates[accountId];
 	const auto previous = state.find(accountId, peerId, topicRootId);
 	if (previous && previous->manuallyUnread) {
 		return;
@@ -1231,10 +1426,11 @@ void AyuSettings::clearGhostRead(
 		uint64 accountId,
 		uint64 peerId,
 		uint64 topicRootId) {
-	if (!accountId || !peerId) {
+	auto &settings = getInstance();
+	if (!accountId || !peerId || !settings.ensureScopedAccount(accountId)) {
 		return;
 	}
-	auto &states = getInstance()._ghostReadStates;
+	auto &states = settings._ghostReadStates;
 	const auto i = states.find(accountId);
 	if (i == states.end() || !i->second.find(accountId, peerId, topicRootId)) {
 		return;
@@ -1249,6 +1445,28 @@ void AyuSettings::clearGhostRead(
 void AyuSettings::clearGhostReadForPreference(uint64 userId) {
 	auto &settings = getInstance();
 	const auto key = settings.getOverriddenGhostUserId(userId);
+	if (Local::usesScopedSettings()) {
+		if (key && !settings.ensureScopedAccount(key)) {
+			return;
+		}
+		if (!key) {
+			auto changed = false;
+			for (const auto &entry : Core::App().domain().accounts()) {
+				const auto session = entry.account ? entry.account->maybeSession() : nullptr;
+				if (!session) {
+					continue;
+				}
+				const auto id = session->userId().bare;
+				if (settings.ensureScopedAccount(id, session->local())) {
+					changed = settings._ghostReadStates.erase(id) || changed;
+				}
+			}
+			if (changed) {
+				ghostReadSaveTimer().callOnce(500);
+			}
+			return;
+		}
+	}
 	if (!key) {
 		if (settings._ghostReadStates.empty()) {
 			return;
@@ -1305,6 +1523,9 @@ void AyuSettings::setUseGlobalGhostMode(bool val) {
 }
 
 void AyuSettings::addShadowBan(int64 id) {
+	if (Local::usesScopedSettings()) {
+		return;
+	}
 	if (_shadowBanIds.insert(id).second) {
 		FiltersCacheController::rebuildCache();
 		FiltersCacheController::fireUpdate();
@@ -1380,6 +1601,9 @@ void AyuSettings::setSaveDeletedMessages(bool val) {
 }
 
 int AyuSettings::deletedMessagePolicy(uint64 accountId, uint64 peerId) const {
+	if (!getInstance().ensureScopedAccount(accountId)) {
+		return -1;
+	}
 	const auto i = _deletedMessagePolicies.find({ accountId, peerId });
 	return (i == end(_deletedMessagePolicies)) ? -1 : i->second;
 }
@@ -1388,6 +1612,10 @@ void AyuSettings::setDeletedMessagePolicy(
 		uint64 accountId,
 		uint64 peerId,
 		int policy) {
+	if (Local::usesScopedSettings()
+		&& (!peerId || policy > 1 || !ensureScopedAccount(accountId))) {
+		return;
+	}
 	const auto key = std::make_pair(accountId, peerId);
 	if (policy < 0) {
 		if (!_deletedMessagePolicies.erase(key)) {
@@ -1428,6 +1656,9 @@ void AyuSettings::setFiltersEnabledInChats(bool val) {
 }
 
 bool AyuSettings::countFilteredUnreadInBadge(uint64 accountId) const {
+	if (!getInstance().ensureScopedAccount(accountId)) {
+		return false;
+	}
 	const auto i = _countFilteredUnreadInBadge.find(accountId);
 	return (i != _countFilteredUnreadInBadge.end()) && i->second;
 }
@@ -1435,7 +1666,8 @@ bool AyuSettings::countFilteredUnreadInBadge(uint64 accountId) const {
 void AyuSettings::setCountFilteredUnreadInBadge(
 		uint64 accountId,
 		bool val) {
-	if (!accountId || countFilteredUnreadInBadge(accountId) == val) {
+	if (!accountId || !ensureScopedAccount(accountId)
+		|| countFilteredUnreadInBadge(accountId) == val) {
 		return;
 	}
 	if (val) {

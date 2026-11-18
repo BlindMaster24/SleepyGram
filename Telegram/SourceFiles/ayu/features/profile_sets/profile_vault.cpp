@@ -1166,6 +1166,76 @@ std::optional<ProfileVault> PruneProfileVaultAccounts(
 		error);
 }
 
+std::optional<ProfileVault> EnrollProfileVaultAccount(
+		const ProfileVault &vault,
+		const DerivedCredential &admin,
+		SetId targetSet,
+		const DerivedCredential &setCredential,
+		const AccountKey &account,
+		const AccountVaultLocator &locator,
+		ProfileVaultError *error) {
+	auto keys = GrantKeys();
+	const auto wipe = gsl::finally([&] { CleanseGrantKeys(keys); });
+	auto opened = OpenForUpdate(vault, admin, keys, error);
+	if (!opened) {
+		return std::nullopt;
+	}
+	const auto wipeAccounts = gsl::finally([&] {
+		CleanseAccountKeys(opened->accounts);
+	});
+	auto metadata = opened->metadata;
+	const auto target = std::ranges::find(
+		metadata.sets,
+		targetSet,
+		&AccountSet::id);
+	if (target == end(metadata.sets) || !target->accounts.empty()
+		|| account.id != locator.id || !ValidLocator(locator)) {
+		SetError(error, ProfileVaultError::InvalidAccountEnrollment);
+		return std::nullopt;
+	} else if (!ValidCredential(setCredential)) {
+		SetError(error, ProfileVaultError::InvalidCredential);
+		return std::nullopt;
+	} else if (!EqualSecret(setCredential.verifier, target->verifier)) {
+		SetError(error, ProfileVaultError::WrongPassword);
+		return std::nullopt;
+	}
+	{
+		auto proof = OpenProfileVault(vault, setCredential, error);
+		const auto access = std::get_if<SetVaultAccess>(&proof);
+		if (!access) {
+			return std::nullopt;
+		}
+		const auto wipeProof = gsl::finally([&] {
+			CleanseAccountKeys(access->accounts);
+			OPENSSL_cleanse(access->settingsKey.data(), access->settingsKey.size());
+		});
+		if (access->id != targetSet
+			|| !access->accounts.empty()
+			|| !access->locators.empty()) {
+			SetError(error, ProfileVaultError::InvalidAccountEnrollment);
+			return std::nullopt;
+		}
+	}
+	opened->accounts.push_back(account);
+	opened->locators.push_back(locator);
+	if (ValidateAccountKeys(opened->accounts) != KeyringError::None
+		|| IndexLocators(opened->locators).size() != opened->locators.size()) {
+		SetError(error, ProfileVaultError::InvalidAccountEnrollment);
+		return std::nullopt;
+	}
+	target->accounts.push_back(account.id);
+	return RewriteVault(
+		metadata,
+		opened->accounts,
+		opened->locators,
+		admin,
+		{},
+		&vault,
+		&opened->metadata,
+		keys,
+		error);
+}
+
 ProfileVaultAccess OpenProfileVault(
 		const ProfileVault &vault,
 		const DerivedCredential &credential,

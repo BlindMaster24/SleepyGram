@@ -52,7 +52,8 @@ enum class LegacyArchiveRetirement : uchar {
 	const QByteArray &transactionId,
 	std::span<const int> legacyAccountIndices,
 	std::span<const VerifiedLegacyRetirementAccount> verifiedAccounts,
-	LegacyArchiveRetirement archive);
+	LegacyArchiveRetirement archive,
+	const QByteArray &verifiedAyuSettingsSha256 = {});
 
 [[nodiscard]] QByteArray SerializeLegacyRetirementPlan(
 	const LegacyRetirementPlan &plan);

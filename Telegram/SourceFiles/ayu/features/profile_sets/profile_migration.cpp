@@ -57,6 +57,7 @@ constexpr auto kPreparingProfileMarker
 constexpr auto kCutoverProfileMarker
 	= "sleepygram-profile-migration-workspace-v2 cutover-started ";
 constexpr auto kAccountsDirectoryName = "accounts";
+constexpr auto kEmergencyJournalName = "emergency-journal";
 constexpr auto kSettingsDirectoryName = "set-settings";
 constexpr auto kWorkspaceLockName = "migration.lock";
 constexpr auto kSetupDraftName = "profile-setup.bin";
@@ -117,6 +118,8 @@ QString ArtifactName(MigrationArtifact artifact) {
 		return u"legacy-retirement"_q;
 	case MigrationArtifact::EmergencyRules:
 		return u"emergency-rules"_q;
+	case MigrationArtifact::EmergencyRecovery:
+		return u"emergency-recovery"_q;
 	}
 	return QString();
 }
@@ -135,6 +138,8 @@ std::optional<MigrationArtifact> ParseArtifactName(const QString &name) {
 		return MigrationArtifact::LegacyRetirement;
 	} else if (name == u"emergency-rules") {
 		return MigrationArtifact::EmergencyRules;
+	} else if (name == u"emergency-recovery") {
+		return MigrationArtifact::EmergencyRecovery;
 	}
 	return std::nullopt;
 }
@@ -261,7 +266,7 @@ bool ParseManifest(
 		return false;
 	}
 	const auto array = object.value(u"entries"_q).toArray();
-	if (array.size() < 2 || array.size() > 4) {
+	if (array.size() < 2 || array.size() > 5) {
 		return false;
 	}
 	auto parsed = Manifest{ .version = int(version), .transactionId = id };
@@ -497,13 +502,16 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 		const auto accounts = ManifestPath(root, kAccountsDirectoryName);
 		const auto cutover = ManifestPath(root, kCutoverDirectoryName);
 		const auto settings = ManifestPath(root, kSettingsDirectoryName);
+		const auto journal = ManifestPath(root, kEmergencyJournalName);
 		if (CanonicalDirectory(accounts) != accounts
 			|| (PathPresent(settings) && CanonicalDirectory(settings) != settings)
+			|| (PathPresent(journal) && CanonicalDirectory(journal) != journal)
 			|| (PathPresent(cutover) && CanonicalDirectory(cutover) != cutover)) {
 			return false;
 		}
 		allowed.emplace(QString::fromLatin1(kAccountsDirectoryName));
 		allowed.emplace(QString::fromLatin1(kSettingsDirectoryName));
+		allowed.emplace(QString::fromLatin1(kEmergencyJournalName));
 		allowed.emplace(QString::fromLatin1(kCutoverDirectoryName));
 		allowed.emplace(QString::fromLatin1(kSetupDraftName));
 	}
@@ -553,7 +561,7 @@ std::optional<Manifest> PrepareManifest(
 		QByteArray transactionId,
 		MigrationError *error) {
 	SetError(error, MigrationError::InvalidInput);
-	if (inputs.size() < 2 || inputs.size() > 4
+	if (inputs.size() < 2 || inputs.size() > 5
 		|| (!transactionId.isEmpty() && transactionId.size() != kTransactionIdSize)) {
 		return std::nullopt;
 	}
@@ -640,12 +648,19 @@ std::optional<CommittedMigration> ReadArtifacts(
 			result.legacyRetirement = std::move(*bytes);
 		} else if (entry.artifact == MigrationArtifact::EmergencyRules) {
 			result.emergencyRules = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::EmergencyRecovery) {
+			result.emergencyRecovery = std::move(*bytes);
 		} else {
 			SetError(error, MigrationError::InvalidManifest);
 			return std::nullopt;
 		}
 	}
 	if (result.profileVault.isEmpty() || result.accountKeyring.isEmpty()) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
+	}
+	if (!result.legacyRetirement.isEmpty()
+		&& (!result.emergencyRules.isEmpty() || !result.emergencyRecovery.isEmpty())) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -1243,6 +1258,7 @@ std::optional<CommittedMigration> MigrationController::commit(
 		|| checked->accountKeyring != staged->accountKeyring
 		|| checked->legacyRetirement != staged->legacyRetirement
 		|| checked->emergencyRules != staged->emergencyRules
+		|| checked->emergencyRecovery != staged->emergencyRecovery
 		|| PathPresent(activePath)
 		|| (profile && ReadProfilePhase(_root) != phase)
 		|| pending != ReadBounded(pendingPath, kMaximumManifestSize)) {
@@ -1354,7 +1370,8 @@ bool MigrationController::StoreSetupDraft(const CommittedMigration &draft) const
 		|| vaultSize <= 0 || vaultSize > kMaximumArtifactSize
 		|| keyringSize <= 0 || keyringSize > kMaximumArtifactSize
 		|| vaultSize + keyringSize > kMaximumSidecarSize
-		|| !draft.legacyRetirement.isEmpty() || !draft.emergencyRules.isEmpty()) {
+		|| !draft.legacyRetirement.isEmpty() || !draft.emergencyRules.isEmpty()
+		|| !draft.emergencyRecovery.isEmpty()) {
 		return false;
 	}
 	return WithPreparingWorkspace([&] {
@@ -1487,25 +1504,52 @@ std::optional<QString> MigrationController::PrepareScopedSettingsDirectory(
 		SetError(error, MigrationError::InvalidInput);
 		return std::nullopt;
 	}
+	auto settings = std::optional<QString>();
+	return WithCurrentGeneration(expectedTransactionId, [&] {
+		settings = ensureScopedSettingsDirectory(setId);
+		return settings.has_value();
+	}, error) ? settings : std::nullopt;
+}
+
+std::optional<QString> MigrationController::PrepareInitialSettingsDirectory(
+		const QByteArray &expectedTransactionId,
+		SetId setId) const {
+	if (isIsolatedFixture() || !setId || expectedTransactionId.isEmpty()) {
+		return std::nullopt;
+	}
+	auto settings = std::optional<QString>();
+	const auto prepare = [&] {
+		const auto draft = LoadSetupDraft();
+		if (!draft || draft->transactionId != expectedTransactionId) {
+			return false;
+		}
+		settings = ensureScopedSettingsDirectory(setId);
+		return settings.has_value();
+	};
+	const auto ready = LoadStaged()
+		? WithStagedSetup(expectedTransactionId, prepare)
+		: WithPreparingWorkspace(prepare);
+	return ready ? settings : std::nullopt;
+}
+
+std::optional<QString> MigrationController::ensureScopedSettingsDirectory(SetId setId) const {
 	const auto root = ManifestPath(_root, kSettingsDirectoryName);
 	const auto setName = u"%1%2"_q
 		.arg(qulonglong(setId.high), 16, 16, QChar('0'))
 		.arg(qulonglong(setId.low), 16, 16, QChar('0'));
 	const auto path = QDir(root).filePath(setName);
-	const auto ready = WithCurrentGeneration(expectedTransactionId, [&] {
-		if (!PathPresent(root) && !QDir(_root).mkdir(
-				QString::fromLatin1(kSettingsDirectoryName))) {
-			return false;
-		} else if (CanonicalDirectory(root) != root) {
-			return false;
-		}
-		if (!PathPresent(path) && !QDir(root).mkdir(setName)) {
-			return false;
-		}
-		return CanonicalDirectory(path) == path
-			&& SyncDirectory(root) && SyncDirectory(_root);
-	}, error);
-	return ready ? std::optional(path) : std::nullopt;
+	if (!PathPresent(root) && !QDir(_root).mkdir(
+			QString::fromLatin1(kSettingsDirectoryName))) {
+		return std::nullopt;
+	} else if (CanonicalDirectory(root) != root) {
+		return std::nullopt;
+	}
+	if (!PathPresent(path) && !QDir(root).mkdir(setName)) {
+		return std::nullopt;
+	}
+	return (CanonicalDirectory(path) == path && SyncDirectory(root) && SyncDirectory(_root))
+		? std::optional(path)
+		: std::nullopt;
 }
 
 QString MigrationController::workspacePath() const {
@@ -1515,6 +1559,12 @@ QString MigrationController::workspacePath() const {
 QString MigrationController::accountStorageRoot() const {
 	return (!_profileDataDirectory.isEmpty() && validateWorkspace())
 		? ManifestPath(_root, kAccountsDirectoryName)
+		: QString();
+}
+
+QString MigrationController::emergencyJournalDirectory() const {
+	return (!_profileDataDirectory.isEmpty() && validateWorkspace())
+		? ManifestPath(_root, kEmergencyJournalName)
 		: QString();
 }
 

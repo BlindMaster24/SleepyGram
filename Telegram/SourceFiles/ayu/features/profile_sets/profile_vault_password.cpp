@@ -8,6 +8,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/profile_sets/profile_vault.h"
 
 #include "ayu/features/profile_sets/profile_generation.h"
+#include "ayu/features/profile_sets/profile_emergency.h"
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_auth_key.h"
@@ -60,12 +61,17 @@ DerivedCredential DeriveCredential(
 std::optional<OpenedProfileGeneration> AuthenticateScopedOnWorker(
 		const MigrationController &sidecar,
 		QString &passcode,
+		bool fromLockScreen,
 		ProfileGenerationError &error) {
 	const auto committed = !sidecar.isIsolatedFixture()
 		? sidecar.LoadCommitted()
 		: std::nullopt;
 	if (!committed) {
 		error = ProfileGenerationError::InvalidSidecar;
+		return std::nullopt;
+	}
+	if (!committed->emergencyRecovery.isEmpty()) {
+		error = ProfileGenerationError::EmergencyRecoveryRequired;
 		return std::nullopt;
 	}
 	const auto vault = ParseProfileVault(committed->profileVault);
@@ -78,13 +84,21 @@ std::optional<OpenedProfileGeneration> AuthenticateScopedOnWorker(
 		return std::nullopt;
 	}
 	auto derived = DeriveCredential(vault->salt, vault->kdf, passcode);
+	const auto wipeDerived = gsl::finally([&] {
+		OPENSSL_cleanse(derived.verifier.data(), size_t(derived.verifier.size()));
+		OPENSSL_cleanse(derived.key.data(), size_t(derived.key.size()));
+	});
 	if (!derived.valid()) {
 		error = ProfileGenerationError::DerivationFailed;
 		return std::nullopt;
 	}
-	return AuthenticateCommittedProfileGeneration(
-		sidecar, {}, std::move(derived), {}, {}, {}, {},
+	auto result = AuthenticateCommittedProfileGeneration(
+		sidecar, {}, derived, {}, {}, {}, {},
 		committed->transactionId, &error);
+	if (fromLockScreen && !result && error == ProfileGenerationError::WrongPassword) {
+		return SubmitProfileEmergencyOnWorker(sidecar, *committed, derived, error);
+	}
+	return result;
 }
 
 ProfileGenerationError SaveSetOnWorker(
@@ -153,6 +167,17 @@ ProfileGenerationError SaveSetOnWorker(
 
 } // namespace
 
+DerivedCredential details::DeriveProfileVaultCredentialOnWorker(
+		const QByteArray &salt,
+		KdfParameters parameters,
+		QString &password) {
+	if (!ValidUnlockInput(salt, parameters, password)) {
+		password.fill(QChar(0));
+		return {};
+	}
+	return DeriveCredential(salt, parameters, password);
+}
+
 void DeriveProfileVaultCredential(
 		QByteArray salt,
 		KdfParameters parameters,
@@ -177,18 +202,22 @@ void DeriveProfileVaultCredential(
 	});
 }
 
-void AuthenticateScopedProfilePasscode(
+namespace {
+
+void PostScopedAuthentication(
 		MigrationController sidecar,
 		QString passcode,
+		bool fromLockScreen,
 		ProfilePasswordDone done) {
 	Expects(done != nullptr);
 
 	crl::async([
 			sidecar = std::move(sidecar),
 			passcode = std::move(passcode),
+			fromLockScreen,
 			done = std::move(done)]() mutable {
 		auto error = ProfileGenerationError::None;
-		auto authenticated = AuthenticateScopedOnWorker(sidecar, passcode, error);
+		auto authenticated = AuthenticateScopedOnWorker(sidecar, passcode, fromLockScreen, error);
 		passcode.fill(QChar(0));
 		crl::on_main([
 				authenticated = std::move(authenticated),
@@ -197,6 +226,22 @@ void AuthenticateScopedProfilePasscode(
 			done(std::move(authenticated), error);
 		});
 	});
+}
+
+} // namespace
+
+void AuthenticateScopedProfilePasscode(
+		MigrationController sidecar,
+		QString passcode,
+		ProfilePasswordDone done) {
+	PostScopedAuthentication(std::move(sidecar), std::move(passcode), false, std::move(done));
+}
+
+void SubmitScopedProfileLockPasscode(
+		MigrationController sidecar,
+		QString passcode,
+		ProfilePasswordDone done) {
+	PostScopedAuthentication(std::move(sidecar), std::move(passcode), true, std::move(done));
 }
 
 void SaveProfileSetChange(

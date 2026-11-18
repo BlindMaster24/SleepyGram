@@ -6,6 +6,10 @@
 
 #include <span>
 
+namespace Ayu::Preferences {
+struct LegacyPartition;
+} // namespace Ayu::Preferences
+
 namespace Ayu::ProfileSets {
 
 struct ProfileStagingAccount final {
@@ -34,6 +38,7 @@ enum class ProfileStagingResult {
 	const QByteArray &legacyPasscode,
 	std::span<const ProfileStagingAccount> accounts,
 	const QByteArray &transactionId = {},
-	LegacyRetirementPlan *retirement = nullptr);
+	LegacyRetirementPlan *retirement = nullptr,
+	const Preferences::LegacyPartition *preferences = nullptr);
 
 } // namespace Ayu::ProfileSets

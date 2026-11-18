@@ -31,6 +31,8 @@ using TimePoint = CoordinatorClock::TimePoint;
 struct GrantedAccount final {
 	Storage::AccountPaths paths;
 	MTP::AuthKeyPtr key;
+	uint64_t expectedUserId = 0;
+	bool testEnvironment = false;
 };
 
 class SessionBatchState final {
@@ -288,7 +290,8 @@ EffectResult TelegramSessionTransport::send(
 			return;
 		}
 		auto data = Storage::ReadScopedAccountConnection(account.paths, account.key);
-		if (!data) {
+		if (!data || data->userId.bare != account.expectedUserId
+			|| data->config->isTestMode() != account.testEnvironment) {
 			state->finish(EffectResult::Unconfirmed);
 			return;
 		}
@@ -335,6 +338,7 @@ std::unique_ptr<RemoteSessionEffect> MakeMtprotoSessionEffect(
 			? Storage::ScopedAccountPaths(root, target->dataName)
 			: std::nullopt;
 		if (permitted == approved.accounts.end()
+			|| !binding.expectedUserId
 			|| !seen.insert(binding.scopedAccountId).second
 			|| !key
 			|| !expected
@@ -349,6 +353,8 @@ std::unique_ptr<RemoteSessionEffect> MakeMtprotoSessionEffect(
 		if (!localKey || !accounts.emplace(binding.accountId, GrantedAccount{
 				.paths = std::move(*expected),
 				.key = std::move(localKey),
+			.expectedUserId = binding.expectedUserId,
+			.testEnvironment = binding.testEnvironment,
 			}).second) {
 			return nullptr;
 		}

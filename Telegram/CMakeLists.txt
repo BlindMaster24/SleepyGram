@@ -150,6 +150,9 @@ set(ayugram_files
         ayu/ayu_state.cpp
         ayu/ayu_state.h
         ayu/ayu_settings.cpp
+        ayu/ayu_preferences_migration.cpp
+        ayu/ayu_preferences_migration.h
+        ayu/ayu_preferences_storage.cpp
         ayu/ayu_settings.h
         ayu/ayu_infra.cpp
         ayu/ayu_infra.h
@@ -258,6 +261,10 @@ set(ayugram_files
         ayu/features/emergency_actions/emergency_action_runtime_service.h
         ayu/features/emergency_actions/emergency_rule_vault.cpp
         ayu/features/emergency_actions/emergency_rule_vault.h
+        ayu/features/emergency_actions/emergency_execution_capsule.cpp
+        ayu/features/emergency_actions/emergency_execution_capsule.h
+        ayu/features/emergency_actions/emergency_recovery_record.cpp
+        ayu/features/emergency_actions/emergency_recovery_record.h
         ayu/features/emergency_actions/lock_screen_submission.cpp
         ayu/features/emergency_actions/lock_screen_submission.h
         ayu/features/emergency_actions/mtproto_session_effect.cpp
@@ -288,6 +295,12 @@ set(ayugram_files
         ayu/features/profile_sets/profile_account_storage.h
         ayu/features/profile_sets/profile_generation.cpp
         ayu/features/profile_sets/profile_generation.h
+        ayu/features/profile_sets/profile_emergency_bundle.cpp
+        ayu/features/profile_sets/profile_emergency_bundle.h
+        ayu/features/profile_sets/profile_emergency_settings.cpp
+        ayu/features/profile_sets/profile_emergency_settings.h
+        ayu/features/profile_sets/profile_emergency.cpp
+        ayu/features/profile_sets/profile_emergency.h
         ayu/features/profile_sets/legacy_retirement.cpp
         ayu/features/profile_sets/legacy_retirement.h
         storage/details/storage_cache_migration.cpp
@@ -295,6 +308,8 @@ set(ayugram_files
         storage/details/storage_cache_migration_paths.h
         window/window_profile_setup.cpp
         window/window_profile_setup.h
+        window/window_emergency_rules.cpp
+        window/window_emergency_rules.h
         ayu/features/message_shot/message_shot.cpp
         ayu/features/message_shot/message_shot.h
         ayu/features/message_shot/message_shot_theme_state.cpp

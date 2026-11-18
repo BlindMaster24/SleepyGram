@@ -106,6 +106,7 @@ struct ScopedAccountConnection final {
 	~ScopedAccountConnection();
 
 	int32 mainDcId = 0;
+	UserId userId;
 	MTP::AuthKeyPtr mainKey;
 	std::unique_ptr<MTP::Config> config;
 };
@@ -164,6 +165,9 @@ public:
 
 	[[nodiscard]] MTP::AuthKeyPtr peekLegacyLocalKey() const {
 		return _localKey;
+	}
+	[[nodiscard]] MTP::AuthKeyPtr scopedPreferencesKey() const {
+		return usesScopedStorage() ? _localKey : nullptr;
 	}
 
 	void writeSessionSettings();

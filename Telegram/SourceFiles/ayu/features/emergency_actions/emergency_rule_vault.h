@@ -8,6 +8,7 @@
 namespace Ayu::EmergencyActions {
 
 inline constexpr auto kMaxSealedEmergencyRules = size_t(16);
+using EmergencyExecutionCapsuleDigest = std::array<uint8_t, 32>;
 
 struct EmergencyRuleGeneration final {
 	InstallationId installationId;
@@ -37,6 +38,7 @@ struct EmergencyRuleSealInput final {
 	std::string name;
 	CredentialVerifier verifier;
 	std::span<const uint8_t> key;
+	std::optional<EmergencyExecutionCapsuleDigest> executionCapsuleDigest = std::nullopt;
 };
 
 struct EmergencyRuleMasterContext final {
@@ -50,6 +52,7 @@ struct EmergencyRuleDetails final {
 	EmergencyRule rule;
 	OperationId operationId;
 	uint64_t revision = 0;
+	std::optional<EmergencyExecutionCapsuleDigest> executionCapsuleDigest = std::nullopt;
 };
 
 struct NamedEmergencyRule final {
@@ -74,6 +77,9 @@ public:
 	[[nodiscard]] const EmergencyRuleDetails &details() const {
 		return _details;
 	}
+	[[nodiscard]] const LiveInstallation *reviewedLive() const {
+		return _reviewedLive ? &*_reviewedLive : nullptr;
+	}
 
 private:
 	friend EmergencyRuleAuthentication AuthenticateEmergencyRule(
@@ -83,13 +89,16 @@ private:
 
 	EmergencyRuleTicket(
 		EmergencyRuleAuthority authority,
-		EmergencyRuleDetails details)
+		EmergencyRuleDetails details,
+		std::optional<LiveInstallation> reviewedLive)
 	: _authority(std::move(authority))
-	, _details(std::move(details)) {
+	, _details(std::move(details))
+	, _reviewedLive(std::move(reviewedLive)) {
 	}
 
 	EmergencyRuleAuthority _authority;
 	EmergencyRuleDetails _details;
+	std::optional<LiveInstallation> _reviewedLive;
 
 };
 

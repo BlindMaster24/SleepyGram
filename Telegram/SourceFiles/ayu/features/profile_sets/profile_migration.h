@@ -26,6 +26,7 @@ enum class MigrationArtifact : quint32 {
 	AccountKeyring = 2,
 	LegacyRetirement = 3,
 	EmergencyRules = 4,
+	EmergencyRecovery = 5,
 };
 
 struct MigrationInput final {
@@ -39,6 +40,7 @@ struct CommittedMigration final {
 	QByteArray accountKeyring;
 	QByteArray legacyRetirement;
 	QByteArray emergencyRules;
+	QByteArray emergencyRecovery;
 };
 
 enum class MigrationState : uchar {
@@ -148,14 +150,19 @@ public:
 		const QByteArray &expectedTransactionId,
 		SetId setId,
 		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<QString> PrepareInitialSettingsDirectory(
+		const QByteArray &expectedTransactionId,
+		SetId setId) const;
 
 	[[nodiscard]] QString workspacePath() const;
 	[[nodiscard]] QString accountStorageRoot() const;
+	[[nodiscard]] QString emergencyJournalDirectory() const;
 	[[nodiscard]] bool isIsolatedFixture() const;
 
 private:
 	explicit MigrationController(QString root, QString profileDataDirectory = {});
 	[[nodiscard]] bool validateWorkspace() const;
+	[[nodiscard]] std::optional<QString> ensureScopedSettingsDirectory(SetId setId) const;
 	[[nodiscard]] std::optional<CommittedMigration> readManifest(
 		const char *name,
 		MigrationError *error) const;

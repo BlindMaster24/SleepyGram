@@ -1,6 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/profile_sets/profile_setup.h"
 
+#include "ayu/ayu_preferences_migration.h"
 #include "ayu/features/profile_sets/profile_staging.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "crl/crl_async.h"
@@ -48,6 +49,12 @@ struct ObservedAccount final {
 	UserId userId;
 };
 
+struct OpenSetupPlan final {
+	std::vector<ProfileStagingAccount> accounts;
+	SetId initialSet;
+	MTP::AuthKeyPtr settingsKey;
+};
+
 DerivedCredential Derive(
 		const QByteArray &salt,
 		KdfParameters kdf,
@@ -71,7 +78,6 @@ DerivedCredential Derive(
 bool UnsupportedLegacyData(const QString &root, const QString &dataName) {
 	const auto offlinePath = QDir(root).filePath(u"offline-history"_q);
 	const auto offline = QFileInfo(offlinePath);
-	const auto preferences = QFileInfo(QDir(root).filePath(u"ayu_settings.json"_q));
 	const auto rotatedArchive = QDir(root).entryList(
 		{ u"ayudata_*.db"_q, u"ayudata_*.db-wal"_q, u"ayudata_*.db-shm"_q },
 		QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
@@ -84,12 +90,10 @@ bool UnsupportedLegacyData(const QString &root, const QString &dataName) {
 	}
 	return offline.isSymLink() || offline.isJunction()
 		|| (offline.exists() && (!offline.isDir() || !QDir(offlinePath).isEmpty()))
-		|| preferences.exists() || preferences.isSymLink() || preferences.isJunction()
 		|| !rotatedArchive.isEmpty();
 }
 
-QByteArray ScopedDataDigest(const MigrationController &workspace) {
-	const auto root = workspace.accountStorageRoot();
+QByteArray DirectoryDigest(const QString &root) {
 	if (root.isEmpty() || QFileInfo(root).canonicalFilePath() != root) {
 		return {};
 	}
@@ -123,6 +127,20 @@ QByteArray ScopedDataDigest(const MigrationController &workspace) {
 		}
 	}
 	return digest.result();
+}
+
+QByteArray ScopedDataDigest(const MigrationController &workspace) {
+	const auto accounts = DirectoryDigest(workspace.accountStorageRoot());
+	const auto settings = QDir(workspace.workspacePath()).filePath(u"set-settings"_q);
+	const auto info = QFileInfo(settings);
+	if (accounts.isEmpty() || info.isSymLink() || info.isJunction()) {
+		return {};
+	} else if (!info.exists()) {
+		return accounts;
+	}
+	const auto settingsDigest = DirectoryDigest(settings);
+	return settingsDigest.isEmpty() ? QByteArray() : QCryptographicHash::hash(
+		accounts + settingsDigest, QCryptographicHash::Sha256);
 }
 
 std::optional<std::vector<ObservedAccount>> ObserveLegacyAccounts(
@@ -205,7 +223,7 @@ std::optional<CommittedMigration> CreateDraft(
 		&& !result.accountKeyring.isEmpty()) ? std::optional(std::move(result)) : std::nullopt;
 }
 
-std::optional<std::vector<ProfileStagingAccount>> DraftAccounts(
+std::optional<OpenSetupPlan> OpenDraftPlan(
 		const CommittedMigration &draft,
 		const ProfileSetupRequest &request,
 		const std::vector<ObservedAccount> &observed) {
@@ -241,6 +259,10 @@ std::optional<std::vector<ProfileStagingAccount>> DraftAccounts(
 		|| admin->accounts.size() != observed.size()) {
 		return std::nullopt;
 	}
+	auto settingsKey = ProfileSettingsStorageKey(member->settingsKey);
+	if (!settingsKey) {
+		return std::nullopt;
+	}
 	auto keys = std::map<AccountId, AccountKey*>();
 	auto locators = std::map<AccountId, const AccountVaultLocator*>();
 	for (auto &key : admin->accounts) keys.emplace(key.id, &key);
@@ -261,7 +283,11 @@ std::optional<std::vector<ProfileStagingAccount>> DraftAccounts(
 			.locator = *locators.at(id),
 		});
 	}
-	return result;
+	return OpenSetupPlan{
+		.accounts = std::move(result),
+		.initialSet = initial.id,
+		.settingsKey = std::move(settingsKey),
+	};
 }
 
 Result Setup(ProfileSetupRequest &request) {
@@ -289,6 +315,15 @@ Result Setup(ProfileSetupRequest &request) {
 	if (!observed) {
 		return Result::UnsupportedLegacyData;
 	}
+	auto users = std::vector<quint64>();
+	users.reserve(observed->size());
+	for (const auto &account : *observed) {
+		users.push_back(account.userId.bare);
+	}
+	const auto preferences = Preferences::ReadLegacyPartition(request.dataDirectory, users);
+	if (!preferences) {
+		return Result::UnsupportedLegacyData;
+	}
 	auto draft = workspace->LoadSetupDraft();
 	if (!draft) {
 		draft = CreateDraft(request, *observed);
@@ -296,17 +331,23 @@ Result Setup(ProfileSetupRequest &request) {
 			return Result::StorageFailed;
 		}
 	}
-	auto accounts = DraftAccounts(*draft, request, *observed);
-	if (!accounts) {
+	auto setup = OpenDraftPlan(*draft, request, *observed);
+	if (!setup) {
 		return Result::SetupPasscodeRejected;
 	}
 	const auto wipeAccounts = gsl::finally([&] {
-		for (auto &account : *accounts) Wipe(account.key.key);
+		for (auto &account : setup->accounts) Wipe(account.key.key);
 	});
+	const auto settings = workspace->PrepareInitialSettingsDirectory(
+		draft->transactionId, setup->initialSet);
+	if (!settings || !Preferences::StageScopedGlobalPreferences(
+			*settings, setup->settingsKey, preferences->globals)) {
+		return Result::VerificationFailed;
+	}
 	auto retirement = LegacyRetirementPlan();
 	const auto staged = StageScopedProfileData(
 		*workspace, request.dataDirectory, request.dataName, legacyPasscode,
-		*accounts, draft->transactionId, &retirement);
+		setup->accounts, draft->transactionId, &retirement, &*preferences);
 	if (staged != ProfileStagingResult::Success) {
 		return (staged == ProfileStagingResult::UnsupportedAccountData)
 			? Result::UnsupportedLegacyData

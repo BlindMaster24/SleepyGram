@@ -127,6 +127,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/ayu_settings.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "ayu/features/profile_sets/profile_generation.h"
+#include "ayu/features/profile_sets/profile_emergency.h"
 #include "ayu/features/profile_sets/profile_setup.h"
 #include "window/window_profile_setup.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
@@ -424,11 +425,12 @@ void Application::run() {
 	}
 	if (_profileStartupMode == ProfileStartupMode::Committed && workspace) {
 		const auto committed = workspace->LoadCommitted();
-		if (committed && !committed->legacyRetirement.isEmpty()) {
+		const auto emergency = committed && !committed->emergencyRecovery.isEmpty();
+		if (committed && (emergency || !committed->legacyRetirement.isEmpty())) {
 			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>(
-				u"Finishing protected profile setup…"_q);
+				u"Checking local data…"_q);
 			_blockedProfileWindow->show();
-			crl::async([dataDirectory, done = crl::guard(this, [this](bool result) {
+			crl::async([dataDirectory, emergency, done = crl::guard(this, [this](bool result) {
 				if (!Quitting()) {
 					_blockedProfileWindow.reset();
 					if (result) {
@@ -439,7 +441,9 @@ void Application::run() {
 					}
 				}
 			})] {
-				const auto result = Ayu::ProfileSets::FinishProfileRetirement(dataDirectory);
+				const auto result = emergency
+					? Ayu::ProfileSets::FinishProfileEmergencyRecovery(dataDirectory)
+					: Ayu::ProfileSets::FinishProfileRetirement(dataDirectory);
 				crl::on_main([done, result] { done(result); });
 			});
 			return;
@@ -1195,6 +1199,8 @@ bool Application::startLocalStorage(
 		Local::start();
 	} else if (!Local::startScoped(std::move(settingsDirectory), std::move(settingsKey))) {
 		return false;
+	} else {
+		AyuSettings::load();
 	}
 	_localStorageStarted = true;
 	_saveSettingsTimer.emplace([=] { saveSettings(); });
