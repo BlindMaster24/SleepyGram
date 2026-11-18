@@ -479,34 +479,70 @@ jobs:
         run: |
           find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path 'Libraries/local/src/wallet_engine/wallet_engine.cpp' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
-      - name: Build
-        id: build
+      - name: Configure macOS app
+        id: configure
+        working-directory: tdesktop
+        shell: bash
         env:
           QT: ${{ env.CI_QT_VERSION }}
         run: |
-          cd tdesktop/Telegram
-          python3 ../.github/ci/build_diagnostics.py \
-            --log-file "$RUNNER_TEMP/macos-arm64-configure.log" -- ./configure.sh \
-            -D CMAKE_CONFIGURATION_TYPES=Release \
-            -D CMAKE_OSX_ARCHITECTURES=arm64 \
-            -D CMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
-            -D CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED=NO \
-            -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
-            -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
-            -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
-            -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
-          python3 ../.github/ci/build_diagnostics.py \
+          set -euo pipefail
+          clang="$(xcrun --sdk macosx --find clang)"
+          clangxx="$(xcrun --sdk macosx --find clang++)"
+          sdk="$(xcrun --sdk macosx --show-sdk-path)"
+          if [[ ! -x "$clang" || ! -x "$clangxx" || ! -d "$sdk" ]]; then
+            echo "::error::xcrun did not resolve usable Clang compilers and a macOS SDK."
+            exit 1
+          fi
+          cmake --version
+          ninja --version
+          "$clang" --version
+          printf 'macOS SDK: %s\n' "$sdk"
+          python3 .github/ci/build_diagnostics.py \
+            --log-file "$RUNNER_TEMP/macos-arm64-configure.log" -- \
+            cmake -S . -B out -G 'Ninja Multi-Config' \
+            -Werror=dev -Werror=deprecated --warn-uninitialized \
+            -DCMAKE_CONFIGURATION_TYPES=Release \
+            -DCMAKE_C_COMPILER="$clang" -DCMAKE_CXX_COMPILER="$clangxx" \
+            -DCMAKE_OBJC_COMPILER="$clang" -DCMAKE_OBJCXX_COMPILER="$clangxx" \
+            -DCMAKE_OBJC_FLAGS=-fobjc-weak -DCMAKE_OBJCXX_FLAGS=-fobjc-weak \
+            -DCMAKE_OSX_SYSROOT="$sdk" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DTDESKTOP_API_ID="$TDESKTOP_API_ID" \
+            -DTDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
+            -DDESKTOP_APP_DISABLE_AUTOUPDATE=ON \
+            -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON
+
+      - name: Build
+        id: build
+        working-directory: tdesktop
+        env:
+          QT: ${{ env.CI_QT_VERSION }}
+        run: |
+          python3 .github/ci/build_diagnostics.py \
             --log-file "$RUNNER_TEMP/macos-arm64-build.log" -- \
-            cmake --build ../out --config Release --parallel 2
+            cmake --build out --config Release --parallel 2 -- -k 0
+
+      - name: Redact CMake configure details
+        if: ${{ failure() && (steps.configure.outcome == 'failure' || steps.build.outcome == 'failure') }}
+        working-directory: tdesktop
+        run: |
+          log=out/CMakeFiles/CMakeConfigureLog.yaml
+          if [ -f "$log" ]; then
+            python3 .github/ci/build_diagnostics.py \
+              --log-file "$RUNNER_TEMP/CMakeConfigureLog.yaml" -- cat "$log" >/dev/null
+          fi
 
       - name: Upload failed build logs
-        if: ${{ failure() && (steps.prepare-fallback.outcome == 'failure' || steps.mac-qt-prune.outcome == 'failure' || steps.cleanup-libraries.outcome == 'failure' || steps.build.outcome == 'failure') }}
+        if: ${{ failure() && (steps.prepare-fallback.outcome == 'failure' || steps.mac-qt-prune.outcome == 'failure' || steps.cleanup-libraries.outcome == 'failure' || steps.configure.outcome == 'failure' || steps.build.outcome == 'failure') }}
         uses: actions/upload-artifact@v4
         with:
           name: diagnostics-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/macos-arm64-prepare.log
             ${{ runner.temp }}/macos-arm64-configure.log
+            ${{ runner.temp }}/CMakeConfigureLog.yaml
             ${{ runner.temp }}/macos-arm64-build.log
           if-no-files-found: ignore
 
