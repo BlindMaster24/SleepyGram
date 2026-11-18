@@ -33,7 +33,9 @@
 
 ## Why SleepyGram
 
-- **Shaped by the community, not a closed inner circle.** User feedback in [Issues](https://github.com/slpkbt/SleepyGram/issues) isn't background noise — requested workflow fixes, limit removals, and UX improvements actually make it into releases.
+AyuGram brought some of the best privacy and message-preservation features to Telegram Desktop. We started **SleepyGram** because many features the community asked for never made it into AyuGram. Even requests for simple features sat open for months without a response or any visible progress from the maintainers.
+
+- **Improve the client for yourself and share your changes.** You can make the changes you need in your own copy of SleepyGram and submit them as a [pull request](https://github.com/slpkbt/SleepyGram/pulls) against `dev`. We respond to pull requests more actively and add new features based on what users ask for and build.
 - **Synced with modern Telegram Desktop.** Maintained cleanly against upstream `tdesktop` (`v7.4.3`) so you don't have to choose between privacy tools and new Telegram features.
 - **Built for heavy daily use.** Practical power-user upgrades, no forced self-updates, and an independent app profile that runs safely alongside other Telegram clients.
 
