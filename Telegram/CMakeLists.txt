@@ -2722,6 +2722,10 @@ PRIVATE
     wallet/wallet_custody.h
     wallet/wallet_migration_metadata.cpp
     wallet/wallet_migration_metadata.h
+    wallet/wallet_profile_migration.cpp
+    wallet/wallet_profile_migration.h
+    wallet/wallet_profile_migration_storage.cpp
+    wallet/wallet_profile_migration_storage.h
     wallet/wallet_diamond_flight.cpp
     wallet/wallet_diamond_flight.h
     wallet/wallet_engine.cpp

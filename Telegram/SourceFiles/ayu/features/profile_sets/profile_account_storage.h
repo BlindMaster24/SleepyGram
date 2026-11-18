@@ -25,6 +25,7 @@ class MigrationController;
 	const AccountKey &account,
 	const AccountVaultLocator &locator,
 	Storage::VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
-	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated);
+	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated,
+	const Storage::LegacyWalletAccountTransfer *wallet = nullptr);
 
 } // namespace Ayu::ProfileSets

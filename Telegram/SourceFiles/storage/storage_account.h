@@ -17,6 +17,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <QtCore/QStringList>
 
+// AyuGram includes
+#include "wallet/wallet_profile_migration.h"
+
+
 class History;
 
 namespace Core {
@@ -69,7 +73,34 @@ struct VerifiedLegacyAccountFiles final {
 	QStringList tgwFiles;
 	QStringList cacheDirectories;
 	QStringList cacheFiles;
+	QByteArray walletDeviceKeySha256;
 };
+
+struct LegacyWalletAccountFileProof final {
+	QString relativePath;
+	QByteArray sha256;
+};
+
+struct LegacyWalletAccountInventory final {
+	quint64 owner = 0;
+	QByteArray custody;
+	std::vector<QString> custodyRefs;
+	std::vector<Wallet::ProfileMigrationVaultRecord> secretRecords;
+	std::vector<LegacyWalletAccountFileProof> files;
+};
+
+struct LegacyWalletAccountTransfer final {
+	const LegacyWalletAccountInventory &source;
+	const Wallet::ScopedProfileMigrationWallet &destination;
+	const Wallet::SecureBytes &oldDeviceKey;
+	const Wallet::SecureBytes *walletPasscode = nullptr;
+};
+
+[[nodiscard]] std::optional<LegacyWalletAccountInventory> ReadLegacyWalletAccountInventory(
+	const AccountPaths &source,
+	const MTP::AuthKeyPtr &sourceKey,
+	UserId expectedUser,
+	LegacyWebviewTransfer webview);
 
 // The caller holds exclusive, quiesced access to legacy storage through verification.
 [[nodiscard]] AccountMigrationResult StageLegacyAccount(
@@ -79,7 +110,8 @@ struct VerifiedLegacyAccountFiles final {
 	const MTP::AuthKeyPtr &targetKey,
 	UserId expectedUser,
 	VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
-	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated);
+	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated,
+	const LegacyWalletAccountTransfer *wallet = nullptr);
 [[nodiscard]] AccountMigrationResult VerifyStagedAccount(
 	const AccountPaths &source,
 	const MTP::AuthKeyPtr &sourceKey,
@@ -87,7 +119,8 @@ struct VerifiedLegacyAccountFiles final {
 	const MTP::AuthKeyPtr &targetKey,
 	UserId expectedUser,
 	VerifiedLegacyAccountFiles *verifiedFiles = nullptr,
-	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated);
+	LegacyWebviewTransfer webview = LegacyWebviewTransfer::RequireIsolated,
+	const LegacyWalletAccountTransfer *wallet = nullptr);
 
 [[nodiscard]] UserId ReadLegacyAccountUserForMigration(
 	const AccountPaths &source,

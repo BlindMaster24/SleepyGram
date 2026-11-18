@@ -9,6 +9,8 @@ enum class ProfileSetupResult : uchar {
 	Complete,
 	InvalidInput,
 	LegacyPasscodeRejected,
+	LegacyWalletPasscodeRequired,
+	LegacyWalletPasscodeRejected,
 	UnsupportedLegacyData,
 	SetupPasscodeRejected,
 	StorageFailed,
@@ -24,6 +26,7 @@ struct ProfileSetupRequest final {
 	QString firstSetName;
 	QString firstSetPasscode;
 	bool preserveLegacyWebviewStorage = false;
+	QString legacyWalletPasscode;
 };
 
 void SetupProfileFromLegacy(

@@ -54,6 +54,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_preferences_migration.h"
 #include "wallet/wallet_migration_metadata.h"
+#include "wallet/wallet_profile_migration_storage.h"
 
 
 namespace Storage {
@@ -148,6 +149,7 @@ enum class MigrationRecordType : uchar {
 	Settings,
 	Config,
 	WalletPublicMetadata,
+	WalletPrivateData,
 	Other,
 };
 
@@ -161,6 +163,15 @@ struct WebviewMapSection final {
 	qsizetype length = 0;
 	std::array<QByteArray, 2> tokens;
 };
+
+struct WalletMigrationMapSection final {
+	qsizetype countOffset = -1;
+	qsizetype endOffset = -1;
+	std::map<QString, FileKey> records;
+};
+
+const auto kWalletCustodyStorageKey = u"custody/records"_q;
+const auto kWalletScopedDeviceKeyringStorageKey = u"vault/device-keyring"_q;
 
 bool Present(const QFileInfo &info) {
 	return info.exists() || info.isSymLink() || info.isJunction();
@@ -397,7 +408,8 @@ MigrationResult InspectMap(
 		UserId expectedUser,
 		std::map<QString, MigrationRecordType> &files,
 		AccountStorageMode mode,
-		WebviewMapSection *webview) {
+		WebviewMapSection *webview,
+		WalletMigrationMapSection *wallet) {
 	const auto keys = [&](int count, MigrationRecordType kind) {
 		for (auto i = 0; i != count; ++i) {
 			auto key = FileKey();
@@ -437,6 +449,10 @@ MigrationResult InspectMap(
 		case lskDraftPosition:
 		case lskBotStorages:
 		case lskWalletEngineStorages: {
+			const auto walletBlock = (type == lskWalletEngineStorages);
+			if (wallet && walletBlock) {
+				wallet->countOffset = stream.device()->pos();
+			}
 			auto count = quint32();
 			stream >> count;
 			if (count > stream.device()->bytesAvailable()
@@ -444,18 +460,26 @@ MigrationResult InspectMap(
 				return MigrationResult::InvalidSource;
 			}
 			for (auto i = quint32(0); i != count; ++i) {
-				if (type == lskWalletEngineStorages) {
+				if (walletBlock) {
 					auto key = FileKey();
 					auto entry = QString();
 					stream >> key >> entry;
+					if (wallet && (entry.isEmpty()
+						|| !wallet->records.emplace(entry, key).second)) {
+						return MigrationResult::InvalidSource;
+					}
 					auto kind = MigrationRecordType::Other;
-					if (mode == AccountStorageMode::Legacy && entry == u"custody/records"_q) {
+					if (mode == AccountStorageMode::Legacy && wallet
+						&& (entry == kWalletCustodyStorageKey || entry.startsWith(u"secret/"_q))) {
+						kind = MigrationRecordType::WalletPrivateData;
+					} else if (mode == AccountStorageMode::Legacy && entry == kWalletCustodyStorageKey) {
 						kind = MigrationRecordType::WalletPublicMetadata;
 					} else if (mode == AccountStorageMode::Legacy
 						&& (entry.startsWith(u"secret/"_q)
 							|| entry.startsWith(u"custody/"_q)
 							|| entry.startsWith(u"vault/"_q)
-							|| entry.startsWith(u"journal/"_q))) {
+							|| entry.startsWith(u"journal/"_q)
+							|| wallet)) {
 						return MigrationResult::UnsupportedData;
 					}
 					if (!key || !files.emplace(ToFilePart(key), kind).second) {
@@ -471,6 +495,9 @@ MigrationResult InspectMap(
 				if (stream.status() != QDataStream::Ok) {
 					return MigrationResult::InvalidSource;
 				}
+			}
+			if (wallet && walletBlock) {
+				wallet->endOffset = stream.device()->pos();
 			}
 		} break;
 		case lskUserSettings:
@@ -584,14 +611,15 @@ MigrationResult InspectMigrationRecord(
 		std::map<QString, MigrationRecordType> &files,
 		AccountStorageMode mode = AccountStorageMode::Legacy,
 		MTP::Environment *environment = nullptr,
-		WebviewMapSection *webview = nullptr) {
+		WebviewMapSection *webview = nullptr,
+		WalletMigrationMapSection *wallet = nullptr) {
 	auto stream = QDataStream(record.data);
 	if (!BeginMigrationRecord(stream)) {
 		return MigrationResult::InvalidSource;
 	}
 	switch (type) {
 	case MigrationRecordType::Map:
-		return InspectMap(stream, expectedUser, files, mode, webview);
+		return InspectMap(stream, expectedUser, files, mode, webview, wallet);
 	case MigrationRecordType::Authorization: {
 		const auto user = ReadAuthorizationUser(stream);
 		if (!user) {
@@ -627,6 +655,8 @@ MigrationResult InspectMigrationRecord(
 	}
 	case MigrationRecordType::Other:
 		return MigrationResult::Success;
+	case MigrationRecordType::WalletPrivateData:
+		return MigrationResult::UnsupportedData;
 	}
 	Unexpected("migration record type");
 }
@@ -681,6 +711,113 @@ MigrationResult CompareMigrationRecord(
 		: MigrationResult::VerificationFailed;
 }
 
+std::optional<QByteArray> ReadWalletMigrationValue(const MigrationRecord &record) {
+	auto stream = QDataStream(record.data);
+	if (!BeginMigrationRecord(stream)) {
+		return std::nullopt;
+	}
+	auto version = quint32();
+	auto value = QByteArray();
+	stream >> version >> value;
+	return (stream.status() == QDataStream::Ok && stream.atEnd()
+		&& version == kWalletEngineFormatVersion)
+		? std::optional(std::move(value))
+		: std::nullopt;
+}
+
+quint64 LegacyWalletOwner(
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &sourceKey,
+		UserId expectedUser) {
+	const auto stem = source.basePath + u"config"_q;
+	if (!HasRecord(stem)) {
+		return expectedUser.bare;
+	}
+	auto record = MigrationRecord();
+	if (!ReadMigrationRecord(stem, MigrationRecordType::Config, sourceKey, record)) {
+		return 0;
+	}
+	auto stream = QDataStream(record.data);
+	const auto config = BeginMigrationRecord(stream) ? ParseScopedConfig(stream) : nullptr;
+	return config
+		? (expectedUser.bare | (config->isTestMode() ? 0x0100'0000'0000'0000ULL : 0ULL))
+		: 0;
+}
+
+FileKey StagedWalletKeyringFile(
+		const AccountPaths &target,
+		const MTP::AuthKeyPtr &targetKey,
+		UserId expectedUser) {
+	if (!CanonicalMigrationDirectory(QFileInfo(target.authPath).path())
+		|| !CanonicalMigrationDirectory(QDir::cleanPath(target.basePath))) {
+		return 0;
+	}
+	auto map = MigrationRecord();
+	auto files = std::map<QString, MigrationRecordType>();
+	auto wallet = WalletMigrationMapSection();
+	if (!ReadMigrationRecord(
+			target.basePath + u"map"_q, MigrationRecordType::Map, targetKey, map, true)
+		|| InspectMigrationRecord(
+			map, MigrationRecordType::Map, expectedUser, files,
+			AccountStorageMode::Scoped, nullptr, nullptr, &wallet) != MigrationResult::Success) {
+		return 0;
+	}
+	const auto entry = wallet.records.find(kWalletScopedDeviceKeyringStorageKey);
+	return (entry != end(wallet.records)) ? entry->second : 0;
+}
+
+void AddWalletKeyringToMap(
+		MigrationRecord &map,
+		const WalletMigrationMapSection &wallet,
+		FileKey ringFile,
+		WebviewMapSection &webview) {
+	auto count = Serialize::ByteArrayWriter();
+	count << quint32(wallet.records.size() + 1);
+	map.data.replace(wallet.countOffset, sizeof(quint32), std::move(count).result());
+	auto ring = Serialize::ByteArrayWriter();
+	ring << ringFile << kWalletScopedDeviceKeyringStorageKey;
+	const auto metadata = std::move(ring).result();
+	map.data.insert(wallet.endOffset, metadata);
+	if (webview.offset >= wallet.endOffset) {
+		webview.offset += metadata.size();
+	}
+	const auto length = quint32(map.data.size());
+	std::memcpy(map.data.data(), &length, sizeof(length));
+}
+
+std::optional<QByteArray> StageOrReadScopedWalletKeyring(
+		const QString &stem,
+		const MTP::AuthKeyPtr &targetKey,
+		const LegacyWalletAccountTransfer &wallet,
+		bool write) {
+	if (write) {
+		const auto &serialized = wallet.destination.scopedKeyring;
+		const auto size = quint32(sizeof(quint32) + Serialize::bytearraySize(serialized));
+		auto payload = EncryptedDescriptor(size);
+		payload.stream << kWalletEngineFormatVersion << serialized;
+		payload.finish();
+		auto record = MigrationRecord{ .version = AppVersion, .data = std::move(payload.data) };
+		if (!WriteMigrationRecord(stem, MigrationRecordType::Other, record, targetKey)) {
+			return std::nullopt;
+		}
+	}
+	auto record = MigrationRecord();
+	if (!ReadMigrationRecord(stem, MigrationRecordType::Other, targetKey, record, true)) {
+		return std::nullopt;
+	}
+	const auto serialized = ReadWalletMigrationValue(record);
+	if (!serialized) {
+		return std::nullopt;
+	}
+	const auto proof = Wallet::VerifyScopedProfileMigrationWallet({
+		.owner = wallet.source.owner,
+		.custodySecretRefs = wallet.source.custodyRefs,
+		.secretRecords = wallet.source.secretRecords,
+		.destinationPasscode = wallet.walletPasscode,
+	}, wallet.oldDeviceKey, *serialized);
+	return proof ? std::optional(proof->deviceKeySha256) : std::nullopt;
+}
+
 MigrationResult CompareMigrationRecords(
 		const MigrationPaths &paths,
 		const AccountPaths &source,
@@ -690,7 +827,8 @@ MigrationResult CompareMigrationRecords(
 		UserId expectedUser,
 		bool write,
 		VerifiedLegacyAccountFiles *verifiedFiles,
-		LegacyWebviewTransfer webview) {
+		LegacyWebviewTransfer webview,
+		const LegacyWalletAccountTransfer *wallet) {
 	const auto startFresh = webview == LegacyWebviewTransfer::StartFresh;
 	if (!EmptyMigrationDirectory(source.tempPath)
 		|| !EmptyMigrationDirectory(paths.sourceRoot + u"/tdld"_q)
@@ -710,27 +848,15 @@ MigrationResult CompareMigrationRecords(
 		return MigrationResult::InvalidSource;
 	}
 	auto legacyWebview = WebviewMapSection();
+	auto walletSection = WalletMigrationMapSection();
 	const auto mapResult = InspectMigrationRecord(
 		map,
 		MigrationRecordType::Map,
 		expectedUser,
-		files, AccountStorageMode::Legacy, nullptr, startFresh ? &legacyWebview : nullptr);
+		files, AccountStorageMode::Legacy, nullptr,
+		startFresh ? &legacyWebview : nullptr, wallet ? &walletSection : nullptr);
 	if (mapResult != MigrationResult::Success) {
 		return mapResult;
-	}
-	if (startFresh) {
-		const auto tokens = MakeProtectedWebviewTokens(bytes::make_span(targetKey->data()));
-		if (!tokens) {
-			return MigrationResult::InvalidKeys;
-		}
-		auto webviewData = QByteArray();
-		auto stream = QDataStream(&webviewData, QIODevice::WriteOnly);
-		stream.setVersion(QDataStream::Qt_5_1);
-		stream << quint32(lskWebviewTokens) << tokens->bots << tokens->other;
-		const auto offset = (legacyWebview.offset >= 0) ? legacyWebview.offset : map.data.size();
-		map.data.replace(offset, legacyWebview.length, webviewData);
-		const auto length = quint32(map.data.size());
-		std::memcpy(map.data.data(), &length, sizeof(length));
 	}
 	files.emplace(mapName, MigrationRecordType::Map);
 	const auto configName = u"config"_q;
@@ -757,6 +883,55 @@ MigrationResult CompareMigrationRecords(
 	if (authResult != MigrationResult::Success) {
 		return authResult;
 	}
+	auto ringStem = QString();
+	auto targetFiles = std::map<QString, MigrationRecordType>();
+	auto walletValues = std::map<QString, const QByteArray*>();
+	if (wallet) {
+		const auto owner = LegacyWalletOwner(source, sourceKey, expectedUser);
+		const auto custody = walletSection.records.find(kWalletCustodyStorageKey);
+		if (!owner || owner != wallet->source.owner || owner != wallet->destination.owner
+			|| walletSection.countOffset < 0 || walletSection.endOffset < 0
+			|| wallet->source.secretRecords.empty()
+			|| custody == end(walletSection.records)
+			|| walletSection.records.size() != wallet->source.secretRecords.size() + 1) {
+			return MigrationResult::IdentityMismatch;
+		}
+		walletValues.emplace(ToFilePart(custody->second), &wallet->source.custody);
+		for (const auto &record : wallet->source.secretRecords) {
+			const auto key = walletSection.records.find(record.storageKey);
+			if (key == end(walletSection.records)
+				|| !walletValues.emplace(ToFilePart(key->second), &record.encryptedValue).second) {
+				return MigrationResult::IdentityMismatch;
+			}
+		}
+		auto ringFile = write
+			? GenerateKey(target.basePath)
+			: StagedWalletKeyringFile(target, targetKey, expectedUser);
+		while (write && files.contains(ToFilePart(ringFile))) {
+			ringFile = GenerateKey(target.basePath);
+		}
+		if (!ringFile || files.contains(ToFilePart(ringFile))) {
+			return MigrationResult::VerificationFailed;
+		}
+		ringStem = ToFilePart(ringFile);
+		targetFiles = files;
+		targetFiles.emplace(ringStem, MigrationRecordType::Other);
+		AddWalletKeyringToMap(map, walletSection, ringFile, legacyWebview);
+	}
+	if (startFresh) {
+		const auto tokens = MakeProtectedWebviewTokens(bytes::make_span(targetKey->data()));
+		if (!tokens) {
+			return MigrationResult::InvalidKeys;
+		}
+		auto webviewData = QByteArray();
+		auto stream = QDataStream(&webviewData, QIODevice::WriteOnly);
+		stream.setVersion(QDataStream::Qt_5_1);
+		stream << quint32(lskWebviewTokens) << tokens->bots << tokens->other;
+		const auto offset = (legacyWebview.offset >= 0) ? legacyWebview.offset : map.data.size();
+		map.data.replace(offset, legacyWebview.length, webviewData);
+		const auto length = quint32(map.data.size());
+		std::memcpy(map.data.data(), &length, sizeof(length));
+	}
 
 	const auto root = QFileInfo(target.authPath).path();
 	const auto entries = QDir(root).entryList(kMigrationEntries, QDir::Name);
@@ -781,7 +956,7 @@ MigrationResult CompareMigrationRecords(
 	}
 	const auto dataMatches = write
 		? EmptyMigrationDirectory(target.basePath)
-		: CheckMigrationInventory(target.basePath, files, true);
+		: CheckMigrationInventory(target.basePath, wallet ? targetFiles : files, true);
 	if (!CanonicalMigrationDirectory(root)
 		|| !dataMatches
 		|| entries != expectedEntries) {
@@ -822,7 +997,13 @@ MigrationResult CompareMigrationRecords(
 			return MigrationResult::InvalidSource;
 		}
 		const auto &value = isMap ? map : record;
-		if (!isMap) {
+		if (type == MigrationRecordType::WalletPrivateData) {
+			const auto expected = walletValues.find(name);
+			if (expected == end(walletValues)
+				|| ReadWalletMigrationValue(value) != *expected->second) {
+				return MigrationResult::VerificationFailed;
+			}
+		} else if (!isMap) {
 			const auto checked = InspectMigrationRecord(
 				value,
 				type,
@@ -844,6 +1025,15 @@ MigrationResult CompareMigrationRecords(
 			return compared;
 		}
 	}
+	auto walletDigest = QByteArray();
+	if (wallet) {
+		const auto digest = StageOrReadScopedWalletKeyring(
+			target.basePath + ringStem, targetKey, *wallet, write);
+		if (!digest) {
+			return MigrationResult::VerificationFailed;
+		}
+		walletDigest = *digest;
+	}
 	const auto tgw = Tgw::CompareStorageForMigration(
 		source.basePath, sourceKey,
 		target.basePath, targetKey,
@@ -856,6 +1046,7 @@ MigrationResult CompareMigrationRecords(
 			kMigrationEntries, QDir::Name);
 		verifiedFiles->cacheDirectories = std::move(cacheFiles.directories);
 		verifiedFiles->cacheFiles = std::move(cacheFiles.files);
+		verifiedFiles->walletDeviceKeySha256 = std::move(walletDigest);
 	}
 	return tgw;
 }
@@ -912,7 +1103,8 @@ AccountMigrationResult StageLegacyAccount(
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
 		VerifiedLegacyAccountFiles *verifiedFiles,
-		LegacyWebviewTransfer webview) {
+		LegacyWebviewTransfer webview,
+		const LegacyWalletAccountTransfer *wallet) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -924,7 +1116,7 @@ AccountMigrationResult StageLegacyAccount(
 	if (Present(QFileInfo(paths->targetRoot))) {
 		return CompareMigrationRecords(
 			*paths, source, sourceKey, target, targetKey, expectedUser, false,
-			verifiedFiles, webview);
+			verifiedFiles, webview, wallet);
 	}
 	const auto parent = QFileInfo(paths->targetRoot).absolutePath();
 	auto temporary = QTemporaryDir(parent + u"/.stage-XXXXXX"_q);
@@ -938,7 +1130,8 @@ AccountMigrationResult StageLegacyAccount(
 		.mode = AccountStorageMode::Scoped,
 	};
 	const auto result = CompareMigrationRecords(
-		*paths, source, sourceKey, staged, targetKey, expectedUser, true, nullptr, webview);
+		*paths, source, sourceKey, staged, targetKey, expectedUser, true,
+		nullptr, webview, wallet);
 	if (result != MigrationResult::Success) {
 		return result;
 	}
@@ -947,7 +1140,7 @@ AccountMigrationResult StageLegacyAccount(
 	}
 	temporary.setAutoRemove(false);
 	return VerifyStagedAccount(
-		source, sourceKey, target, targetKey, expectedUser, verifiedFiles, webview);
+		source, sourceKey, target, targetKey, expectedUser, verifiedFiles, webview, wallet);
 }
 
 AccountMigrationResult VerifyStagedAccount(
@@ -957,7 +1150,8 @@ AccountMigrationResult VerifyStagedAccount(
 		const MTP::AuthKeyPtr &targetKey,
 		UserId expectedUser,
 		VerifiedLegacyAccountFiles *verifiedFiles,
-		LegacyWebviewTransfer webview) {
+		LegacyWebviewTransfer webview,
+		const LegacyWalletAccountTransfer *wallet) {
 	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)
 		|| !expectedUser) {
 		return MigrationResult::InvalidKeys;
@@ -966,7 +1160,7 @@ AccountMigrationResult VerifyStagedAccount(
 	return paths
 		? CompareMigrationRecords(
 			*paths, source, sourceKey, target, targetKey, expectedUser, false,
-			verifiedFiles, webview)
+			verifiedFiles, webview, wallet)
 		: MigrationResult::InvalidPaths;
 }
 
@@ -984,6 +1178,69 @@ UserId ReadLegacyAccountUserForMigration(
 	}
 	auto stream = QDataStream(auth.data);
 	return BeginMigrationRecord(stream) ? ReadAuthorizationUser(stream) : UserId();
+}
+
+std::optional<LegacyWalletAccountInventory> ReadLegacyWalletAccountInventory(
+		const AccountPaths &source,
+		const MTP::AuthKeyPtr &sourceKey,
+		UserId expectedUser,
+		LegacyWebviewTransfer webview) {
+	if (!expectedUser || ReadLegacyAccountUserForMigration(source, sourceKey) != expectedUser
+		|| source.basePath != source.authPath + '/'
+		|| !CanonicalMigrationDirectory(source.authPath)) {
+		return std::nullopt;
+	}
+	auto map = MigrationRecord();
+	auto files = std::map<QString, MigrationRecordType>();
+	auto wallet = WalletMigrationMapSection();
+	auto legacyWebview = WebviewMapSection();
+	if (!ReadMigrationRecord(
+			source.basePath + u"map"_q, MigrationRecordType::Map, sourceKey, map)
+		|| InspectMigrationRecord(
+			map, MigrationRecordType::Map, expectedUser, files,
+			AccountStorageMode::Legacy, nullptr,
+			(webview == LegacyWebviewTransfer::StartFresh) ? &legacyWebview : nullptr,
+			&wallet) != MigrationResult::Success) {
+		return std::nullopt;
+	}
+	auto result = LegacyWalletAccountInventory{
+		.owner = LegacyWalletOwner(source, sourceKey, expectedUser),
+	};
+	if (!result.owner) {
+		return std::nullopt;
+	}
+	for (const auto &[storageKey, fileKey] : wallet.records) {
+		auto record = Wallet::ReadLegacyWalletProfileRecord(source, fileKey, storageKey, sourceKey);
+		if (!record) {
+			return std::nullopt;
+		}
+		if (storageKey == kWalletCustodyStorageKey) {
+			auto refs = Wallet::ReadProfileMigrationCustodyRefs(storageKey, record->value);
+			if (!refs) {
+				return std::nullopt;
+			}
+			result.custody = std::move(record->value);
+			result.custodyRefs = std::move(*refs);
+		} else {
+			result.secretRecords.push_back({
+				.storageKey = storageKey,
+				.encryptedValue = std::move(record->value),
+			});
+		}
+		for (auto &file : record->files) {
+			result.files.push_back({
+				.relativePath = std::move(file.relativePath),
+				.sha256 = std::move(file.sha256),
+			});
+		}
+	}
+	if (result.custodyRefs.size() != result.secretRecords.size()
+		|| std::ranges::any_of(result.custodyRefs, [&](const auto &ref) {
+			return !wallet.records.contains(Wallet::VaultSecretStorageKey(ref));
+		})) {
+		return std::nullopt;
+	}
+	return result;
 }
 
 AccountMigrationResult StageNewScopedAuthorization(

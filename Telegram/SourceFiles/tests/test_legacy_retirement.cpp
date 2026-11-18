@@ -90,9 +90,10 @@ struct Fixture final {
 	std::optional<LegacyRetirementPlan> capture(
 			LegacyArchiveRetirement archive = LegacyArchiveRetirement::ExpectedAbsent,
 			const QByteArray &preferences = {},
-			Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated) const {
+			Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated,
+			const std::vector<LegacyRetirementEntry> *wallet = nullptr) const {
 		return CaptureLegacyRetirementPlan(
-			path, name, transaction, slotIndices, accounts, archive, preferences, {}, webview);
+			path, name, transaction, slotIndices, accounts, archive, preferences, {}, webview, wallet);
 	}
 };
 
@@ -230,6 +231,91 @@ void CheckLegacyArchive() {
 		&& !QFileInfo::exists(shm)
 		&& QFileInfo::exists(fixture.path + u"/ayudata_98765.db"_q),
 		"verified archive and sidecars retire while rotated backup survives");
+}
+
+void CheckVerifiedWalletRetirement() {
+	auto fixture = Fixture();
+	if (!fixture.setup()) {
+		Check(false, "wallet retirement fixture setup");
+		return;
+	}
+	const auto capture = [&](const auto &wallet) {
+		return fixture.capture(LegacyArchiveRetirement::ExpectedAbsent, {},
+			Storage::LegacyWebviewTransfer::StartFresh, &wallet);
+	};
+	const auto digest = [](const QByteArray &value) {
+		return QCryptographicHash::hash(value, QCryptographicHash::Sha256);
+	};
+	const auto primary = u"wallet_keyring_datas"_q;
+	const auto alternate = u"wallet_keyring_data0"_q;
+	const auto unrelated = u"wallet_keyring_others"_q;
+	const auto exact = QByteArray("global wallet");
+	const auto accountData = QFileInfo(fixture.accounts.front().paths.authPath).fileName()
+		+ '/' + QString::fromLatin1(kVerifiedFilename);
+	const auto path = [&](const QString &name) { return fixture.path + '/' + name; };
+	Check(Write(path(alternate), exact) && Write(path(unrelated), "unrelated"),
+		"create exact wallet variants and an unrelated wallet");
+	const auto proofs = std::vector<LegacyRetirementEntry>{
+		{ primary, digest(exact) },
+		{ alternate, digest(exact) },
+		{ accountData, digest("verified data") },
+	};
+	auto changed = proofs;
+	changed[0].sha256 = digest("changed");
+	Check(!capture(changed), "wallet capture rejects a mismatched source digest");
+	changed = proofs;
+	changed[1].relativePath = unrelated;
+	Check(!capture(changed), "wallet capture rejects unrelated keyring names");
+	const auto captured = capture(proofs);
+	const auto parsed = captured
+		? ParseLegacyRetirementPlan(SerializeLegacyRetirementPlan(*captured))
+		: std::nullopt;
+	if (!parsed || !parsed->walletInventoryVerified
+		|| parsed->webview != Storage::LegacyWebviewTransfer::StartFresh) {
+		Check(false, "wallet and WebView receipt round trip");
+		return;
+	}
+	auto legacyFormat = *parsed;
+	legacyFormat.walletInventoryVerified = false;
+	Check(SerializeLegacyRetirementPlan(legacyFormat).isEmpty(),
+		"a proved wallet cannot downgrade to the previous receipt format");
+	Check(Write(path(accountData), "changed")
+		&& RetireLegacyProfileFiles(fixture.path, fixture.transaction, *parsed)
+			== Result::UnexpectedSource
+		&& QFileInfo::exists(path(primary)) && QFileInfo::exists(path(u"key_datas"_q))
+		&& Write(path(accountData), "verified data"),
+		"changed proved wallet data blocks retirement before deleting any key");
+	const auto extra = u"wallet_keyring_data1"_q;
+	Check(Write(path(extra), exact)
+		&& RetireLegacyProfileFiles(fixture.path, fixture.transaction, *parsed)
+			== Result::UnexpectedSource && QFile::remove(path(extra)),
+		"unproved wallet backup blocks replay");
+	Check(QFile::remove(path(primary))
+		&& RetireLegacyProfileFiles(fixture.path, fixture.transaction, *parsed) == Result::Complete
+		&& RetireLegacyProfileFiles(fixture.path, fixture.transaction, *parsed) == Result::Complete
+		&& !QFileInfo::exists(path(alternate)) && QFileInfo::exists(path(unrelated)),
+		"wallet retirement resumes by exact proof and preserves other stems");
+
+	auto absent = Fixture();
+	const auto unexpected = absent.path + '/' + primary;
+	const auto empty = std::vector<LegacyRetirementEntry>();
+	const auto ready = absent.setup() && QFile::remove(unexpected);
+	const auto absentPlan = ready ? absent.capture(LegacyArchiveRetirement::ExpectedAbsent, {},
+		Storage::LegacyWebviewTransfer::RequireIsolated, &empty) : std::nullopt;
+	const auto olderPlan = ready ? absent.capture() : std::nullopt;
+	if (absentPlan && olderPlan) {
+		auto compatible = *absentPlan;
+		compatible.walletInventoryVerified = false;
+		Check(SerializeLegacyRetirementPlan(compatible) == SerializeLegacyRetirementPlan(*olderPlan),
+			"an absent wallet retains exact compatibility with a previous staged receipt");
+	} else {
+		Check(false, "both old and verified-absence receipts encoded");
+	}
+	Check(absentPlan && Write(unexpected, exact)
+		&& RetireLegacyProfileFiles(absent.path, absent.transaction, *absentPlan)
+			== Result::UnexpectedSource
+		&& QFileInfo::exists(absent.path + u"/key_datas"_q),
+		"a ring appearing after an absent inventory blocks retirement");
 }
 
 void CheckLegacyCache() {
@@ -492,6 +578,7 @@ int main(int argc, char *argv[]) {
 	CheckCapture();
 	CheckReplay();
 	CheckLegacyArchive();
+	CheckVerifiedWalletRetirement();
 	CheckLegacyCache();
 	CheckPreservedWebview();
 	CheckLegacyPreferences();

@@ -33,6 +33,7 @@ struct LegacyRetirementPlan final {
 	std::vector<int> accountIndices;
 	std::vector<LegacyRetirementEntry> entries;
 	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated;
+	bool walletInventoryVerified = false;
 };
 
 enum class LegacyRetirementResult : uchar {
@@ -57,7 +58,8 @@ enum class LegacyArchiveRetirement : uchar {
 	LegacyArchiveRetirement archive,
 	const QByteArray &verifiedAyuSettingsSha256 = {},
 	std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline = {},
-	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated);
+	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated,
+	const std::vector<LegacyRetirementEntry> *verifiedWalletFiles = nullptr);
 
 [[nodiscard]] QByteArray SerializeLegacyRetirementPlan(
 	const LegacyRetirementPlan &plan);

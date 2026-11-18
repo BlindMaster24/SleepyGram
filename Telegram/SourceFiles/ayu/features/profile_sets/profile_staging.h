@@ -24,6 +24,8 @@ enum class ProfileStagingResult {
 	InvalidWorkspace,
 	InvalidLegacyProfile,
 	InvalidBindings,
+	LegacyWalletPasscodeRequired,
+	LegacyWalletPasscodeRejected,
 	UnsupportedAccountData,
 	AccountStageFailed,
 	ArchiveStageFailed,
@@ -40,6 +42,7 @@ enum class ProfileStagingResult {
 	const QByteArray &transactionId = {},
 	LegacyRetirementPlan *retirement = nullptr,
 	const Preferences::LegacyPartition *preferences = nullptr,
-	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated);
+	Storage::LegacyWebviewTransfer webview = Storage::LegacyWebviewTransfer::RequireIsolated,
+	const Wallet::SecureBytes *legacyWalletPasscode = nullptr);
 
 } // namespace Ayu::ProfileSets

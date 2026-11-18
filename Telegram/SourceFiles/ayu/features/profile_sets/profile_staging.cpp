@@ -7,12 +7,14 @@
 #include "ayu/features/offline_history/offline_history_scoped.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "storage/storage_domain.h"
+#include "wallet/wallet_profile_migration_storage.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <openssl/crypto.h>
 
 #include <array>
+#include <map>
 #include <set>
 #include <vector>
 
@@ -28,7 +30,8 @@ ProfileStagingResult StageWhilePreparing(
 		const QByteArray &transactionId,
 		LegacyRetirementPlan *retirement,
 		const Preferences::LegacyPartition *preferences,
-		Storage::LegacyWebviewTransfer webview) {
+		Storage::LegacyWebviewTransfer webview,
+		const Wallet::SecureBytes *legacyWalletPasscode) {
 	using Result = ProfileStagingResult;
 	const auto root = QDir::cleanPath(dataDirectory);
 	if (workspace.accountStorageRoot() != root + u"/profile-sets/accounts"_q) {
@@ -73,19 +76,96 @@ ProfileStagingResult StageWhilePreparing(
 			.key = keys[i],
 		});
 	}
+	using WalletState = Wallet::LegacyWalletProfileRingReading::State;
+	auto wallet = Wallet::ReadLegacyWalletProfileRing(
+		root, dataName, legacy->localKey, legacyWalletPasscode);
+	if (wallet.state == WalletState::WalletPasscodeRequired) {
+		return Result::LegacyWalletPasscodeRequired;
+	} else if (wallet.state == WalletState::WalletPasscodeRejected) {
+		return Result::LegacyWalletPasscodeRejected;
+	} else if (wallet.state != WalletState::Absent && wallet.state != WalletState::Ready) {
+		return Result::UnsupportedAccountData;
+	}
+	auto walletFiles = std::vector<LegacyRetirementEntry>();
+	auto walletAccounts = std::vector<Storage::LegacyWalletAccountInventory>();
+	auto walletTargets = std::map<quint64, Wallet::ScopedProfileMigrationWallet>();
+	const auto walletFactor = (wallet.unlocked
+		&& wallet.unlocked->keyring.wrap.kind == Wallet::VaultKind::Passcode)
+		? legacyWalletPasscode
+		: nullptr;
+	if (wallet.unlocked) {
+		for (const auto &proof : wallet.unlocked->files) {
+			walletFiles.push_back({ proof.relativePath, proof.sha256 });
+		}
+		walletAccounts.reserve(accounts.size());
+		auto privateWallets = std::vector<Wallet::ProfileMigrationWalletAccount>();
+		for (const auto &account : accounts) {
+			const auto source = Storage::AccountPathsForDataName(
+				root, Storage::AccountDataName(dataName, account.slot));
+			auto inventory = Storage::ReadLegacyWalletAccountInventory(
+				source, legacy->localKey, account.userId, webview);
+			if (!inventory) {
+				return Result::UnsupportedAccountData;
+			}
+			for (const auto &proof : inventory->files) {
+				walletFiles.push_back({ proof.relativePath, proof.sha256 });
+			}
+			const auto &stored = walletAccounts.emplace_back(std::move(*inventory));
+			if (!stored.secretRecords.empty()) {
+				privateWallets.push_back({
+					.owner = stored.owner,
+					.custodySecretRefs = stored.custodyRefs,
+					.secretRecords = stored.secretRecords,
+					.destinationPasscode = walletFactor,
+				});
+			}
+		}
+		if (!privateWallets.empty() || !wallet.unlocked->keyring.entries.empty()) {
+			auto planned = Wallet::PlanProfileWalletMigration(
+				wallet.unlocked->keyring, wallet.unlocked->deviceKey, privateWallets);
+			if (!planned) {
+				return Result::UnsupportedAccountData;
+			}
+			for (auto &target : *planned) {
+				const auto owner = target.owner;
+				walletTargets.emplace(owner, std::move(target));
+			}
+		}
+	}
 	auto verifiedAccounts = std::vector<VerifiedLegacyRetirementAccount>();
 	auto offlineAccounts = std::vector<OfflineHistory::ScopedOfflineAccount>();
-	for (const auto &account : accounts) {
+	auto walletDeviceKeys = std::set<QByteArray>();
+	for (auto i = size_t(0); i != accounts.size(); ++i) {
+		const auto &account = accounts[i];
 		const auto source = Storage::AccountPathsForDataName(root,
 			Storage::AccountDataName(dataName, account.slot));
+		auto transfer = std::optional<Storage::LegacyWalletAccountTransfer>();
+		if (wallet.unlocked && !walletAccounts[i].secretRecords.empty()) {
+			const auto &inventory = walletAccounts[i];
+			const auto target = walletTargets.find(inventory.owner);
+			if (target == end(walletTargets)) {
+				return Result::AccountStageFailed;
+			}
+			transfer.emplace(Storage::LegacyWalletAccountTransfer{
+				.source = inventory,
+				.destination = target->second,
+				.oldDeviceKey = wallet.unlocked->deviceKey,
+				.walletPasscode = walletFactor,
+			});
+		}
 		auto files = Storage::VerifiedLegacyAccountFiles();
 		const auto stage = StageProfileAccount(
 			workspace, source, legacy->localKey, account.userId,
-			account.key, account.locator, retirement ? &files : nullptr, webview);
+			account.key, account.locator, (retirement || transfer) ? &files : nullptr,
+			webview, transfer ? &*transfer : nullptr);
 		if (stage != Storage::AccountMigrationResult::Success) {
 			return (stage == Storage::AccountMigrationResult::UnsupportedData)
 				? Result::UnsupportedAccountData
 				: Result::AccountStageFailed;
+		}
+		if (transfer && (files.walletDeviceKeySha256.size() != 32
+			|| !walletDeviceKeys.emplace(std::move(files.walletDeviceKeySha256)).second)) {
+			return Result::AccountStageFailed;
 		}
 		if (preferences || retirement) {
 			const auto user = account.userId.bare;
@@ -137,7 +217,7 @@ ProfileStagingResult StageWhilePreparing(
 		auto captured = CaptureLegacyRetirementPlan(
 			root, dataName, transactionId, legacy->accountIndices,
 			verifiedAccounts, archive,
-			preferences ? preferences->sourceSha256 : QByteArray(), *offline, webview);
+			preferences ? preferences->sourceSha256 : QByteArray(), *offline, webview, &walletFiles);
 		if (!captured) {
 			return Result::RetirementVerificationFailed;
 		}
@@ -157,12 +237,13 @@ ProfileStagingResult StageScopedProfileData(
 		const QByteArray &transactionId,
 		LegacyRetirementPlan *retirement,
 		const Preferences::LegacyPartition *preferences,
-		Storage::LegacyWebviewTransfer webview) {
+		Storage::LegacyWebviewTransfer webview,
+		const Wallet::SecureBytes *legacyWalletPasscode) {
 	auto staged = ProfileStagingResult::InvalidWorkspace;
 	const auto verify = [&] {
 		staged = StageWhilePreparing(
 			workspace, dataDirectory, dataName, legacyPasscode, accounts,
-			transactionId, retirement, preferences, webview);
+			transactionId, retirement, preferences, webview, legacyWalletPasscode);
 		return staged == ProfileStagingResult::Success;
 	};
 	const auto ran = (!transactionId.isEmpty() && workspace.LoadStaged())

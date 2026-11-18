@@ -6,7 +6,6 @@
 
 #include <QtCore/QPointer>
 #include <QtGui/QCloseEvent>
-#include <QtWidgets/QCheckBox>
 #include <QtWidgets/QFormLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QVBoxLayout>
@@ -44,6 +43,10 @@ QString SetupErrorText(Result result) {
 		return u"Check the set name and passcodes and try again."_q;
 	case Result::LegacyPasscodeRejected:
 		return u"Check the previous local passcode and try again."_q;
+	case Result::LegacyWalletPasscodeRequired:
+		return u"Enter your previous wallet passcode to move the wallet."_q;
+	case Result::LegacyWalletPasscodeRejected:
+		return u"Check the previous wallet passcode and try again."_q;
 	case Result::UnsupportedLegacyData:
 		return u"This profile contains local data that setup cannot move."_q;
 	case Result::SetupPasscodeRejected:
@@ -96,12 +99,13 @@ private:
 	const not_null<PreLaunchLabel*> _status;
 	const not_null<QWidget*> _form;
 	const not_null<PreLaunchInput*> _legacyPasscode;
+	const not_null<PreLaunchInput*> _legacyWalletPasscode;
 	const not_null<PreLaunchInput*> _setName;
 	const not_null<PreLaunchInput*> _masterPasscode;
 	const not_null<PreLaunchInput*> _confirmMaster;
 	const not_null<PreLaunchInput*> _setPasscode;
 	const not_null<PreLaunchInput*> _confirmSet;
-	const not_null<QCheckBox*> _preserveLegacyWebview;
+	const not_null<PreLaunchCheckbox*> _preserveLegacyWebview;
 	const not_null<PreLaunchButton*> _close;
 	const not_null<PreLaunchButton*> _start;
 	const not_null<PreLaunchButton*> _restart;
@@ -124,12 +128,13 @@ ProfileSetupWindow::ProfileSetupWindow(
 , _status(new PreLaunchLabel(this))
 , _form(new QWidget(this))
 , _legacyPasscode(new PreLaunchInput(this, true))
+, _legacyWalletPasscode(new PreLaunchInput(this, true))
 , _setName(new PreLaunchInput(this))
 , _masterPasscode(new PreLaunchInput(this, true))
 , _confirmMaster(new PreLaunchInput(this, true))
 , _setPasscode(new PreLaunchInput(this, true))
 , _confirmSet(new PreLaunchInput(this, true))
-, _preserveLegacyWebview(new QCheckBox(_form.get()))
+, _preserveLegacyWebview(new PreLaunchCheckbox(_form.get()))
 , _close(new PreLaunchButton(this, false))
 , _start(new PreLaunchButton(this))
 , _restart(new PreLaunchButton(this)) {
@@ -149,6 +154,8 @@ ProfileSetupWindow::ProfileSetupWindow(
 		form->addRow(name, input.get());
 	};
 	addField(u"Previous local passcode (leave blank if none)"_q, _legacyPasscode);
+	addField(u"Previous wallet passcode"_q, _legacyWalletPasscode);
+	form->setRowVisible(_legacyWalletPasscode.get(), false);
 	addField(u"First set name"_q, _setName);
 	addField(u"Master passcode"_q, _masterPasscode);
 	addField(u"Confirm master passcode"_q, _confirmMaster);
@@ -165,6 +172,7 @@ ProfileSetupWindow::ProfileSetupWindow(
 	_setName->setMaxLength(kSetNameLength + 1);
 	for (const auto input : {
 		_legacyPasscode.get(),
+		_legacyWalletPasscode.get(),
 		_masterPasscode.get(),
 		_confirmMaster.get(),
 		_setPasscode.get(),
@@ -217,11 +225,13 @@ void ProfileSetupWindow::submit() {
 		.firstSetName = _setName->text().trimmed(),
 		.firstSetPasscode = TakeInput(*_setPasscode),
 		.preserveLegacyWebviewStorage = _preserveLegacyWebview->isChecked(),
+		.legacyWalletPasscode = TakeInput(*_legacyWalletPasscode),
 	};
 	const auto wipe = gsl::finally([&] {
 		request.legacyPasscode.fill(QChar(0));
 		request.masterPasscode.fill(QChar(0));
 		request.firstSetPasscode.fill(QChar(0));
+		request.legacyWalletPasscode.fill(QChar(0));
 	});
 	auto confirmMaster = TakeInput(*_confirmMaster);
 	auto confirmSet = TakeInput(*_confirmSet);
@@ -235,6 +245,7 @@ void ProfileSetupWindow::submit() {
 		_setName->setFocus();
 		return;
 	} else if (request.legacyPasscode.size() > kPasscodeLength
+		|| request.legacyWalletPasscode.size() > kPasscodeLength
 		|| request.masterPasscode.size() > kPasscodeLength
 		|| request.firstSetPasscode.size() > kPasscodeLength) {
 		_status->setText(u"Use passcodes of at most 1024 characters."_q);
@@ -271,10 +282,13 @@ void ProfileSetupWindow::completed(Result result) {
 	} else if (result == Result::RetirementPending) {
 		requireRestart(u"Setup was saved. Restart to finish moving your local data."_q);
 	} else {
+		const auto needsWalletPasscode = (result == Result::LegacyWalletPasscodeRequired)
+			|| (result == Result::LegacyWalletPasscodeRejected);
 		const auto retryingCredential = !_canContinueLegacy
 			&& (result == Result::InvalidInput
 				|| result == Result::LegacyPasscodeRejected
-				|| result == Result::SetupPasscodeRejected);
+				|| result == Result::SetupPasscodeRejected
+				|| needsWalletPasscode);
 		if (!retryingCredential && !legacyStartupAllowed()) {
 			requireRestart(u"Setup was interrupted. Restart to check your local data."_q);
 			return;
@@ -284,7 +298,13 @@ void ProfileSetupWindow::completed(Result result) {
 		_form->setEnabled(true);
 		_close->setEnabled(true);
 		_start->setEnabled(true);
-		_legacyPasscode->setFocus();
+		if (needsWalletPasscode) {
+			const auto form = static_cast<QFormLayout*>(_form->layout());
+			form->setRowVisible(_legacyWalletPasscode.get(), true);
+			_legacyWalletPasscode->setFocus();
+		} else {
+			_legacyPasscode->setFocus();
+		}
 	}
 }
 
@@ -313,6 +333,7 @@ void ProfileSetupWindow::restart() {
 
 void ProfileSetupWindow::clearSecrets() {
 	ClearInput(*_legacyPasscode);
+	ClearInput(*_legacyWalletPasscode);
 	ClearInput(*_masterPasscode);
 	ClearInput(*_confirmMaster);
 	ClearInput(*_setPasscode);

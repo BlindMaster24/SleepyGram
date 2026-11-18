@@ -32,8 +32,10 @@ MTP::AuthKeyPtr FixtureStorageKey(gsl::byte seed) {
 	return std::make_shared<MTP::AuthKey>(key);
 }
 
-std::optional<DeviceKeyring> FixtureRing() {
-	const auto prepared = PrepareVaultPasscodeWrap(QByteArray("wallet-factor-a"));
+std::optional<DeviceKeyring> FixtureRing(VaultKind kind) {
+	const auto prepared = (kind == VaultKind::Open)
+		? PrepareVaultOpenWrap()
+		: PrepareVaultPasscodeWrap(QByteArray("wallet-factor-a"));
 	if (!prepared) {
 		return std::nullopt;
 	}
@@ -53,7 +55,7 @@ std::optional<DeviceKeyring> FixtureRing() {
 	return std::move(ring->keyring);
 }
 
-void CheckScopedCodec(const DeviceKeyring &ring) {
+void CheckScopedCodec(const DeviceKeyring &ring, const DeviceKeyring &openRing) {
 	const auto encoded = SerializeDeviceKeyring(ring);
 	const auto accepted = ParseScopedDeviceKeyring(encoded, kFirstWallet);
 	Check(
@@ -70,23 +72,28 @@ void CheckScopedCodec(const DeviceKeyring &ring) {
 		correct && UnwrapVaultKey(ring.wrap, *correct)
 			&& wrong && !UnwrapVaultKey(ring.wrap, *wrong),
 		u"Scoped custody requires its independent wallet passcode"_q);
+	const auto open = SerializeDeviceKeyring(openRing);
+	Check(ParseScopedDeviceKeyring(open, kFirstWallet).state == State::Read
+		&& ParseScopedDeviceKeyring(open, kSecondWallet).state == State::Broken,
+		u"Migrated open custody is bound to its own account"_q);
 	auto old = ring;
 	old.wrap.kdf = {};
 	old.wrap.openSecret = QByteArray(kVaultOpenSecretSize, 'c');
-	for (const auto kind : { VaultKind::Open, VaultKind::TouchId, VaultKind::WindowsHello }) {
+	for (const auto kind : { VaultKind::TouchId, VaultKind::WindowsHello }) {
 		old.wrap.kind = kind;
 		const auto legacy = SerializeDeviceKeyring(old);
 		Check(
 			!legacy.isEmpty()
 				&& ParseScopedDeviceKeyring(legacy, kFirstWallet).state == State::Unsupported,
-			u"Scoped storage declines legacy device and open protection"_q);
+			u"Scoped storage declines legacy device protection"_q);
 	}
 }
 
 void CheckScopedRuntime(
 		const Storage::AccountPaths &firstPaths,
 		const Storage::AccountPaths &secondPaths,
-		const DeviceKeyring &ring) {
+		const DeviceKeyring &ring,
+		const DeviceKeyring &openRing) {
 	const auto domain = &Core::App().domain();
 	auto first = Main::Account(domain, firstPaths);
 	auto second = Main::Account(domain, secondPaths);
@@ -100,11 +107,23 @@ void CheckScopedRuntime(
 			&& firstVault->canInitializeScopedKeyring()
 			&& secondVault->canInitializeScopedKeyring(),
 		u"Scoped vaults initialize from separate empty account stores"_q);
+	Check(!firstVault->canInstall(VaultKind::Open) && !firstVault->writeKeyring(openRing),
+		u"A scoped wallet cannot create an open ring through the live writer"_q);
 	Check(
 		firstVault->writeKeyring(ring) && firstVault->reading().state == State::Read
 			&& secondVault->reading().state == State::Absent
 			&& !secondVault->writeKeyring(ring),
 		u"Writing one account's keyring leaves the other account untouched"_q);
+	Check(!firstVault->writeKeyring(openRing),
+		u"A scoped wallet cannot replace a passcode wrap with an open wrap"_q);
+	Check(first.local().writeWalletEngineValue(
+			u"vault/device-keyring"_q, SerializeDeviceKeyring(openRing))
+			&& firstVault->unlockOpen() && !secondVault->unlockOpen()
+			&& firstVault->writeKeyring(openRing),
+		u"A migrated open ring remains usable by its scoped account"_q);
+	const auto replacement = FixtureRing(VaultKind::Open);
+	Check(replacement && !firstVault->writeKeyring(*replacement),
+		u"The live wallet writer cannot replace an open wrap"_q);
 	for (auto count = 0; count != 3; ++count) {
 		firstVault->recordPasscodeTry(false);
 	}
@@ -128,11 +147,12 @@ void RunWalletScopedKeyring() {
 		sandbox.path(), QString(32, QLatin1Char('a')));
 	const auto second = Storage::ScopedAccountPaths(
 		sandbox.path(), QString(32, QLatin1Char('b')));
-	const auto ring = FixtureRing();
-	Check(first && second && ring, u"Scoped wallet fixture initialized"_q);
-	if (first && second && ring) {
-		CheckScopedCodec(*ring);
-		CheckScopedRuntime(*first, *second, *ring);
+	const auto ring = FixtureRing(VaultKind::Passcode);
+	const auto openRing = FixtureRing(VaultKind::Open);
+	Check(first && second && ring && openRing, u"Scoped wallet fixture initialized"_q);
+	if (first && second && ring && openRing) {
+		CheckScopedCodec(*ring, *openRing);
+		CheckScopedRuntime(*first, *second, *ring, *openRing);
 	}
 }
 

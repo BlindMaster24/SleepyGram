@@ -1125,6 +1125,10 @@ bool ScopedEntriesMatch(const DeviceKeyring &keyring, uint64 accountId) {
 		[=](const auto &entry) { return entry.accountId == accountId; });
 }
 
+bool ScopedWrapSupported(VaultKind kind) {
+	return kind == VaultKind::Passcode || kind == VaultKind::Open;
+}
+
 } // namespace
 
 KeyringReading ParseScopedDeviceKeyring(
@@ -1134,7 +1138,7 @@ KeyringReading ParseScopedDeviceKeyring(
 	auto reading = ParseDeviceKeyring(serialized);
 	if (reading.state != State::Read) {
 		return reading;
-	} else if (reading.keyring.wrap.kind != VaultKind::Passcode) {
+	} else if (!ScopedWrapSupported(reading.keyring.wrap.kind)) {
 		return { .state = State::Unsupported };
 	} else if (!ScopedEntriesMatch(reading.keyring, accountId)) {
 		return { .state = State::Broken };
@@ -1164,9 +1168,20 @@ bool WriteScopedDeviceKeyring(
 		uint64 accountId,
 		const DeviceKeyring &keyring) {
 	if (!local.usesScopedStorage()
-		|| keyring.wrap.kind != VaultKind::Passcode
+		|| !ScopedWrapSupported(keyring.wrap.kind)
 		|| !ScopedEntriesMatch(keyring, accountId)) {
 		return false;
+	}
+	if (keyring.wrap.kind == VaultKind::Open) {
+		const auto previous = ReadScopedDeviceKeyring(local, accountId);
+		const auto &wrap = previous.keyring.wrap;
+		if (previous.state != KeyringReading::State::Read
+			|| wrap.kind != VaultKind::Open
+			|| wrap.salt != keyring.wrap.salt
+			|| wrap.openSecret != keyring.wrap.openSecret
+			|| wrap.blob != keyring.wrap.blob) {
+			return false;
+		}
 	}
 	const auto serialized = SerializeDeviceKeyring(keyring);
 	return !serialized.isEmpty()

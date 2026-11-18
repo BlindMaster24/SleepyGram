@@ -56,7 +56,8 @@ Storage::AccountMigrationResult StageProfileAccount(
 		const AccountKey &account,
 		const AccountVaultLocator &locator,
 		Storage::VerifiedLegacyAccountFiles *verifiedFiles,
-		Storage::LegacyWebviewTransfer webview) {
+		Storage::LegacyWebviewTransfer webview,
+		const Storage::LegacyWalletAccountTransfer *wallet) {
 	using Result = Storage::AccountMigrationResult;
 	if (workspace.isIsolatedFixture() || account.id != locator.id) {
 		return Result::InvalidPaths;
@@ -67,7 +68,7 @@ Storage::AccountMigrationResult StageProfileAccount(
 	return !paths
 		? Result::InvalidPaths
 		: Storage::StageLegacyAccount(
-			legacy, legacyKey, *paths, key, expectedUser, verifiedFiles, webview);
+			legacy, legacyKey, *paths, key, expectedUser, verifiedFiles, webview, wallet);
 }
 
 } // namespace Ayu::ProfileSets

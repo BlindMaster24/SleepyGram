@@ -9,6 +9,7 @@
 #include "mtproto/mtproto_auth_key.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/storage_domain.h"
+#include "wallet/wallet_vault.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -75,18 +76,22 @@ DerivedCredential Derive(
 		reinterpret_cast<const char*>(bytes.data()), qsizetype(bytes.size())));
 }
 
-bool UnsupportedLegacyData(const QString &root, const QString &dataName) {
+bool UnsupportedLegacyData(const QString &root) {
 	const auto rotatedArchive = QDir(root).entryList(
 		{ u"ayudata_*.db"_q, u"ayudata_*.db-wal"_q, u"ayudata_*.db-shm"_q },
 		QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot);
+	return !rotatedArchive.isEmpty();
+}
+
+bool LegacyWalletRingPresent(const LegacyRetirementPlan &plan) {
+	const auto stem = plan.dataDirectory + u"/wallet_keyring_"_q + plan.dataName;
 	for (const auto suffix : { 's', '0', '1' }) {
-		const auto path = QDir(root).filePath(u"wallet_keyring_"_q + dataName + suffix);
-		const auto custody = QFileInfo(path);
-		if (custody.exists() || custody.isSymLink() || custody.isJunction()) {
+		const auto info = QFileInfo(stem + suffix);
+		if (info.exists() || info.isSymLink() || info.isJunction()) {
 			return true;
 		}
 	}
-	return !rotatedArchive.isEmpty();
+	return false;
 }
 
 QByteArray DirectoryDigest(const QString &root) {
@@ -297,7 +302,7 @@ Result Setup(ProfileSetupRequest &request) {
 	if (!workspace || workspace->LoadCommitted()) {
 		return Result::StorageFailed;
 	}
-	if (UnsupportedLegacyData(request.dataDirectory, request.dataName)) {
+	if (UnsupportedLegacyData(request.dataDirectory)) {
 		return Result::UnsupportedLegacyData;
 	}
 	auto legacyPasscode = request.legacyPasscode.toUtf8();
@@ -341,13 +346,23 @@ Result Setup(ProfileSetupRequest &request) {
 		return Result::VerificationFailed;
 	}
 	auto retirement = LegacyRetirementPlan();
+	auto distinctWalletPasscode = request.legacyWalletPasscode.toUtf8();
+	const auto wipeWalletPasscode = gsl::finally([&] { Wipe(distinctWalletPasscode); });
+	const auto walletPasscode = Wallet::SecureBytes(distinctWalletPasscode.isEmpty()
+		? legacyPasscode
+		: distinctWalletPasscode);
 	const auto staged = StageScopedProfileData(
 		*workspace, request.dataDirectory, request.dataName, legacyPasscode,
 		setup->accounts, draft->transactionId, &retirement, &*preferences,
 		request.preserveLegacyWebviewStorage
 			? Storage::LegacyWebviewTransfer::StartFresh
-			: Storage::LegacyWebviewTransfer::RequireIsolated);
-	if (staged != ProfileStagingResult::Success) {
+			: Storage::LegacyWebviewTransfer::RequireIsolated,
+		walletPasscode.empty() ? nullptr : &walletPasscode);
+	if (staged == ProfileStagingResult::LegacyWalletPasscodeRequired) {
+		return Result::LegacyWalletPasscodeRequired;
+	} else if (staged == ProfileStagingResult::LegacyWalletPasscodeRejected) {
+		return Result::LegacyWalletPasscodeRejected;
+	} else if (staged != ProfileStagingResult::Success) {
 		return (staged == ProfileStagingResult::UnsupportedAccountData)
 			? Result::UnsupportedLegacyData
 			: Result::VerificationFailed;
@@ -357,8 +372,18 @@ Result Setup(ProfileSetupRequest &request) {
 	if (dataDigest.size() != kDigestSize || serialized.isEmpty()) {
 		return Result::VerificationFailed;
 	}
-	const auto receipt = dataDigest + serialized;
-	if (!workspace->LoadStaged() && !workspace->Stage({
+	auto receipt = dataDigest + serialized;
+	const auto existing = workspace->LoadStaged();
+	if (existing && existing->legacyRetirement != receipt) {
+		retirement.walletInventoryVerified = false;
+		const auto oldFormat = SerializeLegacyRetirementPlan(retirement);
+		if (oldFormat.isEmpty() || LegacyWalletRingPresent(retirement)
+			|| existing->legacyRetirement != dataDigest + oldFormat) {
+			return Result::VerificationFailed;
+		}
+		receipt = existing->legacyRetirement;
+	}
+	if (!existing && !workspace->Stage({
 			{ MigrationArtifact::ProfileVault, draft->profileVault },
 			{ MigrationArtifact::AccountKeyring, draft->accountKeyring },
 			{ MigrationArtifact::LegacyRetirement, receipt },
@@ -382,6 +407,7 @@ void SetupProfileFromLegacy(ProfileSetupRequest request, Fn<void(ProfileSetupRes
 	crl::async([request = std::move(request), done = std::move(done)]() mutable {
 		const auto result = Setup(request);
 		request.legacyPasscode.fill(QChar(0));
+		request.legacyWalletPasscode.fill(QChar(0));
 		request.masterPasscode.fill(QChar(0));
 		request.firstSetPasscode.fill(QChar(0));
 		crl::on_main([done = std::move(done), result]() mutable { done(result); });
@@ -404,7 +430,8 @@ bool FinishProfileRetirement(const QString &dataDirectory) {
 	}
 	const auto plan = ParseLegacyRetirementPlan(committed->legacyRetirement.sliced(kDigestSize));
 	if (!plan || !workspace->WithCurrentGeneration(committed->transactionId, [&] {
-			return ScopedDataDigest(*workspace) == committed->legacyRetirement.first(kDigestSize)
+			return (plan->walletInventoryVerified || !LegacyWalletRingPresent(*plan))
+				&& ScopedDataDigest(*workspace) == committed->legacyRetirement.first(kDigestSize)
 				&& RetireLegacyProfileFiles(dataDirectory, committed->transactionId, *plan)
 				== LegacyRetirementResult::Complete;
 		})) {

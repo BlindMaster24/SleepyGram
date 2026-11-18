@@ -14,8 +14,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_config.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/details/storage_settings_scheme.h"
+#include "storage/serialize_common.h"
 #include "test/test_log.h"
 #include "test/test_runner.h"
+#include "wallet/wallet_vault.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -32,6 +34,9 @@ constexpr auto kFixtureVersion = AppVersion - 1;
 constexpr auto kFixtureUser = UserId(1ULL << 40);
 constexpr auto kFixturePrefs = FileKey(0x1234);
 constexpr auto kFixtureSettings = FileKey(0x2345);
+constexpr auto kFixtureCustody = FileKey(0x3456);
+constexpr auto kFixtureSecret = FileKey(0x4567);
+const auto kFixtureSecretRef = u"wallet:fixture:mnemonic"_q;
 
 MTP::AuthKeyPtr LocalKey(gsl::byte seed) {
 	auto key = MTP::AuthKey::Data();
@@ -67,7 +72,8 @@ bool WriteFixtureMap(
 		const AccountPaths &paths,
 		const MTP::AuthKeyPtr &key,
 		bool active,
-		const QByteArray &oldBrowserToken = {}) {
+		const QByteArray &oldBrowserToken = {},
+		bool withWallet = false) {
 	auto self = QByteArray();
 	{
 		auto stream = QDataStream(&self, QIODevice::WriteOnly);
@@ -77,6 +83,11 @@ bool WriteFixtureMap(
 	auto map = EncryptedDescriptor(self.size() + 128);
 	map.stream << quint32(0x15) << self;
 	map.stream << quint32(0x1e) << quint64(kFixturePrefs);
+	if (withWallet) {
+		map.stream << quint32(0x21) << quint32(2)
+			<< kFixtureCustody << u"custody/records"_q
+			<< kFixtureSecret << Wallet::VaultSecretStorageKey(kFixtureSecretRef);
+	}
 	if (active) {
 		map.stream << quint32(0x09) << quint64(kFixtureSettings);
 		map.stream << quint32(0x19) << QByteArray("scoped-fixture-token")
@@ -100,7 +111,8 @@ bool MakeMapBackups(const AccountPaths &paths) {
 bool WriteFixture(
 		const AccountPaths &paths,
 		const MTP::AuthKeyPtr &key,
-		const QByteArray &oldBrowserToken = {}) {
+		const QByteArray &oldBrowserToken = {},
+		bool withWallet = false) {
 	auto prefs = EncryptedDescriptor(4);
 	prefs.stream << quint32(0);
 	auto prefsFile = FileWriteDescriptor(kFixturePrefs, paths.basePath);
@@ -109,7 +121,7 @@ bool WriteFixture(
 	const auto prefsWritten = prefsFile.finishStaged(kFixtureVersion);
 	return prefsWritten
 		&& WriteFixtureAuth(paths, key, kFixtureUser, kFixtureVersion)
-		&& WriteFixtureMap(paths, key, false, oldBrowserToken)
+		&& WriteFixtureMap(paths, key, false, oldBrowserToken, withWallet)
 		&& MakeMapBackups(paths);
 }
 
@@ -127,6 +139,100 @@ bool WriteConfigFixture(
 	auto file = FileWriteDescriptor(u"config"_q, paths.basePath);
 	file.writeEncrypted(config, key);
 	return file.finishStaged(AppVersion);
+}
+
+bool WriteWalletValueFixture(
+		const AccountPaths &paths,
+		const MTP::AuthKeyPtr &key,
+		FileKey fileKey,
+		const QByteArray &value) {
+	auto record = EncryptedDescriptor(sizeof(quint32) + Serialize::bytearraySize(value));
+	record.stream << quint32(1) << value;
+	auto file = FileWriteDescriptor(fileKey, paths.basePath);
+	file.writeEncrypted(record, key);
+	return file.finishStaged(kFixtureVersion);
+}
+
+void CheckPrivateWalletMigration() {
+	using namespace Wallet;
+	const auto sandbox = QTemporaryDir();
+	const auto root = QDir(sandbox.path()).canonicalPath();
+	const auto source = AccountPathsForDataName(root + u"/legacy"_q, u"test"_q);
+	const auto oldKey = LocalKey(gsl::byte(1));
+	const auto newKey = LocalKey(gsl::byte(2));
+	const auto targetRoot = root + u"/scoped"_q;
+	const auto target = ScopedAccountPaths(targetRoot, QString(32, QLatin1Char('b')));
+	const auto prepared = PrepareVaultOpenWrap();
+	auto legacyRing = prepared ? RotateDeviceKeyring({}, {}, *prepared) : std::nullopt;
+	if (!sandbox.isValid() || !target || !legacyRing
+		|| !QDir().mkpath(source.basePath) || !QDir().mkpath(targetRoot)
+		|| !WriteFixture(source, oldKey, QByteArray(16, 'w'), true)
+		|| !WriteConfigFixture(source, oldKey, MTP::Config(MTP::Environment::Test).serialize())) {
+		Fail(u"Private wallet migration fixture is incomplete"_q);
+		return;
+	}
+	constexpr auto kOwner = kFixtureUser.bare | 0x0100'0000'0000'0000ULL;
+	const auto secretKey = SecureBytes(QByteArray(kVaultKeySize, 'k'));
+	const auto keyId = QByteArray(kVaultKeyIdSize, 'i');
+	const auto entry = SealDeviceKeyringEntry(legacyRing->key, keyId, kOwner, secretKey);
+	const auto logicalKey = VaultSecretStorageKey(kFixtureSecretRef);
+	const auto encrypted = SealVaultRecord(secretKey, logicalKey, keyId, true,
+		bytes::make_span(QByteArray("synthetic wallet data")));
+	auto custody = Serialize::ByteArrayWriter();
+	custody << quint32(4) << quint32(1)
+		<< u"fixture"_q << (u"0:"_q + QString(64, QLatin1Char('a')))
+		<< QByteArray(32, 'a') << qint32(2) << kFixtureSecretRef << quint32(0)
+		<< QByteArray() << QByteArray() << quint32(0);
+	if (!entry || encrypted.isEmpty()
+		|| !WriteWalletValueFixture(source, oldKey, kFixtureCustody, std::move(custody).result())
+		|| !WriteWalletValueFixture(source, oldKey, kFixtureSecret, encrypted)) {
+		Fail(u"Synthetic wallet records could not be written"_q);
+		return;
+	}
+	legacyRing->keyring.entries.push_back(*entry);
+	constexpr auto kWebview = LegacyWebviewTransfer::StartFresh;
+	const auto inventory = ReadLegacyWalletAccountInventory(source, oldKey, kFixtureUser, kWebview);
+	Check(inventory && inventory->owner == kOwner && inventory->files.size() == 2
+		&& !ReadLegacyWalletAccountInventory(source, oldKey, UserId(kFixtureUser.bare + 1), kWebview),
+		u"Inventory binds exact account authentication, TestDC and private record fingerprints"_q);
+	if (!inventory) {
+		return;
+	}
+	const auto accounts = std::array{ ProfileMigrationWalletAccount{
+		.owner = inventory->owner,
+		.custodySecretRefs = inventory->custodyRefs,
+		.secretRecords = inventory->secretRecords,
+	} };
+	const auto plan = [&] {
+		return PlanProfileWalletMigration(legacyRing->keyring, legacyRing->key, accounts);
+	};
+	const auto first = plan();
+	const auto retry = plan();
+	if (!first || !retry) {
+		Fail(u"Synthetic wallet plans could not be made"_q);
+		return;
+	}
+	const auto stage = [&](const auto &planned, VerifiedLegacyAccountFiles &files) {
+		const auto transfer = LegacyWalletAccountTransfer{ *inventory, planned, legacyRing->key };
+		return StageLegacyAccount(source, oldKey, *target, newKey, kFixtureUser,
+			&files, kWebview, &transfer);
+	};
+	auto verified = VerifiedLegacyAccountFiles();
+	auto reopened = VerifiedLegacyAccountFiles();
+	const auto sourceSecretPath = source.basePath + ToFilePart(kFixtureSecret) + 's';
+	const auto before = ReadBytes(sourceSecretPath);
+	Check(stage(first->front(), verified) == AccountMigrationResult::Success
+		&& stage(retry->front(), reopened) == AccountMigrationResult::Success
+		&& verified.walletDeviceKeySha256.size() == 32
+		&& reopened.walletDeviceKeySha256 == verified.walletDeviceKeySha256
+		&& ReadBytes(sourceSecretPath) == before && !before.isEmpty(),
+		u"Private wallet stages and independently reopens the exact same scoped ring on retry"_q);
+	const auto browser = ReadScopedWebviewTokens(*target, newKey, kFixtureUser);
+	Check(browser && browser->size() == 2,
+		u"Private wallet insertion preserves isolated WebView map rewriting"_q);
+	Check(WriteWalletValueFixture(source, oldKey, kFixtureSecret, encrypted + 'x')
+		&& stage(retry->front(), reopened) == AccountMigrationResult::VerificationFailed,
+		u"Changed legacy wallet ciphertext blocks staged verification"_q);
 }
 
 void CheckScopedStartup(
@@ -272,6 +378,7 @@ void CheckFreshWebviewMigration() {
 
 void RunStorageAccountMigration() {
 	CheckFreshWebviewMigration();
+	CheckPrivateWalletMigration();
 	auto sandbox = QTemporaryDir();
 	const auto root = QDir(sandbox.path()).canonicalPath();
 	const auto origin = AccountPathsForDataName(root + u"/legacy"_q, u"test"_q);

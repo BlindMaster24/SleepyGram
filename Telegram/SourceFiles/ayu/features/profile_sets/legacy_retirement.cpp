@@ -36,6 +36,8 @@ namespace {
 constexpr auto kTransactionIdSize = 16;
 constexpr auto kPlanVersion = 1;
 constexpr auto kPreserveWebviewPlanVersion = 2;
+constexpr auto kVerifiedWalletPlanVersion = 3;
+constexpr auto kVerifiedWalletPreserveWebviewPlanVersion = 4;
 constexpr auto kMaximumAccounts = 200;
 constexpr auto kMaximumEntries = 60'000;
 constexpr auto kMaximumPlanBytes = 16 * 1024 * 1024;
@@ -72,6 +74,7 @@ enum class DirectoryKind : uchar {
 struct Layout final {
 	std::map<QString, DirectoryKind> directories;
 	std::set<QString> rootStems;
+	QString walletStem;
 };
 
 bool CanonicalDirectory(const QString &path) {
@@ -164,6 +167,9 @@ std::optional<Layout> BuildLayout(const Plan &plan) {
 	auto result = Layout();
 	result.directories.emplace(kLegacyOffline, DirectoryKind::Offline);
 	result.rootStems.emplace(u"key_"_q + plan.dataName);
+	if (plan.walletInventoryVerified) {
+		result.walletStem = u"wallet_keyring_"_q + plan.dataName;
+	}
 	auto current = -1;
 	for (const auto index : plan.accountIndices) {
 		if (index <= current || index >= kMaximumAccounts) {
@@ -255,7 +261,8 @@ bool ValidEntries(const Plan &plan, const Layout &layout) {
 				archiveFiles.emplace(path);
 				continue;
 			}
-			if (!layout.rootStems.contains(path.chopped(1))
+			if ((!layout.rootStems.contains(path.chopped(1))
+					&& (layout.walletStem.isEmpty() || path.chopped(1) != layout.walletStem))
 				|| !std::ranges::any_of(kSuffixes, [&](char suffix) {
 					return path.back() == suffix;
 				})) {
@@ -566,6 +573,15 @@ bool MatchesCurrentSource(const Plan &plan, const Layout &layout) {
 			}
 		}
 	}
+	if (!layout.walletStem.isEmpty()) {
+		for (const auto suffix : kSuffixes) {
+			const auto relative = layout.walletStem + suffix;
+			if (Present(QFileInfo(plan.dataDirectory + '/' + relative))
+				&& !byPath.contains(relative)) {
+				return false;
+			}
+		}
+	}
 	for (const auto &entry : plan.entries) {
 		const auto path = plan.dataDirectory + '/' + entry.relativePath;
 		if (!entry.sha256.isEmpty() && Present(QFileInfo(path))
@@ -840,7 +856,8 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		LegacyArchiveRetirement archive,
 		const QByteArray &verifiedAyuSettingsSha256,
 		std::span<const OfflineHistory::LegacyOfflineEntry> verifiedOffline,
-		Storage::LegacyWebviewTransfer webview) {
+		Storage::LegacyWebviewTransfer webview,
+		const std::vector<LegacyRetirementEntry> *verifiedWalletFiles) {
 	if (legacyAccountIndices.size() != verifiedAccounts.size()
 		|| legacyAccountIndices.size() > kMaximumAccounts
 		|| !CanonicalDirectory(dataDirectory)) {
@@ -852,6 +869,7 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 		.transactionId = transactionId,
 		.accountIndices = { begin(legacyAccountIndices), end(legacyAccountIndices) },
 		.webview = webview,
+		.walletInventoryVerified = (verifiedWalletFiles != nullptr),
 	};
 	std::ranges::sort(plan.accountIndices);
 	const auto layout = BuildLayout(plan);
@@ -898,6 +916,30 @@ std::optional<LegacyRetirementPlan> CaptureLegacyRetirementPlan(
 			}
 		}
 	}
+	if (verifiedWalletFiles) {
+		auto proofs = std::set<QString>();
+		for (const auto &proof : *verifiedWalletFiles) {
+			const auto &name = proof.relativePath;
+			if (proof.sha256.size() != 32 || !proofs.emplace(name).second) {
+				return std::nullopt;
+			}
+			if (name.chopped(1) == layout->walletStem && !name.isEmpty()
+				&& std::ranges::any_of(kSuffixes, [&](char suffix) { return name.back() == suffix; })
+				&& !AppendFile(plan, name)) {
+				return std::nullopt;
+			}
+		}
+		auto captured = std::map<QString, QByteArray>();
+		for (const auto &entry : plan.entries) {
+			captured.emplace(entry.relativePath, entry.sha256);
+		}
+		if (std::ranges::any_of(*verifiedWalletFiles, [&](const auto &proof) {
+				const auto found = captured.find(proof.relativePath);
+				return found == end(captured) || found->second != proof.sha256;
+			}) || !MatchesCurrentSource(plan, *layout)) {
+			return std::nullopt;
+		}
+	}
 	std::ranges::sort(plan.entries, {}, &Entry::relativePath);
 	return ValidEntries(plan, *layout) ? std::optional(std::move(plan)) : std::nullopt;
 }
@@ -920,8 +962,8 @@ QByteArray SerializeLegacyRetirementPlan(const LegacyRetirementPlan &plan) {
 	}
 	auto encoded = QJsonDocument(QJsonArray{
 		(plan.webview == Storage::LegacyWebviewTransfer::StartFresh)
-			? kPreserveWebviewPlanVersion
-			: kPlanVersion,
+			? (plan.walletInventoryVerified ? kVerifiedWalletPreserveWebviewPlanVersion : kPreserveWebviewPlanVersion)
+			: (plan.walletInventoryVerified ? kVerifiedWalletPlanVersion : kPlanVersion),
 		plan.dataDirectory,
 		plan.dataName,
 		QString::fromLatin1(plan.transactionId.toHex()),
@@ -938,17 +980,18 @@ std::optional<LegacyRetirementPlan> ParseLegacyRetirementPlan(
 	}
 	const auto array = QJsonDocument::fromJson(serialized).array();
 	const auto version = array.isEmpty() ? 0 : array[0].toInt();
-	if (array.size() != 6
-		|| (version != kPlanVersion && version != kPreserveWebviewPlanVersion)) {
+	if (array.size() != 6 || version < kPlanVersion || version > kVerifiedWalletPreserveWebviewPlanVersion) {
 		return std::nullopt;
 	}
 	auto result = Plan{
 		.dataDirectory = array[1].toString(),
 		.dataName = array[2].toString(),
 		.transactionId = QByteArray::fromHex(array[3].toString().toLatin1()),
-		.webview = (version == kPreserveWebviewPlanVersion)
+		.webview = (version == kPreserveWebviewPlanVersion
+				|| version == kVerifiedWalletPreserveWebviewPlanVersion)
 			? Storage::LegacyWebviewTransfer::StartFresh
 			: Storage::LegacyWebviewTransfer::RequireIsolated,
+		.walletInventoryVerified = (version >= kVerifiedWalletPlanVersion),
 	};
 	const auto indices = array[4].toArray();
 	const auto entries = array[5].toArray();
