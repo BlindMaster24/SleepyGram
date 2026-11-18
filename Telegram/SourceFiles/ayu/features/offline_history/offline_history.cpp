@@ -1002,10 +1002,17 @@ private:
 
 } // namespace
 
+bool Available(not_null<Main::Session*> session) {
+	return !session->local().usesScopedStorage();
+}
+
 void Open(
 		not_null<Window::SessionController*> controller,
 		PeerId peerId) {
 	const auto session = &controller->session();
+	if (!Available(session)) {
+		return;
+	}
 	const auto peer = session->data().peerLoaded(peerId);
 	if (!peer || Ayu::ChatLock::IsChatLocked(session, peerId)) {
 		return;

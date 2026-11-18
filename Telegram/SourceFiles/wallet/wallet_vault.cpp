@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_account.h"
 #include "main/main_domain.h"
 #include "main/main_session.h"
+#include "settings.h"
 #include "storage/details/storage_file_utilities.h"
 #include "storage/details/storage_hkdf.h"
 #include "storage/serialize_common.h"
@@ -30,6 +31,7 @@ namespace {
 
 constexpr auto kDeviceKeyringMagic = quint32(0x574B5247);
 constexpr auto kDeviceKeyringFormatVersion = quint32(1);
+const auto kScopedDeviceKeyringStorageKey = u"vault/device-keyring"_q;
 constexpr auto kVaultRecordMagic = quint32(0x574B5243);
 constexpr auto kVaultRecordFormatVersion = quint32(1);
 constexpr auto kVaultAeadAesGcm = quint32(1);
@@ -491,6 +493,29 @@ bool VaultGrant::valid() const {
 VaultRuntime::VaultRuntime(Main::Domain &domain)
 : _domain(base::make_weak(&domain))
 , _retention([=] { clear(); }) {
+	watchLockEvents();
+
+	// A prepared Passcode wrap must not survive a passcode mutation. This
+	// signal can fire inside key_data's checked writer, so it only clears
+	// in-memory authority. In particular it never reads or rewrites the
+	// keyring, or reconciles a passcode during an armed install's gap.
+	domain.local().localPasscodeChanged(
+	) | rpl::on_next([=] {
+		clear();
+	}, _lifetime);
+}
+
+VaultRuntime::VaultRuntime(Main::Account &account, uint64 accountId)
+: _scopedAccount(base::make_weak(&account))
+, _scopedAccountId(accountId)
+, _retention([=] { clear(); }) {
+	Expects(account.local().usesScopedStorage());
+	Expects(accountId != 0);
+
+	watchLockEvents();
+}
+
+void VaultRuntime::watchLockEvents() {
 	Core::App().passcodeLockChanges(
 	) | rpl::filter(rpl::mappers::_1) | rpl::on_next([=] {
 		clear();
@@ -505,26 +530,82 @@ VaultRuntime::VaultRuntime(Main::Domain &domain)
 	) | rpl::on_next([=] {
 		clear();
 	}, _lifetime);
-
-	// A prepared Passcode wrap must not survive a passcode mutation. This
-	// signal can fire inside key_data's checked writer, so it only clears
-	// in-memory authority. In particular it never reads or rewrites the
-	// keyring, or reconciles a passcode during an armed install's gap.
-	domain.local().localPasscodeChanged(
-	) | rpl::on_next([=] {
-		clear();
-	}, _lifetime);
 }
 
 VaultRuntime::~VaultRuntime() {
 	clear();
 }
 
+bool VaultRuntime::usesScopedStorage() const {
+	return _scopedAccountId != 0;
+}
+
 KeyringReading VaultRuntime::reading() const {
+	if (usesScopedStorage()) {
+		const auto account = _scopedAccount.get();
+		return account
+			? ReadScopedDeviceKeyring(account->local(), _scopedAccountId)
+			: KeyringReading{ .state = KeyringReading::State::Broken };
+	}
 	const auto domain = _domain.get();
 	return domain
 		? ReadDeviceKeyring(domain->local())
 		: KeyringReading{ .state = KeyringReading::State::Broken };
+}
+
+bool VaultRuntime::writeKeyring(const DeviceKeyring &keyring) const {
+	if (usesScopedStorage()) {
+		const auto account = _scopedAccount.get();
+		return account && WriteScopedDeviceKeyring(
+			account->local(),
+			_scopedAccountId,
+			keyring);
+	}
+	const auto domain = _domain.get();
+	return domain && WriteDeviceKeyring(domain->local(), keyring);
+}
+
+bool VaultRuntime::canInstall(VaultKind kind) const {
+	if (usesScopedStorage()) {
+		return _scopedAccount && kind == VaultKind::Passcode;
+	}
+	const auto domain = _domain.get();
+	return domain && (kind != VaultKind::Passcode
+		|| domain->local().hasPasscode());
+}
+
+bool VaultRuntime::canInitializeScopedKeyring() const {
+	const auto account = _scopedAccount.get();
+	if (!account
+		|| !account->local().walletEngineStorageKeys(u"secret/"_q).empty()) {
+		return false;
+	}
+	const auto value = reading();
+	return value.state == KeyringReading::State::Absent
+		|| value.state == KeyringReading::State::Read;
+}
+
+bool VaultRuntime::canTryPasscode() const {
+	if (!usesScopedStorage()) {
+		return passcodeCanTry();
+	}
+	const auto lock = std::lock_guard(_mutex);
+	return _badPasscodeTries < 3
+		|| crl::now() - _lastPasscodeTry
+			>= crl::time(5000 * (_badPasscodeTries - 2));
+}
+
+void VaultRuntime::recordPasscodeTry(bool accepted) {
+	if (!usesScopedStorage()) {
+		cSetPasscodeBadTries(accepted ? 0 : (cPasscodeBadTries() + 1));
+		if (!accepted) {
+			cSetPasscodeLastTry(crl::now());
+		}
+		return;
+	}
+	const auto lock = std::lock_guard(_mutex);
+	_badPasscodeTries = accepted ? 0 : std::min(_badPasscodeTries + 1, 8);
+	_lastPasscodeTry = accepted ? 0 : crl::now();
 }
 
 bool VaultRuntime::unlockOpen() {
@@ -542,6 +623,10 @@ bool VaultRuntime::unlockOpen() {
 }
 
 void VaultRuntime::registerAccount(Main::Session &session) {
+	Expects(!usesScopedStorage()
+		|| (_scopedAccount.get() == &session.account()
+			&& _scopedAccountId == session.uniqueId()));
+
 	auto membership = AccountRecords{
 		.account = base::make_weak(&session.account()),
 	};
@@ -669,6 +754,10 @@ bool VaultRuntime::unlockWith(SecureBytes key, quint32 epoch) {
 }
 
 VaultGrant VaultRuntime::arm(uint64 accountId, VaultPreparedWrap policy) {
+	if (usesScopedStorage()
+		&& (!canInstall(policy.wrap.kind) || !canInitializeScopedKeyring())) {
+		return {};
+	}
 	auto abandoned = std::optional<ArmedPolicy>();
 	auto id = uint64();
 	{
@@ -1028,6 +1117,62 @@ KeyringReading ReadDeviceKeyring(Storage::Domain &local) {
 	return ParseDeviceKeyring(value.bytes);
 }
 
+namespace {
+
+bool ScopedEntriesMatch(const DeviceKeyring &keyring, uint64 accountId) {
+	return accountId && ranges::all_of(
+		keyring.entries,
+		[=](const auto &entry) { return entry.accountId == accountId; });
+}
+
+} // namespace
+
+KeyringReading ParseScopedDeviceKeyring(
+		const QByteArray &serialized,
+		uint64 accountId) {
+	using State = KeyringReading::State;
+	auto reading = ParseDeviceKeyring(serialized);
+	if (reading.state != State::Read) {
+		return reading;
+	} else if (reading.keyring.wrap.kind != VaultKind::Passcode) {
+		return { .state = State::Unsupported };
+	} else if (!ScopedEntriesMatch(reading.keyring, accountId)) {
+		return { .state = State::Broken };
+	}
+	return reading;
+}
+
+KeyringReading ReadScopedDeviceKeyring(
+		Storage::Account &local,
+		uint64 accountId) {
+	using State = KeyringReading::State;
+	using StorageState = Storage::WalletEngineValue::State;
+	if (!local.usesScopedStorage() || !accountId) {
+		return { .state = State::Broken };
+	}
+	const auto value = local.readWalletEngineValue(kScopedDeviceKeyringStorageKey);
+	if (value.state == StorageState::Absent) {
+		return { .state = State::Absent };
+	} else if (value.state != StorageState::Read) {
+		return { .state = State::Broken };
+	}
+	return ParseScopedDeviceKeyring(value.bytes, accountId);
+}
+
+bool WriteScopedDeviceKeyring(
+		Storage::Account &local,
+		uint64 accountId,
+		const DeviceKeyring &keyring) {
+	if (!local.usesScopedStorage()
+		|| keyring.wrap.kind != VaultKind::Passcode
+		|| !ScopedEntriesMatch(keyring, accountId)) {
+		return false;
+	}
+	const auto serialized = SerializeDeviceKeyring(keyring);
+	return !serialized.isEmpty()
+		&& local.writeWalletEngineValue(kScopedDeviceKeyringStorageKey, serialized);
+}
+
 bool WriteDeviceKeyring(
 		Storage::Domain &local,
 		const DeviceKeyring &keyring) {
@@ -1339,6 +1484,9 @@ int DropPreVaultCustody(Storage::Account &local, CustodyStore &store) {
 }
 
 bool ResetVaultAndCustody(Main::Domain &domain) {
+	if (domain.scopedProfileReserved()) {
+		return false;
+	}
 	auto &runtime = domain.walletKeyring();
 	const auto reading = runtime.reading();
 	auto context = static_cast<Storage::Account*>(nullptr);

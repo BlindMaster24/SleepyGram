@@ -15,6 +15,7 @@ namespace Ayu::ProfileSets {
 class MigrationController;
 
 [[nodiscard]] MTP::AuthKeyPtr ProfileAccountStorageKey(const AccountKey &key);
+[[nodiscard]] MTP::AuthKeyPtr ProfileSettingsStorageKey(const QByteArray &key);
 
 [[nodiscard]] Storage::AccountMigrationResult StageProfileAccount(
 	const MigrationController &workspace,

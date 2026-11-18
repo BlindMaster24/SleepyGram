@@ -19,6 +19,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 namespace Ayu::ProfileSets {
 
+struct SetId;
+
 enum class MigrationArtifact : quint32 {
 	ProfileVault = 1,
 	AccountKeyring = 2,
@@ -126,6 +128,10 @@ public:
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] bool WithPreparingWorkspace(
 		const std::function<bool()> &callback,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<QString> PrepareScopedSettingsDirectory(
+		const QByteArray &expectedTransactionId,
+		SetId setId,
 		MigrationError *error = nullptr) const;
 
 	[[nodiscard]] QString workspacePath() const;

@@ -49,6 +49,13 @@ using AuthKeyPtr = std::shared_ptr<AuthKey>;
 namespace Local {
 
 void start();
+[[nodiscard]] bool startScoped(
+	const QString &settingsDirectory,
+	MTP::AuthKeyPtr encryptionKey);
+[[nodiscard]] bool usesScopedSettings();
+[[nodiscard]] bool matchesScopedSettings(const MTP::AuthKeyPtr &key);
+[[nodiscard]] std::optional<QByteArray> readScopedPreferences();
+[[nodiscard]] bool writeScopedPreferences(const QByteArray &contents);
 void sync();
 void finish();
 

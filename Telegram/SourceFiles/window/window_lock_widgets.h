@@ -42,7 +42,8 @@ class SlideAnimation;
 
 [[nodiscard]] std::unique_ptr<PreLaunchWindow> CreateScopedProfileLockWindow(
 	not_null<Main::Domain*> domain,
-	Ayu::ProfileSets::MigrationController sidecar);
+	Ayu::ProfileSets::MigrationController sidecar,
+	Fn<bool(const Ayu::ProfileSets::MigrationController &)> startSet);
 
 enum class PasscodeAttempt : uchar {
 	Unavailable,

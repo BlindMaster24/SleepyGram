@@ -186,6 +186,10 @@ void Controller::showAccount(
 
 	_id.account->sessionValue(
 	) | rpl::on_next([=](Main::Session *session) {
+		if (!session && !Core::App().legacyProfileAccessAllowed()) {
+			Core::App().lockByPasscode();
+			return;
+		}
 		const auto was = base::take(_sessionController);
 		_sessionController = session
 			? std::make_unique<SessionController>(session, this)
@@ -506,6 +510,10 @@ void Controller::sideBarChanged() {
 }
 
 void Controller::activate() {
+	if (!Core::App().legacyProfileAccessAllowed()
+		&& Core::App().passcodeLocked()) {
+		return;
+	}
 	_widget.activate();
 	Core::App().registerWindowActivation(&_widget);
 }

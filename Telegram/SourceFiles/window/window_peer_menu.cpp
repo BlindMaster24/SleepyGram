@@ -2095,9 +2095,11 @@ void Filler::fillHistoryActions() {
 	addDirectMessages();
 	addExportChat();
 	addTranslate();
-	_addAction(tr::lng_offline_history_menu(tr::now), [=] {
-		Ayu::OfflineHistory::Open(_controller, _peer->id);
-	}, &st::menuIconSavedMessages);
+	if (Ayu::OfflineHistory::Available(&_controller->session())) {
+		_addAction(tr::lng_offline_history_menu(tr::now), [=] {
+			Ayu::OfflineHistory::Open(_controller, _peer->id);
+		}, &st::menuIconSavedMessages);
+	}
 	addReport();
 	addClearHistory();
 	AyuUi::AddDeleteOwnMessagesAction(_peer, _topic, _controller, _addAction);

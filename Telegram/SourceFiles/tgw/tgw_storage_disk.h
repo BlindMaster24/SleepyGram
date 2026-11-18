@@ -31,6 +31,16 @@ struct StorageMeta {
 [[nodiscard]] QString StorageFolder(not_null<Main::Account*> account);
 void EraseStorageFolder(const QString &folder);
 
+// The caller quiesces the source and owns the disposable staging directory.
+[[nodiscard]] Storage::AccountMigrationResult CompareStorageForMigration(
+	const QString &sourceAccountBasePath,
+	const MTP::AuthKeyPtr &sourceKey,
+	const QString &targetAccountBasePath,
+	const MTP::AuthKeyPtr &targetKey,
+	UserId expectedUser,
+	MTP::Environment environment,
+	bool write);
+
 class StorageDisk final {
 public:
 	using Area = std::map<std::string, std::string>;

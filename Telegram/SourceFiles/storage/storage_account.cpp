@@ -25,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtp_instance.h"
 #include "lang/lang_keys.h"
 #include "history/history.h"
+#include "tgw/tgw_storage_disk.h"
 #include "core/application.h"
 #include "core/core_settings.h"
 #include "core/file_location.h"
@@ -432,6 +433,13 @@ MigrationResult InspectMap(
 				if (type == lskWalletEngineStorages) {
 					auto entry = QString();
 					stream >> entry;
+					if (mode == AccountStorageMode::Legacy
+						&& (entry.startsWith(u"secret/"_q)
+							|| entry.startsWith(u"custody/"_q)
+							|| entry.startsWith(u"vault/"_q)
+							|| entry.startsWith(u"journal/"_q))) {
+						return MigrationResult::UnsupportedData;
+					}
 				} else {
 					auto peer = quint64();
 					stream >> peer;
@@ -534,7 +542,8 @@ MigrationResult InspectMigrationRecord(
 		MigrationRecordType type,
 		UserId expectedUser,
 		std::map<QString, MigrationRecordType> &files,
-		AccountStorageMode mode = AccountStorageMode::Legacy) {
+		AccountStorageMode mode = AccountStorageMode::Legacy,
+		MTP::Environment *environment = nullptr) {
 	auto stream = QDataStream(record.data);
 	if (!BeginMigrationRecord(stream)) {
 		return MigrationResult::InvalidSource;
@@ -555,10 +564,16 @@ MigrationResult InspectMigrationRecord(
 		return InspectScopedSettings(stream, record.version)
 			? MigrationResult::Success
 			: MigrationResult::UnsupportedData;
-	case MigrationRecordType::Config:
-		return ParseScopedConfig(stream)
-			? MigrationResult::Success
-			: MigrationResult::InvalidSource;
+	case MigrationRecordType::Config: {
+		const auto config = ParseScopedConfig(stream);
+		if (!config) {
+			return MigrationResult::InvalidSource;
+		}
+		if (environment) {
+			*environment = config->environment();
+		}
+		return MigrationResult::Success;
+	}
 	case MigrationRecordType::Other:
 		return MigrationResult::Success;
 	}
@@ -581,10 +596,13 @@ bool CheckMigrationInventory(
 		return false;
 	}
 	const auto entries = directory.entryList(kMigrationEntries);
-	if (staged && entries.size() != qsizetype(files.size())) {
+	if (staged && entries.size() - entries.count(u"tgw"_q) != qsizetype(files.size())) {
 		return false;
 	}
 	for (const auto &entry : entries) {
+		if (entry == u"tgw"_q) {
+			continue;
+		}
 		const auto suffix = entry.isEmpty() ? QChar() : entry.back();
 		if (entry.isEmpty()
 			|| !files.contains(entry.chopped(1))
@@ -706,6 +724,7 @@ MigrationResult CompareMigrationRecords(
 	if (authCompared != MigrationResult::Success) {
 		return authCompared;
 	}
+	auto environment = MTP::Environment::Production;
 	for (const auto &[name, type] : files) {
 		auto record = MigrationRecord();
 		const auto isMap = (type == MigrationRecordType::Map);
@@ -722,7 +741,9 @@ MigrationResult CompareMigrationRecords(
 				value,
 				type,
 				expectedUser,
-				files);
+				files,
+				AccountStorageMode::Legacy,
+				&environment);
 			if (checked != MigrationResult::Success) {
 				return checked;
 			}
@@ -737,7 +758,10 @@ MigrationResult CompareMigrationRecords(
 			return compared;
 		}
 	}
-	return MigrationResult::Success;
+	return Tgw::CompareStorageForMigration(
+		source.basePath, sourceKey,
+		target.basePath, targetKey,
+		expectedUser, environment, write);
 }
 
 auto EmptyMessageDraftSources()
@@ -847,7 +871,8 @@ namespace {
 std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 		const AccountPaths &paths,
 		const MTP::AuthKeyPtr &key,
-		ScopedAccountConnection *connection) {
+		ScopedAccountConnection *connection,
+		std::unique_ptr<MTP::Config> *configOut = nullptr) {
 	const auto root = QFileInfo(paths.authPath).path();
 	if (!key
 		|| !MatchesScopedPaths(paths)
@@ -923,6 +948,7 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 	}
 
 	auto environment = MTP::Environment::Production;
+	auto decoded = std::unique_ptr<MTP::Config>();
 	const auto configPath = paths.basePath + u"config"_q;
 	if (HasRecord(configPath)) {
 		auto config = MigrationRecord();
@@ -934,16 +960,18 @@ std::optional<ScopedAccountStartupInfo> ReadScopedAccount(
 			return std::nullopt;
 		}
 		auto stream = QDataStream(config.data);
-		auto decoded = BeginMigrationRecord(stream)
+		decoded = BeginMigrationRecord(stream)
 			? ParseScopedConfig(stream)
 			: nullptr;
 		if (!decoded) {
 			return std::nullopt;
 		}
 		environment = decoded->environment();
-		if (connection) {
-			connection->config = std::move(decoded);
-		}
+	}
+	if (connection) {
+		connection->config = std::move(decoded);
+	} else if (configOut) {
+		*configOut = std::move(decoded);
 	}
 	return ScopedAccountStartupInfo{ .userId = userId, .environment = environment };
 }
@@ -954,8 +982,9 @@ ScopedAccountConnection::~ScopedAccountConnection() = default;
 
 std::optional<ScopedAccountStartupInfo> ValidateScopedAccountForStartup(
 		const AccountPaths &paths,
-		const MTP::AuthKeyPtr &key) {
-	return ReadScopedAccount(paths, key, nullptr);
+		const MTP::AuthKeyPtr &key,
+		std::unique_ptr<MTP::Config> *config) {
+	return ReadScopedAccount(paths, key, nullptr, config);
 }
 
 std::unique_ptr<ScopedAccountConnection> ReadScopedAccountConnection(
@@ -1037,6 +1066,13 @@ std::unique_ptr<MTP::Config> Account::start(MTP::AuthKeyPtr localKey) {
 	readMapWith(_localKey);
 	clearLegacyFiles();
 	return readMtpConfig();
+}
+
+bool Account::prepareScopedStart(MTP::AuthKeyPtr localKey) {
+	return _storageMode == AccountStorageMode::Scoped
+		&& !_localKey
+		&& localKey
+		&& readMapWith(std::move(localKey)) == ReadMapResult::Success;
 }
 
 void Account::startAdded(MTP::AuthKeyPtr localKey) {
@@ -1393,16 +1429,16 @@ Account::ReadMapResult Account::readMapWith(
 	_webviewStorageIdBots.token = webviewStorageTokenBots;
 	_webviewStorageIdOther.token = webviewStorageTokenOther;
 
-	if (_oldMapVersion < AppVersion) {
+	if (_storageMode == AccountStorageMode::Legacy && _oldMapVersion < AppVersion) {
 		writeMapDelayed();
 	} else {
 		_mapChanged = false;
 	}
-	if (walletLegacyKey) {
+	if (_storageMode == AccountStorageMode::Legacy && walletLegacyKey) {
 		ClearKey(walletLegacyKey, _basePath);
 		writeMapDelayed();
 	}
-	if (walletEngineLegacyKey) {
+	if (_storageMode == AccountStorageMode::Legacy && walletEngineLegacyKey) {
 		ClearKey(walletEngineLegacyKey, _basePath);
 		writeMapDelayed();
 	}
@@ -1814,10 +1850,16 @@ void Account::writeLocationsDelayed() {
 
 void Account::readLocations() {
 	FileReadDescriptor locations;
-	if (!ReadEncryptedFile(locations, _locationsKey, _basePath, _localKey)) {
-		ClearKey(_locationsKey, _basePath);
-		_locationsKey = 0;
-		writeMapDelayed();
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
+	const auto backups = legacy
+		? LegacyBackupPolicy::RemoveAfterRead
+		: LegacyBackupPolicy::Preserve;
+	if (!ReadEncryptedFile(locations, _locationsKey, _basePath, _localKey, backups)) {
+		if (legacy) {
+			ClearKey(_locationsKey, _basePath);
+			_locationsKey = 0;
+			writeMapDelayed();
+		}
 		return;
 	}
 
@@ -1866,7 +1908,9 @@ void Account::readLocations() {
 				quint64 key;
 				qint32 size;
 				locations.stream >> url >> key >> size;
-				ClearKey(key, _basePath);
+				if (legacy) {
+					ClearKey(key, _basePath);
+				}
 			}
 
 			if (!locations.stream.atEnd()) {
@@ -2002,7 +2046,7 @@ std::unique_ptr<Main::SessionSettings> Account::readSessionSettings() {
 
 	_scopedRecentStickers = std::move(recentStickers);
 	auto result = applyReadContext(std::move(context));
-	if (context.legacyRead) {
+	if (legacy && context.legacyRead) {
 		writeSessionSettings(result.get());
 	}
 	return result;
@@ -4832,16 +4876,23 @@ void Account::writePrefs() {
 
 void Account::readPrefs() {
 	FileReadDescriptor prefs;
-	if (!ReadEncryptedFile(prefs, _prefsKey, _basePath, _localKey)) {
-		ClearKey(_prefsKey, _basePath);
-		_prefsKey = 0;
-		writeMapDelayed();
+	const auto legacy = (_storageMode == AccountStorageMode::Legacy);
+	const auto backups = legacy
+		? LegacyBackupPolicy::RemoveAfterRead
+		: LegacyBackupPolicy::Preserve;
+	if (!ReadEncryptedFile(prefs, _prefsKey, _basePath, _localKey, backups)) {
+		if (legacy) {
+			ClearKey(_prefsKey, _basePath);
+			_prefsKey = 0;
+			writeMapDelayed();
+		}
 		return;
 	}
 
 	auto count = quint32();
 	prefs.stream >> count;
-	if (prefs.stream.status() != QDataStream::Ok) {
+	if (prefs.stream.status() != QDataStream::Ok
+		|| uint64(count) * sizeof(quint64) > uint64(prefs.buffer.bytesAvailable())) {
 		return;
 	}
 	auto map = base::flat_map<QByteArray, QByteArray>();

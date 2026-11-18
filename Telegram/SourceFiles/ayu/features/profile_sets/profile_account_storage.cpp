@@ -9,8 +9,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "mtproto/mtproto_auth_key.h"
+#include "storage/details/storage_hkdf.h"
 
 #include <openssl/crypto.h>
+
+#include <algorithm>
+#include <string_view>
 
 namespace Ayu::ProfileSets {
 
@@ -21,6 +25,25 @@ MTP::AuthKeyPtr ProfileAccountStorageKey(const AccountKey &key) {
 		OPENSSL_cleanse(material.data(), material.size());
 	});
 	return DeriveAccountLocalStorageKey(key, bytes::make_span(material))
+		? std::make_shared<MTP::AuthKey>(material)
+		: nullptr;
+}
+
+MTP::AuthKeyPtr ProfileSettingsStorageKey(const QByteArray &key) {
+	constexpr auto info = std::string_view("SleepyGram profile settings file v1");
+	if (key.size() != kProfileVaultKeySize
+		|| std::ranges::all_of(key, [](char value) { return value == 0; })) {
+		return nullptr;
+	}
+	auto material = MTP::AuthKey::Data();
+	const auto wipe = gsl::finally([&] {
+		OPENSSL_cleanse(material.data(), material.size());
+	});
+	return Storage::HkdfSha256(
+		bytes::make_span(key.constData(), key.size()),
+		{},
+		bytes::make_span(info.data(), info.size()),
+		bytes::make_span(material))
 		? std::make_shared<MTP::AuthKey>(material)
 		: nullptr;
 }

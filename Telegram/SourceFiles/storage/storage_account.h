@@ -84,7 +84,8 @@ struct ScopedAccountStartupInfo final {
 [[nodiscard]] std::optional<ScopedAccountStartupInfo>
 ValidateScopedAccountForStartup(
 	const AccountPaths &paths,
-	const MTP::AuthKeyPtr &key);
+	const MTP::AuthKeyPtr &key,
+	std::unique_ptr<MTP::Config> *config = nullptr);
 
 struct ScopedAccountConnection final {
 	~ScopedAccountConnection();
@@ -134,6 +135,7 @@ public:
 	[[nodiscard]] StartResult legacyStart(const QByteArray &passcode);
 	[[nodiscard]] std::unique_ptr<MTP::Config> start(
 		MTP::AuthKeyPtr localKey);
+	[[nodiscard]] bool prepareScopedStart(MTP::AuthKeyPtr localKey);
 	void startAdded(MTP::AuthKeyPtr localKey);
 	[[nodiscard]] int oldMapVersion() const {
 		return _oldMapVersion;

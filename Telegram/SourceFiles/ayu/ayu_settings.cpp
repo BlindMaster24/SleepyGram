@@ -26,6 +26,7 @@
 #include "main/main_session.h"
 #include "platform/platform_translate_provider.h"
 #include "rpl/combine.h"
+#include "storage/localstorage.h"
 #include "storage/storage_account.h"
 #include "window/main_window.h"
 #include "window/window_controller.h"
@@ -796,17 +797,30 @@ AyuSettings &AyuSettings::getInstance() {
 }
 
 void AyuSettings::load() {
-	std::ifstream file(getSettingsPath());
-	if (!file.good()) {
-		return;
+	auto protectedBytes = std::optional<QByteArray>();
+	auto file = std::ifstream();
+	if (Local::usesScopedSettings()) {
+		protectedBytes = Local::readScopedPreferences();
+		if (!protectedBytes || protectedBytes->isEmpty()) {
+			return;
+		}
+	} else {
+		file.open(getSettingsPath());
+		if (!file.good()) {
+			return;
+		}
 	}
 
 	auto &settings = getInstance();
 
 	try {
 		json p;
-		file >> p;
-		file.close();
+		if (protectedBytes) {
+			p = json::parse(protectedBytes->begin(), protectedBytes->end());
+		} else {
+			file >> p;
+			file.close();
+		}
 
 		if (!p.contains("ghostModeSettings")) {
 			p["ghostModeSettings"] = nlohmann::json::object({
@@ -850,6 +864,12 @@ void AyuSettings::load() {
 void AyuSettings::save() {
 	auto &settings = getInstance();
 	json p = settings;
+	if (Local::usesScopedSettings()) {
+		if (!Local::writeScopedPreferences(QByteArray::fromStdString(p.dump(4)))) {
+			LOG(("SleepyGram settings: failed to save scoped settings"));
+		}
+		return;
+	}
 
 	std::ofstream file;
 	file.open(getSettingsPath());
@@ -914,6 +934,10 @@ QString AyuSettings::previewTransfer(
 		uint64 accountId,
 		QString *error) {
 	Expects(error != nullptr);
+	if (Local::usesScopedSettings()) {
+		*error = u"Settings import is unavailable while this profile is active."_q;
+		return QString();
+	}
 	if (!accountId) {
 		*error = u"The active account is unavailable."_q;
 		return QString();
@@ -937,6 +961,9 @@ QString AyuSettings::previewTransfer(
 }
 
 bool AyuSettings::applyTransfer(const QByteArray &data, uint64 accountId) {
+	if (Local::usesScopedSettings()) {
+		return false;
+	}
 	auto error = QString();
 	auto parsed = SettingsTransferData();
 	if (!accountId || !parseSettingsTransfer(data, &parsed, &error)) {

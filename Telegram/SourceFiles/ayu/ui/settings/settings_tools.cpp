@@ -146,6 +146,7 @@ void LoadArchiveSearchPage(
 		not_null<Ui::GenericBox*> box,
 		not_null<Window::SessionController*> controller,
 		not_null<Ui::VerticalLayout*> resultsLayout,
+		AyuDatabase::ArchiveReadToken read,
 		QString query,
 		AyuDatabase::ArchiveSearchType type,
 		int dateFrom,
@@ -153,15 +154,17 @@ void LoadArchiveSearchPage(
 		std::optional<AyuDatabase::ArchiveSearchCursor> cursor,
 		const std::shared_ptr<bool> &stale,
 		Ui::LinkButton *loadMore = nullptr) {
+	if (*stale || !AyuDatabase::IsArchiveReadCurrent(read)) {
+		return;
+	}
 	if (loadMore) {
 		loadMore->setDisabled(true);
 	}
-	const auto weak = base::make_weak(box);
-	const auto sessionId = controller->session().userId().bare
-		& PeerId::kChatTypeMask;
+	const auto weakBox = base::make_weak(box);
+	const auto weakController = base::make_weak(controller);
 	crl::async([=] {
-		const auto page = AyuMessages::searchArchive(
-			sessionId,
+		auto page = AyuMessages::searchArchive(
+			read,
 			query,
 			type,
 			dateFrom,
@@ -169,7 +172,8 @@ void LoadArchiveSearchPage(
 			cursor,
 			25);
 		crl::on_main([=, page = std::move(page)]() mutable {
-			if (!weak || *stale) {
+			if (!weakBox || !weakController || *stale
+				|| !AyuDatabase::IsArchiveReadCurrent(read)) {
 				return;
 			}
 			if (page.empty() && !cursor) {
@@ -206,7 +210,10 @@ void LoadArchiveSearchPage(
 						st::boxLinkButton),
 					st::boxRowPadding);
 				link->setClickedCallback([=] {
-					OpenArchivedMessage(controller, entry, query);
+					if (weakController && !*stale
+						&& AyuDatabase::IsArchiveReadCurrent(read)) {
+						OpenArchivedMessage(controller, entry, query);
+					}
 				});
 			}
 			if (page.size() == 25) {
@@ -223,10 +230,14 @@ void LoadArchiveSearchPage(
 						st::boxLinkButton),
 					st::boxRowPadding);
 				more->setClickedCallback([=] {
+					if (!weakBox || !weakController) {
+						return;
+					}
 					LoadArchiveSearchPage(
 						box,
 						controller,
 						resultsLayout,
+						read,
 						query,
 						type,
 						dateFrom,
@@ -243,17 +254,16 @@ void LoadArchiveSearchPage(
 void ArchiveSearchResultsBox(
 		not_null<Ui::GenericBox*> box,
 		not_null<Window::SessionController*> controller,
+		AyuDatabase::ArchiveReadToken read,
 		QString query,
 		AyuDatabase::ArchiveSearchType type,
 		int dateFrom,
 		int dateTo) {
 	box->setTitle(tr::ayu_ArchiveSearchTitle());
 	box->setWidth(st::boxWideWidth);
-	const auto accountId = controller->session().userId().bare
-		& PeerId::kChatTypeMask;
 	const auto stale = std::make_shared<bool>(false);
 	Ayu::ChatLock::Changes() | rpl::on_next([=](Ayu::ChatLock::Change change) {
-		if (change.accountId == uint64(accountId)) {
+		if (change.accountId == uint64(read.userId)) {
 			*stale = true;
 			box->closeBox();
 		}
@@ -265,6 +275,7 @@ void ArchiveSearchResultsBox(
 		box,
 		controller,
 		resultsLayout,
+		read,
 		std::move(query),
 		type,
 		dateFrom,
@@ -275,6 +286,14 @@ void ArchiveSearchResultsBox(
 }
 
 void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
+	const auto accountId = controller->session().userId().bare
+		& PeerId::kChatTypeMask;
+	const auto token = AyuDatabase::CaptureArchiveRead(accountId);
+	if (!token) {
+		return;
+	}
+	const auto read = *token;
+	const auto weakController = base::make_weak(controller);
 	controller->show(Box([=](not_null<Ui::GenericBox*> box) {
 		box->setTitle(tr::ayu_ArchiveSearchTitle());
 		box->setWidth(st::boxWideWidth);
@@ -311,6 +330,9 @@ void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
 			true,
 			st::defaultBoxCheckbox), st::boxPadding);
 		box->addButton(tr::ayu_ArchiveSearchStart(), [=] {
+			if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			if (!edited->checked() && !deleted->checked()) {
 				controller->show(Ui::MakeInformBox(
 					tr::ayu_ArchiveSearchInvalidType(tr::now)));
@@ -345,9 +367,13 @@ void ShowArchiveSearchBox(not_null<Window::SessionController*> controller) {
 				: AyuDatabase::ArchiveSearchType::Deleted;
 			const auto search = query->getLastText().trimmed();
 			box->closeBox();
+			if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			controller->show(Box(
 				ArchiveSearchResultsBox,
 				controller,
+				read,
 				search,
 				type,
 				*from,
@@ -361,6 +387,12 @@ void ExportArchiveBackup(
 		Fn<void()> completed = nullptr) {
 	const auto accountId = controller->session().userId().bare
 		& PeerId::kChatTypeMask;
+	const auto token = AyuDatabase::CaptureArchiveRead(accountId);
+	if (!token) {
+		return;
+	}
+	const auto read = *token;
+	const auto weakController = base::make_weak(controller);
 	const auto counts = AyuDatabase::archiveBackupCounts(accountId);
 	controller->show(Ui::MakeConfirmBox({
 		.text = tr::ayu_ArchiveBackupExportCounts(
@@ -371,17 +403,26 @@ void ExportArchiveBackup(
 			QString::number(counts.deleted)),
 		.confirmed = [=](Fn<void()> &&close) {
 			close();
+			if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			const auto password = QInputDialog::getText(
 				controller->widget().get(),
 				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
 				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
 				QLineEdit::Password);
-			if (password.isEmpty()) return;
+			if (password.isEmpty() || !weakController
+				|| !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			const auto confirm = QInputDialog::getText(
 				controller->widget(),
 				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
 				tr::ayu_ArchiveBackupPasswordConfirm(tr::now),
 				QLineEdit::Password);
+			if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			if (password != confirm || password.toUtf8().size() < 8) {
 				controller->showToast(tr::ayu_ArchiveBackupInvalidPassword(tr::now));
 				return;
@@ -392,7 +433,9 @@ void ExportArchiveBackup(
 				u"SleepyGram archive (*.sgarchive)"_q,
 				u"sleepygram-archive.sgarchive"_q,
 				crl::guard(controller, [=](QString &&path) {
-					if (path.isEmpty()) return;
+					if (path.isEmpty() || !AyuDatabase::IsArchiveReadCurrent(read)) {
+						return;
+					}
 					const auto bytes = AyuArchiveBackup::Create(accountId, password);
 					auto file = QSaveFile(path);
 					if (bytes.isEmpty() || !file.open(QIODevice::WriteOnly)
@@ -413,12 +456,20 @@ void ExportArchiveBackup(
 void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 	const auto accountId = controller->session().userId().bare
 		& PeerId::kChatTypeMask;
+	const auto token = AyuDatabase::CaptureArchiveRead(accountId);
+	if (!token) {
+		return;
+	}
+	const auto read = *token;
+	const auto weakController = base::make_weak(controller);
 	FileDialog::GetOpenPath(
 		controller->widget().get(),
 		tr::ayu_ArchiveBackupImportTitle(tr::now),
 		u"SleepyGram archive (*.sgarchive);;All files (*)"_q,
 		crl::guard(controller, [=](FileDialog::OpenResult &&result) {
-			if (result.paths.isEmpty()) return;
+			if (result.paths.isEmpty() || !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			QFile file(result.paths.front());
 			if (!file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024 * 1024) {
 				controller->showToast(tr::ayu_SettingsTransferFailure(tr::now));
@@ -434,7 +485,10 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 				tr::ayu_ArchiveBackupPasswordTitle(tr::now),
 				tr::ayu_ArchiveBackupPasswordPrompt(tr::now),
 				QLineEdit::Password);
-			if (password.isEmpty()) return;
+			if (password.isEmpty() || !weakController
+				|| !AyuDatabase::IsArchiveReadCurrent(read)) {
+				return;
+			}
 			const auto preview = AyuArchiveBackup::Read(bytes, accountId, password);
 			if (!preview) {
 				controller->showToast(tr::ayu_ArchiveBackupInvalidFile(tr::now));
@@ -446,8 +500,15 @@ void ImportArchiveBackup(not_null<Window::SessionController*> controller) {
 					lt_preview,
 					preview->summary),
 				.confirmed = [=](Fn<void()> &&close) {
+					if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+						close();
+						return;
+					}
 					const auto imported = AyuArchiveBackup::Import(accountId, *preview);
 					close();
+					if (!weakController || !AyuDatabase::IsArchiveReadCurrent(read)) {
+						return;
+					}
 					controller->showToast(imported.committed
 						? tr::ayu_ArchiveBackupImportResult(
 							tr::now,

@@ -98,6 +98,10 @@ void ChangeLocalPasscode(
 		Fn<void(LocalPasscodeChangeResult)> done) {
 	using Result = LocalPasscodeChangeResult;
 	const auto domain = base::make_weak(&Core::App().domain());
+	if (domain->scopedProfileReserved()) {
+		done(Result::Stale);
+		return;
+	}
 	const auto &local = domain->local();
 	const auto runtime = domain->walletKeyring().shared_from_this();
 	const auto reading = runtime->reading();
@@ -123,7 +127,7 @@ void ChangeLocalPasscode(
 	Storage::DeriveOnWorker(
 		std::move(job),
 		crl::guard(guard.get(), [=](LocalPasscodeChangeJob &&job) {
-			if (!domain) {
+			if (!domain || domain->scopedProfileReserved()) {
 				return;
 			}
 			auto &local = domain->local();
@@ -414,10 +418,7 @@ void SubmitPasscodeFields(const PasscodeFields &fields, Fn<void()> save) {
 	QObject::connect(second, &Ui::MaskedInputField::submitted, submit);
 }
 
-// The passcode this box creates is created straight in the wallet-only role,
-// through Storage::Domain::createPasscodeWithoutAppLock(): the app lock never
-// turns on, and neither the auto-lock nor the system unlock setting is
-// touched.
+// Legacy wallet-only creation keeps the app lock and its settings inactive.
 void WalletPasscodeCreateBox(
 		not_null<Ui::GenericBox*> box,
 		std::shared_ptr<Main::SessionShow> show,
@@ -436,14 +437,17 @@ void WalletPasscodeCreateBox(
 	const auto weak = base::make_weak(box);
 	const auto weakSession = base::make_weak(&show->session());
 	const auto runtime = show->session().wallet().vault().shared_from_this();
+	const auto scoped = runtime->usesScopedStorage();
 
 	box->setTitle(tr::lng_passcode_create_title());
-	box->addRow(
-		object_ptr<Ui::FlatLabel>(
-			box,
-			tr::lng_wallet_protection_create_about(),
-			st::boxLabel),
-		st::walletProtectionIntroMargin);
+	if (!scoped) {
+		box->addRow(
+			object_ptr<Ui::FlatLabel>(
+				box,
+				tr::lng_wallet_protection_create_about(),
+				st::boxLabel),
+			st::walletProtectionIntroMargin);
+	}
 
 	const auto fields = AddPasscodeFields(
 		box,
@@ -478,8 +482,18 @@ void WalletPasscodeCreateBox(
 				OPENSSL_cleanse(utf8.data(), utf8.size());
 			}
 		});
-		const auto &local = show->session().domain().local();
 		state->typed = SecureBytes(utf8);
+		if (scoped) {
+			state->finished = true;
+			state->result = {
+				.passcode = std::move(state->typed),
+				.previousEpoch = epoch,
+				.epoch = epoch,
+			};
+			box->closeBox();
+			return;
+		}
+		const auto &local = show->session().domain().local();
 		cSetPasscodeBadTries(0);
 		setBusy(true);
 		// One derivation on the worker, the new passcode's key_data wrap, and
@@ -1474,17 +1488,24 @@ void MintVerificationOnWorker(
 		not_null<QObject*> guard,
 		const SecureBytes &passcode,
 		Fn<void(std::optional<Storage::PasscodeVerification>)> done) {
+	auto &domain = Core::App().domain();
+	if (domain.scopedProfileReserved()) {
+		done(std::nullopt);
+		return;
+	}
 	auto utf8 = Utf8Copy(passcode);
 	const auto cleanse = gsl::finally([&] {
 		if (!utf8.isEmpty()) {
 			OPENSSL_cleanse(utf8.data(), utf8.size());
 		}
 	});
-	const auto &local = Core::App().domain().local();
+	const auto &local = domain.local();
 	Storage::DeriveOnWorker(local.prepareOpen(utf8), crl::guard(guard, [done](
 			Storage::PasscodeDerivation &&derived) {
-		auto &local = Core::App().domain().local();
-		done(local.verifyPasscode(std::move(derived)));
+		auto &domain = Core::App().domain();
+		done(domain.scopedProfileReserved()
+			? std::nullopt
+			: domain.local().verifyPasscode(std::move(derived)));
 	}));
 }
 
@@ -1576,6 +1597,47 @@ void ShowKeyProtectionBox(
 	}
 	auto &session = show->session();
 	auto &vault = session.wallet().vault();
+	if (vault.usesScopedStorage()) {
+		const auto done = std::move(args.done);
+		if (args.mode != KeyProtectionMode::Install
+			|| !vault.canInitializeScopedKeyring()) {
+			show->showToast(tr::lng_wallet_vault_unavailable(tr::now));
+			if (done) {
+				done({});
+			}
+			return;
+		}
+		const auto epoch = vault.clearEpoch();
+		const auto accountId = session.uniqueId();
+		const auto weak = base::make_weak(&session);
+		const auto current = [=] {
+			return weak && show->valid()
+				&& weak->wallet().vault().current(accountId, epoch);
+		};
+		show->showBox(Box(WalletPasscodeCreateBox, show, epoch, current, [=](
+				WalletPasscodeCreated result) {
+			if (result.passcode.empty() || !current()) {
+				if (done) {
+					done({});
+				}
+				return;
+			}
+			PreparePasscodeWrap(result.passcode, [=](
+					std::optional<VaultPreparedWrap> prepared) {
+				auto grant = (prepared && current())
+					? weak->wallet().vault().arm(accountId, std::move(*prepared))
+					: VaultGrant();
+				if (done) {
+					done({
+						.cancelled = !grant.valid(),
+						.kind = VaultKind::Passcode,
+						.grant = std::move(grant),
+					});
+				}
+			});
+		}));
+		return;
+	}
 	auto reading = vault.reading();
 	const auto live = reading.state == KeyringReading::State::Read
 		&& vault.hasLiveEntries(reading.keyring);
@@ -1600,7 +1662,11 @@ void ShowKeyProtectionBox(
 }
 
 std::optional<VaultKind> LiveKeyProtection() {
-	const auto &runtime = Core::App().domain().walletKeyring();
+	auto &domain = Core::App().domain();
+	if (domain.scopedProfileReserved()) {
+		return std::nullopt;
+	}
+	const auto &runtime = domain.walletKeyring();
 	const auto reading = runtime.reading();
 	return (reading.state == KeyringReading::State::Read
 		&& runtime.hasLiveEntries(reading.keyring))

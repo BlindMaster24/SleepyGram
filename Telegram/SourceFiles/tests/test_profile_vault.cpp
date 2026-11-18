@@ -211,6 +211,17 @@ int RunChecks() {
 		&& std::get<SetVaultAccess>(empty).id == SetId{ 1, 3 }
 		&& std::get<SetVaultAccess>(empty).accounts.empty()
 		&& std::get<SetVaultAccess>(empty).locators.empty());
+	const auto other = OpenProfileVault(*parsed, Credential(2), &error);
+	const auto workAccess = std::get_if<SetVaultAccess>(&work);
+	const auto otherAccess = std::get_if<SetVaultAccess>(&other);
+	const auto emptyAccess = std::get_if<SetVaultAccess>(&empty);
+	check("settings-keys-are-scoped-even-with-overlapping-accounts",
+		workAccess && otherAccess && emptyAccess
+		&& workAccess->settingsKey.size() == kProfileVaultKeySize
+		&& otherAccess->settingsKey.size() == kProfileVaultKeySize
+		&& emptyAccess->settingsKey.size() == kProfileVaultKeySize
+		&& workAccess->settingsKey != otherAccess->settingsKey
+		&& workAccess->settingsKey != emptyAccess->settingsKey);
 
 	const auto wrong = OpenProfileVault(*parsed, Credential(777), &error);
 	check("wrong-password-yields-no-keys",
@@ -290,6 +301,10 @@ int RunChecks() {
 			OpenProfileVault(*updatedReadback, Credential(1)))
 		&& std::holds_alternative<WrongPassword>(
 			OpenProfileVault(*updatedReadback, Credential(3))));
+	check("settings-key-survives-password-and-membership-changes",
+		rotated && moved && workAccess
+		&& rotated->settingsKey == workAccess->settingsKey
+		&& moved->settingsKey == workAccess->settingsKey);
 	check("set-password-cannot-authorize-a-vault-update",
 		!UpdateProfileVault(*parsed, Credential(1), metadata, {}, &error)
 		&& error == ProfileVaultError::WrongPassword);

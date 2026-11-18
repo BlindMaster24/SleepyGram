@@ -589,10 +589,13 @@ void RegisterSettingsHandlers(Router &router) {
 		if (!ctx.controller) {
 			return Result::NeedsAuth;
 		}
+		const auto &local = ctx.controller->session().domain().local();
+		if (local.scopedStorageReserved()) {
+			return Result::Unsupported;
+		}
 		if (!highlight.isEmpty()) {
 			ctx.controller->setHighlightControlId(highlight);
 		}
-		const auto &local = ctx.controller->session().domain().local();
 		if (local.hasPasscode()) {
 			ctx.controller->showSettings(::Settings::LocalPasscodeCheckId());
 		} else {

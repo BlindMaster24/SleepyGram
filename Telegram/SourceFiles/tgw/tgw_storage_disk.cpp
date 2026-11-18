@@ -8,10 +8,19 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "tgw/tgw_storage_disk.h"
 
 #include "main/main_account.h"
+#include "mtproto/mtproto_auth_key.h"
+#include "mtproto/mtproto_dc_options.h"
 #include "storage/details/storage_file_utilities.h"
 #include "twidget/sdk_policy.h"
 
+#include <QtCore/QDataStream>
+#include <QtCore/QDir>
+#include <QtCore/QFileInfo>
+#include <openssl/crypto.h>
+
 #include <cmath>
+#include <filesystem>
+#include <set>
 
 namespace Tgw {
 namespace {
@@ -36,11 +45,20 @@ constexpr auto kIndexEntrySize = kIndexEntrySizeV1
 	+ uint64(sizeof(double) + sizeof(quint32));
 constexpr auto kNullBytes = quint32(0xFFFFFFFF);
 constexpr auto kFileNameSize = 16;
+constexpr auto kTestSessionOwnerBit = 0x0100'0000'0000'0000ULL;
+constexpr auto kMaxMigrationIndexSize = uint64(64 * 1024 * 1024);
+constexpr auto kRecordEnvelopeAllowance = uint64(64);
+constexpr auto kMigrationEntries = QDir::AllEntries
+	| QDir::NoDotAndDotDot
+	| QDir::Hidden
+	| QDir::System;
 
 const auto kIndexName = u"index"_q;
+const auto kStorageFolderName = u"tgw"_q;
 const auto kSuffixes = u"01s"_q;
 
 using namespace Storage::details;
+using MigrationResult = Storage::AccountMigrationResult;
 
 [[nodiscard]] bool Storable(FullMsgId key) {
 	const auto peer = key.peer;
@@ -81,22 +99,22 @@ using namespace Storage::details;
 }
 
 [[nodiscard]] std::optional<StorageDisk::Area> ReadRecord(
-		FileReadDescriptor &file) {
+		QDataStream &stream) {
 	auto version = quint32();
 	auto count = quint32();
-	file.stream >> version >> count;
-	if (!CheckStreamStatus(file.stream)
+	stream >> version >> count;
+	if (!CheckStreamStatus(stream)
 		|| !version
 		|| version > kRecordVersion
 		|| count > kMaxPairs
-		|| count * kPairSize > uint64(file.buffer.bytesAvailable())) {
+		|| count * kPairSize > uint64(stream.device()->bytesAvailable())) {
 		return std::nullopt;
 	}
 	auto result = StorageDisk::Area();
 	auto left = kMaxStoredBytes;
 	for (auto i = quint32(); i != count; ++i) {
-		auto key = ReadBytes(file.stream, left);
-		auto value = key ? ReadBytes(file.stream, left) : std::nullopt;
+		auto key = ReadBytes(stream, left);
+		auto value = key ? ReadBytes(stream, left) : std::nullopt;
 		const auto added = value
 			&& result.emplace(std::move(*key), std::move(*value)).second;
 		if (!added) {
@@ -104,6 +122,66 @@ using namespace Storage::details;
 		}
 	}
 	return result;
+}
+
+[[nodiscard]] bool ReadIndex(
+		QDataStream &stream,
+		uint64 expectedOwner,
+		auto add) {
+	auto version = quint32();
+	auto owner = quint64();
+	auto count = quint32();
+	stream >> version >> owner >> count;
+	const auto entrySize = (version > 1) ? kIndexEntrySize : kIndexEntrySizeV1;
+	if (!CheckStreamStatus(stream)
+		|| !version
+		|| version > kIndexVersion
+		|| owner != expectedOwner
+		|| count * entrySize > uint64(stream.device()->bytesAvailable())) {
+		return false;
+	}
+	auto files = std::vector<Storage::FileKey>();
+	for (auto i = quint32(); i != count; ++i) {
+		auto peer = quint64();
+		auto msg = qint64();
+		auto file = Storage::FileKey();
+		auto meta = StorageMeta();
+		auto height = HeightRecord();
+		auto topicRootId = qint64();
+		auto sublistPeerId = quint64();
+		auto from = quint64();
+		auto anchor = quint32();
+		stream
+			>> peer
+			>> msg
+			>> file
+			>> meta.date
+			>> meta.expires
+			>> topicRootId
+			>> sublistPeerId
+			>> from;
+		if (version > 1) {
+			stream >> height.height >> anchor;
+		}
+		meta.topicRootId = topicRootId;
+		meta.sublistPeerId = DeserializePeerId(sublistPeerId);
+		meta.from = DeserializePeerId(from);
+		height.bottom = (anchor == 1);
+		const auto key = FullMsgId(DeserializePeerId(peer), MsgId(msg));
+		if (!CheckStreamStatus(stream)
+			|| !Storable(key)
+			|| !std::isfinite(height.height)
+			|| (height.height < 0.)
+			|| (anchor > 1)
+			|| (!file && height.height <= 0.)
+			|| !add(key, file, meta, height)) {
+			return false;
+		} else if (file) {
+			files.push_back(file);
+		}
+	}
+	ranges::sort(files);
+	return (ranges::adjacent_find(files) == end(files));
 }
 
 void AppendRecordPaths(
@@ -116,14 +194,200 @@ void AppendRecordPaths(
 	}
 }
 
+struct MigrationRecord {
+	~MigrationRecord() {
+		if (!payload.data.isEmpty()) {
+			OPENSSL_cleanse(payload.data.data(), size_t(payload.data.size()));
+		}
+	}
+
+	EncryptedDescriptor payload;
+	int32 version = 0;
+};
+
+[[nodiscard]] bool Present(const QFileInfo &info) {
+	return info.exists() || info.isSymLink() || info.isJunction();
+}
+
+[[nodiscard]] bool CanonicalDirectory(const QString &path) {
+	const auto info = QFileInfo(path);
+	return info.isDir()
+		&& !info.isSymLink()
+		&& !info.isJunction()
+		&& info.canonicalFilePath() == path
+		&& QDir(path).isReadable();
+}
+
+[[nodiscard]] std::optional<std::set<QString>> MigrationInventory(
+		const QString &directory,
+		bool staged) {
+	auto stems = std::set<QString>();
+	if (!Present(QFileInfo(directory))) {
+		return stems;
+	} else if (!CanonicalDirectory(directory)) {
+		return std::nullopt;
+	}
+	for (const auto &info : QDir(directory).entryInfoList(kMigrationEntries)) {
+		const auto name = info.fileName();
+		const auto isIndex = IndexFile(name);
+		const auto maximum = isIndex ? kMaxMigrationIndexSize : kMaxRecordSize;
+		auto error = std::error_code();
+		if ((!isIndex && !HasSuffix(name, kFileNameSize))
+			|| (staged && name.back() != QChar('s'))
+			|| !info.isFile()
+			|| info.isSymLink()
+			|| info.isJunction()
+			|| info.canonicalFilePath() != info.absoluteFilePath()
+			|| std::filesystem::hard_link_count(
+				info.filesystemFilePath(),
+				error) != 1
+			|| error
+			|| uint64(info.size()) > maximum + kRecordEnvelopeAllowance) {
+			return std::nullopt;
+		}
+		stems.insert(name.chopped(1));
+	}
+	return stems;
+}
+
+[[nodiscard]] bool ReadMigrationRecord(
+		const QString &name,
+		const QString &folder,
+		const MTP::AuthKeyPtr &key,
+		MigrationRecord &record) {
+	auto file = FileReadDescriptor();
+	if (!ReadFile(file, name, folder, LegacyBackupPolicy::Preserve)
+		|| file.version <= 0) {
+		return false;
+	}
+	auto encrypted = QByteArray();
+	file.stream >> encrypted;
+	record.version = file.version;
+	return (file.stream.status() == QDataStream::Ok)
+		&& file.stream.atEnd()
+		&& DecryptLocal(record.payload, encrypted, key);
+}
+
+[[nodiscard]] MigrationResult CompareMigrationRecord(
+		MigrationRecord &source,
+		const QString &name,
+		const QString &folder,
+		const MTP::AuthKeyPtr &key,
+		bool write) {
+	if (write) {
+		auto file = FileWriteDescriptor(name, folder);
+		file.writeEncrypted(source.payload, key);
+		return file.finishStaged(source.version)
+			? MigrationResult::Success
+			: MigrationResult::DestinationIo;
+	}
+	auto target = MigrationRecord();
+	return (ReadMigrationRecord(name, folder, key, target)
+		&& (source.version == target.version)
+		&& (source.payload.data == target.payload.data))
+		? MigrationResult::Success
+		: MigrationResult::VerificationFailed;
+}
+
 } // namespace
 
 QString StorageFolder(not_null<Main::Account*> account) {
-	return account->local().basePath() + u"tgw/"_q;
+	return account->local().basePath() + kStorageFolderName + '/';
 }
 
 void EraseStorageFolder(const QString &folder) {
 	ScheduleRemoveFolder(folder);
+}
+
+Storage::AccountMigrationResult CompareStorageForMigration(
+		const QString &sourceAccountBasePath,
+		const MTP::AuthKeyPtr &sourceKey,
+		const QString &targetAccountBasePath,
+		const MTP::AuthKeyPtr &targetKey,
+		UserId expectedUser,
+		MTP::Environment environment,
+		bool write) {
+	const auto sourceBase = QDir::cleanPath(sourceAccountBasePath);
+	const auto targetBase = QDir::cleanPath(targetAccountBasePath);
+	if (!sourceKey || !targetKey || sourceKey->equals(targetKey)) {
+		return MigrationResult::InvalidKeys;
+	} else if (!expectedUser
+		|| (environment != MTP::Environment::Production
+			&& environment != MTP::Environment::Test)) {
+		return MigrationResult::IdentityMismatch;
+	} else if (!CanonicalDirectory(sourceBase)
+		|| !CanonicalDirectory(targetBase)
+		|| (sourceAccountBasePath != sourceBase
+			&& sourceAccountBasePath != sourceBase + '/')
+		|| (targetAccountBasePath != targetBase
+			&& targetAccountBasePath != targetBase + '/')
+		|| sourceBase == targetBase
+		|| sourceBase.startsWith(targetBase + '/')
+		|| targetBase.startsWith(sourceBase + '/')) {
+		return MigrationResult::InvalidPaths;
+	}
+	const auto sourceDirectory = sourceBase + '/' + kStorageFolderName;
+	const auto targetDirectory = targetBase + '/' + kStorageFolderName;
+	const auto source = MigrationInventory(sourceDirectory, false);
+	const auto target = MigrationInventory(targetDirectory, true);
+	if (!source) {
+		return MigrationResult::UnsupportedData;
+	} else if (!target
+		|| (write && Present(QFileInfo(targetDirectory)))
+		|| (!write && *target != *source)) {
+		return MigrationResult::VerificationFailed;
+	} else if (source->empty()) {
+		return MigrationResult::Success;
+	} else if (!source->contains(kIndexName)) {
+		return MigrationResult::InvalidSource;
+	}
+	const auto sourceFolder = sourceDirectory + '/';
+	const auto targetFolder = targetDirectory + '/';
+	const auto owner = expectedUser.bare | ((environment == MTP::Environment::Test)
+		? kTestSessionOwnerBit
+		: 0ULL);
+	auto index = MigrationRecord();
+	if (!ReadMigrationRecord(kIndexName, sourceFolder, sourceKey, index)) {
+		return MigrationResult::InvalidSource;
+	}
+	auto messages = std::set<FullMsgId>();
+	auto expected = std::set<QString>{ kIndexName };
+	const auto indexed = ReadIndex(
+		index.payload.stream,
+		owner,
+		[&](FullMsgId key, Storage::FileKey file, StorageMeta, HeightRecord) {
+			if (file) {
+				expected.insert(ToFilePart(file));
+			}
+			return messages.insert(key).second;
+		});
+	if (!indexed || !index.payload.stream.atEnd() || *source != expected) {
+		return MigrationResult::InvalidSource;
+	}
+	if (write && !QDir().mkdir(targetDirectory)) {
+		return MigrationResult::DestinationIo;
+	}
+	for (const auto &name : *source) {
+		if (name == kIndexName) {
+			continue;
+		}
+		auto record = MigrationRecord();
+		if (!ReadMigrationRecord(name, sourceFolder, sourceKey, record)
+			|| !ReadRecord(record.payload.stream)
+			|| !record.payload.stream.atEnd()) {
+			return MigrationResult::InvalidSource;
+		}
+		const auto result = CompareMigrationRecord(
+			record,
+			name,
+			targetFolder,
+			targetKey,
+			write);
+		if (result != MigrationResult::Success) {
+			return result;
+		}
+	}
+	return CompareMigrationRecord(index, kIndexName, targetFolder, targetKey, write);
 }
 
 StorageDisk::StorageDisk(QString folder, MTP::AuthKeyPtr key, uint64 owner)
@@ -162,7 +426,7 @@ std::optional<StorageDisk::Area> StorageDisk::read(FullMsgId key) {
 	}
 	auto file = FileReadDescriptor();
 	auto result = ReadEncryptedFile(file, i->second.file, _folder, _key)
-		? ReadRecord(file)
+		? ReadRecord(file.stream)
 		: std::nullopt;
 	if (!result) {
 		LOG(("Tgw Error: Could not read a widget storage record."));
@@ -312,60 +576,15 @@ bool StorageDisk::readIndex() {
 	if (!ReadEncryptedFile(file, kIndexName, _folder, _key)) {
 		return false;
 	}
-	auto version = quint32();
-	auto owner = quint64();
-	auto count = quint32();
-	file.stream >> version >> owner >> count;
-	const auto entrySize = (version > 1) ? kIndexEntrySize : kIndexEntrySizeV1;
-	if (!CheckStreamStatus(file.stream)
-		|| !version
-		|| version > kIndexVersion
-		|| owner != _owner
-		|| count * entrySize > uint64(file.buffer.bytesAvailable())) {
-		return false;
-	}
 	auto entries = base::flat_map<FullMsgId, Entry>();
-	auto files = std::vector<Storage::FileKey>();
-	for (auto i = quint32(); i != count; ++i) {
-		auto peer = quint64();
-		auto msg = qint64();
-		auto entry = Entry();
-		auto topicRootId = qint64();
-		auto sublistPeerId = quint64();
-		auto from = quint64();
-		auto anchor = quint32();
-		file.stream
-			>> peer
-			>> msg
-			>> entry.file
-			>> entry.meta.date
-			>> entry.meta.expires
-			>> topicRootId
-			>> sublistPeerId
-			>> from;
-		if (version > 1) {
-			file.stream >> entry.height.height >> anchor;
-		}
-		entry.meta.topicRootId = topicRootId;
-		entry.meta.sublistPeerId = DeserializePeerId(sublistPeerId);
-		entry.meta.from = DeserializePeerId(from);
-		entry.height.bottom = (anchor == 1);
-		const auto height = entry.height.height;
-		const auto key = FullMsgId(DeserializePeerId(peer), MsgId(msg));
-		if (!CheckStreamStatus(file.stream)
-			|| !Storable(key)
-			|| !std::isfinite(height)
-			|| (height < 0.)
-			|| (anchor > 1)
-			|| (!entry.file && height <= 0.)
-			|| !entries.emplace(key, entry).second) {
-			return false;
-		} else if (entry.file) {
-			files.push_back(entry.file);
-		}
-	}
-	ranges::sort(files);
-	if (ranges::adjacent_find(files) != end(files)) {
+	const auto add = [&](
+			FullMsgId key,
+			Storage::FileKey storageFile,
+			StorageMeta meta,
+			HeightRecord height) {
+		return entries.emplace(key, Entry{ storageFile, meta, height }).second;
+	};
+	if (!ReadIndex(file.stream, _owner, add)) {
 		return false;
 	}
 	_entries = std::move(entries);

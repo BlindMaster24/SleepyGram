@@ -59,7 +59,45 @@ struct ArchiveImportCounts {
 	int deletedSkipped = 0;
 };
 
+struct ScopedArchiveAccount final {
+	ID userId = 0;
+	std::filesystem::path path;
+	Ayu::ArchiveSqlCipher::Key key;
+};
+
+class ScopedArchiveLease final {
+public:
+	ScopedArchiveLease(ScopedArchiveLease &&other) noexcept;
+	ScopedArchiveLease &operator=(ScopedArchiveLease &&other) noexcept;
+	ScopedArchiveLease(const ScopedArchiveLease &) = delete;
+	ScopedArchiveLease &operator=(const ScopedArchiveLease &) = delete;
+	~ScopedArchiveLease();
+
+private:
+	friend std::optional<ScopedArchiveLease> InstallScopedArchives(
+		std::span<const ScopedArchiveAccount> accounts);
+	explicit ScopedArchiveLease(uint64_t generation);
+	void release();
+
+	uint64_t _generation = 0;
+
+};
+
+struct ArchiveReadToken final {
+	ID userId = 0;
+	uint64_t generation = 0;
+};
+
 void initialize();
+
+void ReserveScopedArchives();
+[[nodiscard]] std::optional<ScopedArchiveLease> InstallScopedArchives(
+	std::span<const ScopedArchiveAccount> accounts);
+void CloseScopedArchives();
+[[nodiscard]] bool LegacyArchiveFiltersAvailable();
+
+[[nodiscard]] std::optional<ArchiveReadToken> CaptureArchiveRead(ID userId);
+[[nodiscard]] bool IsArchiveReadCurrent(ArchiveReadToken token);
 
 [[nodiscard]] Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
 	const std::filesystem::path &dataDirectory,
@@ -84,7 +122,8 @@ std::vector<ArchiveSearchResult> searchArchive(
 	int dateFrom,
 	int dateTo,
 	std::optional<ArchiveSearchCursor> cursor,
-	int pageLimit);
+	int pageLimit,
+	std::optional<ArchiveReadToken> read = std::nullopt);
 
 ArchiveBackupCounts archiveBackupCounts(ID userId);
 std::optional<ArchiveBackupSnapshot> archiveBackupSnapshot(

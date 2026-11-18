@@ -2401,6 +2401,7 @@ PRIVATE
     test/test_secrecy_scan.h
     test/test_session_gate.cpp
     test/test_session_gate.h
+    test/test_storage_domain_scope.cpp
     test/test_style.cpp
     test/test_style.h
     test/test_text_drop.cpp
@@ -2419,6 +2420,7 @@ PRIVATE
     test/test_wallet_intercept.h
     test/test_wallet_ready.cpp
     test/test_wallet_ready.h
+    test/test_wallet_scoped_keyring.cpp
     test/test_web_cache.cpp
     test/test_web_cache.h
     test/test_wheel.cpp

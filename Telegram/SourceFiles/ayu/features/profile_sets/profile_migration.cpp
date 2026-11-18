@@ -6,6 +6,7 @@ For license and copyright information please follow this link:
 https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/profile_migration.h"
+#include "ayu/features/profile_sets/profile_sets.h"
 
 #include "base/basic_types.h"
 
@@ -55,6 +56,7 @@ constexpr auto kPreparingProfileMarker
 constexpr auto kCutoverProfileMarker
 	= "sleepygram-profile-migration-workspace-v2 cutover-started ";
 constexpr auto kAccountsDirectoryName = "accounts";
+constexpr auto kSettingsDirectoryName = "set-settings";
 constexpr auto kWorkspaceLockName = "migration.lock";
 constexpr auto kPendingManifestName = "migration.manifest.pending";
 constexpr auto kCommittedManifestName = "migration.manifest.committed";
@@ -485,11 +487,14 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 	if (profile) {
 		const auto accounts = ManifestPath(root, kAccountsDirectoryName);
 		const auto cutover = ManifestPath(root, kCutoverDirectoryName);
+		const auto settings = ManifestPath(root, kSettingsDirectoryName);
 		if (CanonicalDirectory(accounts) != accounts
+			|| (PathPresent(settings) && CanonicalDirectory(settings) != settings)
 			|| (PathPresent(cutover) && CanonicalDirectory(cutover) != cutover)) {
 			return false;
 		}
 		allowed.emplace(QString::fromLatin1(kAccountsDirectoryName));
+		allowed.emplace(QString::fromLatin1(kSettingsDirectoryName));
 		allowed.emplace(QString::fromLatin1(kCutoverDirectoryName));
 	}
 	for (const auto &entry : entries) {
@@ -1347,6 +1352,35 @@ bool MigrationController::WithPreparingWorkspace(
 	const auto result = callback();
 	SetError(error, result ? MigrationError::None : MigrationError::CallbackFailed);
 	return result;
+}
+
+std::optional<QString> MigrationController::PrepareScopedSettingsDirectory(
+		const QByteArray &expectedTransactionId,
+		SetId setId,
+		MigrationError *error) const {
+	if (isIsolatedFixture() || !setId) {
+		SetError(error, MigrationError::InvalidInput);
+		return std::nullopt;
+	}
+	const auto root = ManifestPath(_root, kSettingsDirectoryName);
+	const auto setName = u"%1%2"_q
+		.arg(qulonglong(setId.high), 16, 16, QChar('0'))
+		.arg(qulonglong(setId.low), 16, 16, QChar('0'));
+	const auto path = QDir(root).filePath(setName);
+	const auto ready = WithCurrentGeneration(expectedTransactionId, [&] {
+		if (!PathPresent(root) && !QDir(_root).mkdir(
+				QString::fromLatin1(kSettingsDirectoryName))) {
+			return false;
+		} else if (CanonicalDirectory(root) != root) {
+			return false;
+		}
+		if (!PathPresent(path) && !QDir(root).mkdir(setName)) {
+			return false;
+		}
+		return CanonicalDirectory(path) == path
+			&& SyncDirectory(root) && SyncDirectory(_root);
+	}, error);
+	return ready ? std::optional(path) : std::nullopt;
 }
 
 QString MigrationController::workspacePath() const {

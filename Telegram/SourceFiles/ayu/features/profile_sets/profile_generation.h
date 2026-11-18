@@ -79,6 +79,9 @@ public:
 	[[nodiscard]] const QByteArray &transactionId() const {
 		return _transactionId;
 	}
+	[[nodiscard]] const QByteArray &settingsKey() const {
+		return _settingsKey;
+	}
 	[[nodiscard]] const Metadata *adminMetadata() const {
 		return _adminMetadata ? &*_adminMetadata : nullptr;
 	}
@@ -110,11 +113,13 @@ private:
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
 		QByteArray transactionId,
-		std::optional<Metadata> adminMetadata = std::nullopt);
+		std::optional<Metadata> adminMetadata = std::nullopt,
+		QByteArray settingsKey = {});
 
 	AccountStoragePlan _plan;
 	ProfileGenerationAccess _access;
 	QByteArray _transactionId;
+	QByteArray _settingsKey;
 	std::vector<Fn<void()>> _closeAdapters;
 	std::optional<Metadata> _adminMetadata;
 	bool _started = false;

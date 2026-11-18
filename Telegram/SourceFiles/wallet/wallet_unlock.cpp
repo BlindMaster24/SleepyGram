@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_domain.h"
 #include "main/main_session.h"
 #include "settings/settings_common.h"
+#include "storage/storage_account.h"
 #include "storage/storage_domain.h"
 #include "ui/boxes/confirm_box.h"
 #include "ui/controls/button_busy.h"
@@ -626,7 +627,11 @@ CustodyInstaller MakeCustodyInstaller(
 }
 
 void DropUnusedPasscode() {
-	auto &local = Core::App().domain().local();
+	auto &domain = Core::App().domain();
+	if (domain.scopedProfileReserved()) {
+		return;
+	}
+	auto &local = domain.local();
 	if (!local.hasPasscode()
 		|| local.appLockEnabled()
 		|| LiveKeyProtection() == VaultKind::Passcode) {
@@ -649,6 +654,15 @@ void WalletPasscodeBox(
 		not_null<Ui::GenericBox*> box,
 		WalletPasscodeBoxArgs args) {
 	Expects(args.passed != nullptr);
+	const auto scoped = args.show->session().local().usesScopedStorage();
+	if (scoped && args.check == WalletPasscodeCheck::KeyData) {
+		const auto cancelled = std::move(args.cancelled);
+		box->closeBox();
+		if (cancelled) {
+			cancelled();
+		}
+		return;
+	}
 
 	struct State {
 		bool reported = false;
@@ -711,6 +725,7 @@ void WalletPasscodeBox(
 	// otherwise the link would offer removal of
 	// a launch-lock passcode nobody had to prove anything for.
 	const auto forgot = (args.check == WalletPasscodeCheck::Vault
+		&& !scoped
 		&& !args.show->session().domain().local().appLockEnabled())
 		? box->addRow(
 			object_ptr<Ui::FlatLabel>(
@@ -774,12 +789,13 @@ void WalletPasscodeBox(
 	const auto submit = [=] {
 		if (state->busy || !weakSession || !args.show->valid()) {
 			return;
-		} else if (!passcodeCanTry()) {
-			showError(tr::lng_flood_error(tr::now));
-			return;
 		}
 		auto &session = args.show->session();
 		auto &vault = session.wallet().vault();
+		if (!vault.canTryPasscode()) {
+			showError(tr::lng_flood_error(tr::now));
+			return;
+		}
 		auto utf8 = field->text().toUtf8();
 		const auto cleanse = gsl::finally([&] {
 			if (!utf8.isEmpty()) {
@@ -833,13 +849,12 @@ void WalletPasscodeBox(
 				showError(tr::lng_wallet_vault_unavailable(tr::now));
 				return;
 			} else if (!ok) {
-				cSetPasscodeBadTries(cPasscodeBadTries() + 1);
-				cSetPasscodeLastTry(crl::now());
+				vault.recordPasscodeTry(false);
 				field->selectAll();
 				showError(tr::lng_passcode_wrong(tr::now));
 				return;
 			}
-			cSetPasscodeBadTries(0);
+			vault.recordPasscodeTry(true);
 			auto gate = WalletPasscodeGate();
 			if (retain) {
 				vault.setRetention(remember->checked());

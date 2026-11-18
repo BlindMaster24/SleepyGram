@@ -28,7 +28,7 @@ using ArchiveSearchCursor = AyuDatabase::ArchiveSearchCursor;
 using ArchiveSearchResult = AyuDatabase::ArchiveSearchResult;
 
 std::vector<ArchiveSearchResult> searchArchive(
-	ID userId,
+	AyuDatabase::ArchiveReadToken read,
 	const QString &searchQuery,
 	ArchiveSearchType type,
 	int dateFrom,

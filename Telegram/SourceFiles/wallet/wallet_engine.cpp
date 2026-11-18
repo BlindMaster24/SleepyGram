@@ -14,7 +14,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session.h"
 #include "storage/serialize_common.h"
 #include "storage/storage_account.h"
-#include "storage/storage_domain.h"
 #include "wallet/wallet_api.h"
 #include "wallet/wallet_key_protection.h"
 #include "wallet/wallet_vault.h"
@@ -288,7 +287,6 @@ struct ReadOutcome {
 // the old record usable and the fresh entry harmlessly orphaned.
 [[nodiscard]] StoreOutcome StoreUnderKeyring(
 		Storage::Account &local,
-		Storage::Domain &domain,
 		VaultRuntime &vault,
 		uint64 accountId,
 		const QString &storageKey,
@@ -301,6 +299,11 @@ struct ReadOutcome {
 			: Error::kAuthenticationFailed };
 	}
 	const auto reading = vault.reading();
+	if (vault.usesScopedStorage()
+		&& reading.state != KeyringReading::State::Read
+		&& reading.state != KeyringReading::State::Absent) {
+		return { .error = Error::kUnavailable };
+	}
 	auto keyring = (reading.state == KeyringReading::State::Read)
 		? vault.liveKeyring(reading.keyring)
 		: DeviceKeyring();
@@ -329,8 +332,8 @@ struct ReadOutcome {
 		}
 	});
 	if (authority.policy) {
-		if ((authority.policy->wrap.kind == VaultKind::Passcode
-				&& !domain.hasPasscode())
+		if (!vault.canInstall(authority.policy->wrap.kind)
+			|| (vault.usesScopedStorage() && !vault.canInitializeScopedKeyring())
 			|| (!keyring.entries.empty()
 				&& keyring.wrap.kind != VaultKind::Open)) {
 			return { .error = Error::kAuthenticationFailed };
@@ -939,7 +942,6 @@ public:
 		std::shared_ptr<VaultRuntime> vault)
 	: _weak(weak)
 	, _session(session)
-	, _domain(&session->domainLocal())
 	, _accountId(session->uniqueId())
 	, _vault(std::move(vault)) {
 	}
@@ -980,11 +982,9 @@ public:
 		});
 		const auto vault = _vault;
 		const auto accountId = _accountId;
-		const auto domain = _domain;
 		const auto outcome = storage([=](Storage::Account &local) {
 			return StoreUnderKeyring(
 				local,
-				*domain,
 				*vault,
 				accountId,
 				key,
@@ -1199,7 +1199,6 @@ private:
 
 	const base::weak_ptr<Engine> _weak;
 	const not_null<Main::Session*> _session; // Main thread only.
-	const not_null<Storage::Domain*> _domain; // Main thread only.
 	const uint64 _accountId;
 	const std::shared_ptr<VaultRuntime> _vault;
 
@@ -1221,7 +1220,9 @@ Engine::Engine(not_null<Main::Session*> session, not_null<Api*> api)
 : _session(session)
 , _accountId(session->uniqueId())
 , _statuslessHost(std::make_shared<StatuslessHost>(base::make_weak(this), api))
-, _vault(session->domain().walletKeyring().shared_from_this())
+, _vault(session->local().usesScopedStorage()
+	? std::make_shared<VaultRuntime>(session->account(), _accountId)
+	: session->domain().walletKeyring().shared_from_this())
 , _platformHost(std::make_shared<PlatformHost>(
 	base::make_weak(this),
 	session,

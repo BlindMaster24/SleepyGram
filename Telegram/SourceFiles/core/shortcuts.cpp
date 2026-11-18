@@ -12,6 +12,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/parse_helper.h"
 #include "base/qt/qt_possible_keys.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "core/version.h"
 #include "lang/lang_keys.h"
 #include "mainwindow.h"
@@ -30,6 +31,7 @@ namespace Shortcuts {
 namespace {
 
 constexpr auto kCountLimit = 2048; // How many shortcuts can be in json file.
+constexpr auto kScopedShortcutsKey = std::string_view("scopedShortcuts");
 
 rpl::event_stream<not_null<Request*>> RequestsStream;
 bool Paused/* = false*/;
@@ -303,6 +305,10 @@ void WriteDefaultCustomFile() {
 
 void Manager::fill() {
 	fillDefaults();
+	if (!Core::App().legacyProfileAccessAllowed()) {
+		readCustomFile();
+		return;
+	}
 
 	if (!DefaultFileIsValid()) {
 		writeDefaultFile();
@@ -452,25 +458,34 @@ void Manager::pruneListened() {
 
 bool Manager::readCustomFile() {
 	// read custom shortcuts from file if it exists or write an empty custom shortcuts file
-	QFile file(CustomFilePath());
-	if (!file.exists()) {
-		return false;
-	}
+	const auto scoped = !Core::App().legacyProfileAccessAllowed();
 	const auto guard = gsl::finally([&] {
 		if (!_errors.isEmpty()) {
-			_errors.push_front((u"While reading file '%1'..."_q
-			).arg(file.fileName()));
+			_errors.push_front(scoped
+				? u"While reading shortcut settings..."_q
+				: u"While reading file '%1'..."_q.arg(CustomFilePath()));
 		}
 	});
-	if (!file.open(QIODevice::ReadOnly)) {
-		_errors.push_back(u"Could not read the file!"_q);
-		return true;
+	auto contents = QByteArray();
+	if (scoped) {
+		contents = Core::App().settings().readPref<QByteArray>(kScopedShortcutsKey);
+		if (contents.isEmpty()) {
+			return false;
+		}
+	} else {
+		auto file = QFile(CustomFilePath());
+		if (!file.exists()) {
+			return false;
+		} else if (!file.open(QIODevice::ReadOnly)) {
+			_errors.push_back(u"Could not read the file!"_q);
+			return true;
+		}
+		contents = file.readAll();
 	}
 	auto error = QJsonParseError{ 0, QJsonParseError::NoError };
 	const auto document = QJsonDocument::fromJson(
-		base::parse::stripComments(file.readAll()),
+		base::parse::stripComments(contents),
 		&error);
-	file.close();
 
 	if (error.error != QJsonParseError::NoError) {
 		_errors.push_back((u"Failed to parse! Error: %2"_q
@@ -700,7 +715,13 @@ void Manager::writeCustomFile() {
 		}
 	}
 
-	if (shortcuts.isEmpty()) {
+	if (!Core::App().legacyProfileAccessAllowed()) {
+		Core::App().settings().writePref<QByteArray>(
+			kScopedShortcutsKey,
+			QJsonDocument(shortcuts).toJson(QJsonDocument::Compact));
+		Core::App().saveSettingsDelayed();
+		return;
+	} else if (shortcuts.isEmpty()) {
 		WriteDefaultCustomFile();
 		return;
 	}

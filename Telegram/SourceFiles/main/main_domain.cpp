@@ -28,11 +28,16 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "data/data_peer_values.h" // Data::AmPremiumValue.
 
+#include <QtCore/QFileInfo>
+#include <openssl/crypto.h>
+
+#include <array>
 #include <map>
 #include <set>
 #include <utility>
 
 // AyuGram includes
+#include "ayu/data/ayu_database.h"
 #include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_generation.h"
@@ -52,7 +57,8 @@ struct PreparedScopedAccount final {
 std::optional<PreparedScopedAccount> PrepareScopedAccount(
 		const QString &root,
 		const ProfileSets::AccountStorageTarget &target,
-		const ProfileSets::AccountKey &key) {
+		const ProfileSets::AccountKey &key,
+		std::unique_ptr<MTP::Config> *config = nullptr) {
 	const auto paths = Storage::ScopedAccountPaths(root, target.dataName);
 	if (key.id != target.id || !paths || target.paths.mode != paths->mode
 		|| target.paths.dataNameKey != paths->dataNameKey
@@ -64,7 +70,7 @@ std::optional<PreparedScopedAccount> PrepareScopedAccount(
 	}
 	auto storageKey = ProfileSets::ProfileAccountStorageKey(key);
 	const auto identity = storageKey
-		? Storage::ValidateScopedAccountForStartup(*paths, storageKey)
+		? Storage::ValidateScopedAccountForStartup(*paths, storageKey, config)
 		: std::nullopt;
 	if (!identity || !identity->userId) {
 		return std::nullopt;
@@ -76,6 +82,15 @@ std::optional<PreparedScopedAccount> PrepareScopedAccount(
 	};
 }
 
+bool FailScopedStartup(
+		ProfileSets::ProfileGenerationError *error,
+		ProfileSets::ProfileGenerationError reason) {
+	if (error) {
+		*error = reason;
+	}
+	return false;
+}
+
 } // namespace
 
 struct Domain::ScopedProfile final {
@@ -83,6 +98,7 @@ struct Domain::ScopedProfile final {
 	std::map<ProfileSets::AccountId, PreparedScopedAccount> accounts;
 	// The generation releases its prepared accounts during destruction.
 	ProfileSets::OpenedProfileGeneration generation;
+	std::optional<AyuDatabase::ScopedArchiveLease> archives;
 };
 
 Domain::Domain(const QString &dataName)
@@ -109,8 +125,10 @@ Domain::Domain(const QString &dataName)
 				Data::PeerUpdate::Flag::Username)
 			: rpl::never<Data::PeerUpdate>();
 	}) | rpl::flatten_latest(
-	) | rpl::on_next([](const Data::PeerUpdate &update) {
-		CrashReports::SetAnnotation("Username", update.peer->username());
+	) | rpl::on_next([=](const Data::PeerUpdate &update) {
+		if (!scopedProfileReserved()) {
+			CrashReports::SetAnnotation("Username", update.peer->username());
+		}
 	}, _lifetime);
 }
 
@@ -130,8 +148,6 @@ Wallet::VaultRuntime &Domain::walletKeyring() {
 }
 
 Storage::Domain &Domain::local() const {
-	Expects(!scopedProfileReserved());
-
 	return *_local;
 }
 
@@ -149,10 +165,11 @@ Storage::StartResult Domain::start(const QByteArray &passcode) {
 
 bool Domain::reserveScopedProfile() {
 	if (_profileStorageMode == ProfileStorageMode::Legacy
-		|| started() || _walletKeyring) {
+		|| started() || _walletKeyring || !_local->reserveScopedStorage()) {
 		return false;
 	}
 	_profileStorageMode = ProfileStorageMode::Scoped;
+	AyuDatabase::ReserveScopedArchives();
 	return true;
 }
 
@@ -168,7 +185,8 @@ bool Domain::prepareScopedProfile(
 	if (error) {
 		*error = Error::InvalidPlan;
 	}
-	if (Core::Quitting() || _scopedProfile || !reserveScopedProfile()) {
+	if (Core::Quitting() || _changingScopedProfile
+		|| _scopedProfile || !reserveScopedProfile()) {
 		return false;
 	}
 	const auto root = sidecar.accountStorageRoot();
@@ -215,8 +233,138 @@ bool Domain::prepareScopedProfile(
 	return true;
 }
 
+bool Domain::startPreparedScopedProfile(
+		const ProfileSets::MigrationController &sidecar,
+		ProfileSets::ProfileGenerationError *error) {
+	using Error = ProfileSets::ProfileGenerationError;
+	if (Core::Quitting() || !scopedProfileReserved() || started()
+		|| _changingScopedProfile || !_scopedProfile
+		|| _scopedProfile->access.role != ProfileSets::ProfileGenerationRole::Set
+		|| !_scopedProfile->access.setId || _scopedProfile->accounts.empty()
+		|| _scopedProfile->archives || sidecar.isIsolatedFixture()) {
+		return FailScopedStartup(error, Error::InvalidPlan);
+	}
+	const auto settingsKey = preparedScopedSettingsKey();
+	if (!Local::usesScopedSettings() || !Local::matchesScopedSettings(settingsKey)) {
+		return FailScopedStartup(error, Error::SettingsRejected);
+	}
+
+	_changingScopedProfile = true;
+	const auto reset = gsl::finally([&] { _changingScopedProfile = false; });
+	const auto launch = [&] {
+		return launchScopedAccounts(sidecar.accountStorageRoot(), settingsKey, error);
+	};
+	auto migrationError = ProfileSets::MigrationError::None;
+	if (!sidecar.WithCurrentGeneration(
+		_scopedProfile->generation.transactionId(),
+		launch,
+		&migrationError)) {
+		return (migrationError == ProfileSets::MigrationError::CallbackFailed)
+			? false
+			: FailScopedStartup(
+				error,
+				(migrationError == ProfileSets::MigrationError::StaleGeneration)
+					? Error::StaleGeneration
+					: Error::InvalidSidecar);
+	}
+	activateAfterStarting();
+	_accountsChanges.fire({});
+	if (error) {
+		*error = Error::None;
+	}
+	return true;
+}
+
+bool Domain::launchScopedAccounts(
+		const QString &root,
+		const std::shared_ptr<MTP::AuthKey> &settingsKey,
+		ProfileSets::ProfileGenerationError *error) {
+	using Error = ProfileSets::ProfileGenerationError;
+	auto &profile = *_scopedProfile;
+	const auto &plan = profile.generation.plan();
+	const auto &targets = plan.targets();
+	if (root.isEmpty() || targets.size() != profile.accounts.size()) {
+		return FailScopedStartup(error, Error::InvalidPlan);
+	}
+	struct PendingAccount {
+		PreparedScopedAccount local;
+		std::unique_ptr<MTP::Config> config;
+	};
+	using ArchiveKey = std::array<std::byte, ProfileSets::kAccountArchiveKeySize>;
+	auto archiveKeys = std::vector<ArchiveKey>(targets.size());
+	const auto wipeArchiveKeys = gsl::finally([&] {
+		for (auto &key : archiveKeys) {
+			OPENSSL_cleanse(key.data(), key.size());
+		}
+	});
+	auto archives = std::vector<AyuDatabase::ScopedArchiveAccount>();
+	auto pending = std::vector<PendingAccount>();
+	archives.reserve(targets.size());
+	pending.reserve(targets.size());
+	for (const auto &target : targets) {
+		const auto key = plan.keyFor(target.id);
+		const auto prepared = profile.accounts.find(target.id);
+		if (!key || prepared == end(profile.accounts)) {
+			return FailScopedStartup(error, Error::InvalidPlan);
+		}
+		auto config = std::unique_ptr<MTP::Config>();
+		auto account = PrepareScopedAccount(root, target, *key, &config);
+		auto &archiveKey = archiveKeys[pending.size()];
+		if (!account
+			|| account->identity.userId != prepared->second.identity.userId
+			|| account->identity.environment != prepared->second.identity.environment
+			|| !ProfileSets::DeriveAccountArchiveKey(
+				*key,
+				bytes::make_span(archiveKey))) {
+			return FailScopedStartup(error, Error::ValidationFailed);
+		}
+		const auto archive = QFileInfo(
+			account->paths.databasePath + u"archive.db"_q);
+		archives.push_back({
+			.userId = int64_t(account->identity.userId.bare),
+			.path = archive.filesystemFilePath(),
+			.key = archiveKey,
+		});
+		if (!config) {
+			config = std::make_unique<MTP::Config>(
+				MTP::Environment::Production);
+		}
+		pending.push_back({ std::move(*account), std::move(config) });
+	}
+	auto archiveLease = AyuDatabase::InstallScopedArchives(archives);
+	if (!archiveLease) {
+		return FailScopedStartup(error, Error::ValidationFailed);
+	}
+	auto accounts = std::vector<AccountWithIndex>();
+	accounts.reserve(pending.size());
+	for (auto &candidate : pending) {
+		auto &local = candidate.local;
+		auto account = std::make_unique<Account>(this, std::move(local.paths));
+		if (!account->prepareScopedToStart(
+			local.storageKey,
+			local.identity.userId)) {
+			return FailScopedStartup(error, Error::ValidationFailed);
+		}
+		accounts.push_back({
+			.index = int(accounts.size()),
+			.account = std::move(account),
+		});
+	}
+	if (Core::Quitting() || !Local::matchesScopedSettings(settingsKey)) {
+		return FailScopedStartup(error, Error::StartFailed);
+	}
+	for (auto i = size_t(0); i != accounts.size(); ++i) {
+		accounts[i].account->start(std::move(pending[i].config));
+	}
+	_accounts = std::move(accounts);
+	profile.archives = std::move(archiveLease);
+	return true;
+}
+
 void Domain::clearPreparedScopedProfile() {
-	_scopedProfile.reset();
+	if (!started() && !_changingScopedProfile) {
+		_scopedProfile.reset();
+	}
 }
 
 auto Domain::preparedScopedProfileAccess() const
@@ -231,6 +379,13 @@ auto Domain::preparedScopedAdminMetadata() const
 
 QByteArray Domain::preparedScopedProfileTransactionId() const {
 	return _scopedProfile ? _scopedProfile->generation.transactionId() : QByteArray();
+}
+
+std::shared_ptr<MTP::AuthKey> Domain::preparedScopedSettingsKey() const {
+	return _scopedProfile
+		? ProfileSets::ProfileSettingsStorageKey(
+			_scopedProfile->generation.settingsKey())
+		: nullptr;
 }
 
 int Domain::preparedScopedAccountCount() const {
@@ -280,6 +435,25 @@ bool Domain::tryPasscode(
 }
 
 void Domain::finish() {
+	if (scopedProfileReserved()) {
+		if (_changingScopedProfile) {
+			return;
+		}
+		_changingScopedProfile = true;
+		const auto reset = gsl::finally([&] { _changingScopedProfile = false; });
+		_accountToActivate = _lastActiveIndex = -1;
+		_activeLifetime.destroy();
+		auto accounts = base::take(_accounts);
+		if (!accounts.empty()) {
+			_active = nullptr;
+			_activeSessions.fire(nullptr);
+			accounts.clear();
+			Local::sync();
+			updateUnreadBadge();
+		}
+		_scopedProfile.reset();
+		return;
+	}
 	clearPreparedScopedProfile();
 	if (_walletKeyring) {
 		_walletKeyring->clear();
@@ -429,7 +603,9 @@ Account &Domain::active() const {
 }
 
 rpl::producer<not_null<Account*>> Domain::activeChanges() const {
-	return _active.changes() | rpl::map([](Account *value) {
+	return _active.changes() | rpl::filter([](Account *value) {
+		return value != nullptr;
+	}) | rpl::map([](Account *value) {
 		return not_null{ value };
 	});
 }
@@ -730,9 +906,6 @@ void Domain::checkForLastProductionConfig(
 }
 
 void Domain::maybeActivate(not_null<Main::Account*> account) {
-	if (scopedProfileReserved()) {
-		return;
-	}
 	if (Core::App().separateWindowFor(account)) {
 		activate(account);
 	} else {
@@ -743,7 +916,13 @@ void Domain::maybeActivate(not_null<Main::Account*> account) {
 }
 
 void Domain::activate(not_null<Main::Account*> account) {
-	if (scopedProfileReserved()) {
+	const auto pointer = [](
+			const AccountWithIndex &value) {
+		return value.account.get();
+	};
+	if (scopedProfileReserved()
+		&& (!_scopedProfile || !_scopedProfile->archives
+			|| !ranges::contains(_accounts, account.get(), pointer))) {
 		return;
 	}
 	if (const auto window = Core::App().separateWindowFor(account)) {
@@ -758,10 +937,10 @@ void Domain::activate(not_null<Main::Account*> account) {
 	const auto previousUserId = previousSession
 		? previousSession->userId().bare
 		: uint64(0);
-	const auto i = ranges::find(_accounts, account.get(), [](
-			const AccountWithIndex &value) {
-		return value.account.get();
-	});
+	const auto i = ranges::find(_accounts, account.get(), pointer);
+	if (scopedProfileReserved() && i == end(_accounts)) {
+		return;
+	}
 	Assert(i != end(_accounts));
 	const auto changed = (_accountToActivate != i->index);
 	auto wasAuthed = false;
@@ -780,7 +959,7 @@ void Domain::activate(not_null<Main::Account*> account) {
 		previousUserId,
 		currentSession ? currentSession->userId().bare : uint64(0));
 
-	if (changed) {
+	if (changed && !scopedProfileReserved()) {
 		if (wasAuthed) {
 			scheduleWriteAccounts();
 		} else {

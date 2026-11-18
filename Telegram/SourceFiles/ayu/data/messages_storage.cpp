@@ -21,7 +21,7 @@
 namespace AyuMessages {
 
 std::vector<ArchiveSearchResult> searchArchive(
-		ID userId,
+		AyuDatabase::ArchiveReadToken read,
 		const QString &searchQuery,
 		ArchiveSearchType type,
 		int dateFrom,
@@ -29,13 +29,14 @@ std::vector<ArchiveSearchResult> searchArchive(
 		std::optional<ArchiveSearchCursor> cursor,
 		int pageLimit) {
 	return AyuDatabase::searchArchive(
-		userId,
+		read.userId,
 		searchQuery.toStdString(),
 		type,
 		dateFrom,
 		dateTo,
 		cursor,
-		pageLimit);
+		pageLimit,
+		read);
 }
 
 template<typename DerivedMessage>

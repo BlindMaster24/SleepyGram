@@ -82,6 +82,11 @@ struct AccessWiper final {
 				|| std::is_same_v<Value, SetVaultAccess>) {
 				CleanseKeys(value.accounts);
 			}
+			if constexpr (std::is_same_v<Value, SetVaultAccess>) {
+				if (!value.settingsKey.isEmpty()) {
+					OPENSSL_cleanse(value.settingsKey.data(), value.settingsKey.size());
+				}
+			}
 		}, access);
 	}
 };
@@ -163,10 +168,12 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 		AccountStoragePlan plan,
 		ProfileGenerationAccess access,
 		QByteArray transactionId,
-		std::optional<Metadata> adminMetadata)
+		std::optional<Metadata> adminMetadata,
+		QByteArray settingsKey)
 : _plan(std::move(plan))
 , _access(access)
 , _transactionId(std::move(transactionId))
+, _settingsKey(std::move(settingsKey))
 , _adminMetadata(std::move(adminMetadata)) {
 }
 
@@ -175,6 +182,7 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 : _plan(std::move(other._plan))
 , _access(other._access)
 , _transactionId(std::move(other._transactionId))
+, _settingsKey(std::move(other._settingsKey))
 , _closeAdapters(std::move(other._closeAdapters))
 , _adminMetadata(std::move(other._adminMetadata))
 , _started(other._started)
@@ -192,6 +200,8 @@ void OpenedProfileGeneration::Close() {
 	CloseAdapters(_closeAdapters);
 	_plan.Clear();
 	_adminMetadata.reset();
+	OPENSSL_cleanse(_settingsKey.data(), _settingsKey.size());
+	_settingsKey.clear();
 	_closed = true;
 }
 
@@ -384,9 +394,10 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 			committed->transactionId,
 			std::move(admin->metadata));
 	}
+	auto &set = std::get<SetVaultAccess>(access);
 	const auto route = ProfileGenerationAccess{
 		.role = ProfileGenerationRole::Set,
-		.setId = std::get<SetVaultAccess>(access).id,
+		.setId = set.id,
 	};
 	auto planError = AccountStoragePlanError::InvalidRoot;
 	auto bindings = std::vector<AccountStorageBinding>();
@@ -411,7 +422,8 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 	}
 	SetError(error, ProfileGenerationError::None);
 	return OpenedProfileGeneration(
-		std::move(*plan), route, committed->transactionId);
+		std::move(*plan), route, committed->transactionId,
+		std::nullopt, std::move(set.settingsKey));
 }
 
 std::optional<QByteArray> CommitProfileSetChanges(

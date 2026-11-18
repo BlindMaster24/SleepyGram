@@ -603,33 +603,35 @@ void BuildSecuritySection(
 		return SectionBuilder::WidgetToAdd{};
 	});
 
-	auto passcodeHas = rpl::single(rpl::empty) | rpl::then(
-		session->domain().local().localPasscodeChanged()
-	) | rpl::map([=] {
-		return session->domain().local().hasPasscode();
-	});
-	auto passcodeLabel = rpl::combine(
-		tr::lng_settings_cloud_password_on(),
-		tr::lng_settings_cloud_password_off(),
-		rpl::duplicate(passcodeHas)
-	) | rpl::map([](const QString &on, const QString &off, bool has) {
-		return has ? on : off;
-	});
+	if (!session->domain().local().scopedStorageReserved()) {
+		auto passcodeHas = rpl::single(rpl::empty) | rpl::then(
+			session->domain().local().localPasscodeChanged()
+		) | rpl::map([=] {
+			return session->domain().local().hasPasscode();
+		});
+		auto passcodeLabel = rpl::combine(
+			tr::lng_settings_cloud_password_on(),
+			tr::lng_settings_cloud_password_off(),
+			rpl::duplicate(passcodeHas)
+		) | rpl::map([](const QString &on, const QString &off, bool has) {
+			return has ? on : off;
+		});
 
-	builder.addButton({
-		.id = u"security/passcode"_q,
-		.title = tr::lng_settings_passcode_title(),
-		.icon = { &st::menuIconLock },
-		.label = std::move(passcodeLabel),
-		.onClick = [=, passcodeHas = std::move(passcodeHas)]() mutable {
-			if (rpl::variable<bool>(std::move(passcodeHas)).current()) {
-				showOther(LocalPasscodeCheckId());
-			} else {
-				showOther(LocalPasscodeCreateId());
-			}
-		},
-		.keywords = { u"passcode"_q, u"lock"_q, u"pin"_q },
-	});
+		builder.addButton({
+			.id = u"security/passcode"_q,
+			.title = tr::lng_settings_passcode_title(),
+			.icon = { &st::menuIconLock },
+			.label = std::move(passcodeLabel),
+			.onClick = [=, passcodeHas = std::move(passcodeHas)]() mutable {
+				if (rpl::variable<bool>(std::move(passcodeHas)).current()) {
+					showOther(LocalPasscodeCheckId());
+				} else {
+					showOther(LocalPasscodeCreateId());
+				}
+			},
+			.keywords = { u"passcode"_q, u"lock"_q, u"pin"_q },
+		});
+	}
 
 	if (session->passkeys().possible()) {
 		auto passkeysLabel = rpl::combine(

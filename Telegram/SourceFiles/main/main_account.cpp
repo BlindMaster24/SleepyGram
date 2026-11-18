@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "window/window_controller.h"
 #include "media/audio/media_audio.h"
 #include "mtproto/mtproto_config.h"
+#include "mtproto/type_utils.h"
 #include "mainwidget.h"
 #include "api/api_updates.h"
 #include "ui/ui_utility.h"
@@ -72,7 +73,28 @@ std::unique_ptr<MTP::Config> Account::prepareToStart(
 	return _local->start(std::move(localKey));
 }
 
+bool Account::prepareScopedToStart(
+		const std::shared_ptr<MTP::AuthKey> &localKey,
+		UserId expectedUser) {
+	if (_mtp || _appConfig || !expectedUser
+		|| !_local->prepareScopedStart(localKey)
+		|| _sessionUserId != expectedUser) {
+		return false;
+	}
+	const auto mainDc = _mtpFields.mainDcId;
+	return (mainDc > 0)
+		&& (MTP::BareDcId(mainDc) == mainDc)
+		&& ranges::any_of(_mtpFields.keys, [&](const MTP::AuthKeyPtr &key) {
+			return key->dcId() == mainDc
+				&& ranges::any_of(key->data(), [](gsl::byte byte) {
+					return byte != gsl::byte();
+				});
+		});
+}
+
 void Account::start(std::unique_ptr<MTP::Config> config) {
+	Expects(!_local->usesScopedStorage() || (config && _sessionUserId));
+
 	_appConfig = std::make_unique<AppConfig>(this);
 	startMtp(config
 		? std::move(config)

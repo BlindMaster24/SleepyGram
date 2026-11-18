@@ -14,6 +14,7 @@ class SessionController;
 
 namespace Ayu::OfflineHistory {
 
+[[nodiscard]] bool Available(not_null<Main::Session*> session);
 void Open(
 	not_null<Window::SessionController*> controller,
 	PeerId peerId);

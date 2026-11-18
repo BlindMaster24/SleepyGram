@@ -25,6 +25,7 @@ enum class StartResult : uchar;
 } // namespace Storage
 
 namespace MTP {
+class AuthKey;
 enum class Environment : uchar;
 } // namespace MTP
 
@@ -58,12 +59,16 @@ public:
 		const Ayu::ProfileSets::MigrationController &sidecar,
 		Ayu::ProfileSets::OpenedProfileGeneration generation,
 		Ayu::ProfileSets::ProfileGenerationError *error = nullptr);
+	[[nodiscard]] bool startPreparedScopedProfile(
+		const Ayu::ProfileSets::MigrationController &sidecar,
+		Ayu::ProfileSets::ProfileGenerationError *error = nullptr);
 	void clearPreparedScopedProfile();
 	[[nodiscard]] auto preparedScopedProfileAccess() const
 		-> const Ayu::ProfileSets::ProfileGenerationAccess*;
 	[[nodiscard]] auto preparedScopedAdminMetadata() const
 		-> const Ayu::ProfileSets::Metadata*;
 	[[nodiscard]] QByteArray preparedScopedProfileTransactionId() const;
+	[[nodiscard]] std::shared_ptr<MTP::AuthKey> preparedScopedSettingsKey() const;
 	[[nodiscard]] int preparedScopedAccountCount() const;
 
 	// One passcode attempt at a time for the whole application: while the
@@ -136,6 +141,10 @@ private:
 
 	[[nodiscard]] Storage::StartResult startWith(
 		Storage::PasscodeDerivation derived);
+	[[nodiscard]] bool launchScopedAccounts(
+		const QString &root,
+		const std::shared_ptr<MTP::AuthKey> &settingsKey,
+		Ayu::ProfileSets::ProfileGenerationError *error);
 	void activateAfterStarting();
 	void closeAccountWindows(not_null<Main::Account*> account);
 
@@ -171,6 +180,7 @@ private:
 	const std::unique_ptr<Storage::Domain> _local;
 	ProfileStorageMode _profileStorageMode = ProfileStorageMode::Unopened;
 	std::unique_ptr<ScopedProfile> _scopedProfile;
+	bool _changingScopedProfile = false;
 
 	std::shared_ptr<Wallet::VaultRuntime> _walletKeyring;
 	std::vector<AccountWithIndex> _accounts;

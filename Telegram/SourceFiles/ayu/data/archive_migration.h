@@ -20,4 +20,10 @@ struct LegacyArchiveFileTarget final {
 	std::span<const LegacyArchiveFileTarget> targets,
 	const std::string &schemaSql);
 
+[[nodiscard]] ArchiveSqlCipher::Connection OpenVerifiedScopedArchive(
+	const std::filesystem::path &path,
+	int64_t userId,
+	ArchiveSqlCipher::Key key,
+	const std::string &schemaSql);
+
 } // namespace Ayu

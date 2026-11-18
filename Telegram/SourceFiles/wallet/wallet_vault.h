@@ -164,9 +164,16 @@ class VaultRuntime final
 	: public std::enable_shared_from_this<VaultRuntime> {
 public:
 	explicit VaultRuntime(Main::Domain &domain);
+	VaultRuntime(Main::Account &account, uint64 accountId);
 	~VaultRuntime();
 
+	[[nodiscard]] bool usesScopedStorage() const;
 	[[nodiscard]] KeyringReading reading() const;
+	[[nodiscard]] bool writeKeyring(const DeviceKeyring &keyring) const;
+	[[nodiscard]] bool canInstall(VaultKind kind) const;
+	[[nodiscard]] bool canInitializeScopedKeyring() const;
+	[[nodiscard]] bool canTryPasscode() const;
+	void recordPasscodeTry(bool accepted);
 	[[nodiscard]] bool unlockOpen();
 	void registerAccount(Main::Session &session);
 	void unregisterAccount(uint64 accountId);
@@ -240,10 +247,13 @@ private:
 	[[nodiscard]] bool grantValid(uint64 id) const;
 	[[nodiscard]] bool hasGrantLocked(uint64 accountId) const;
 	[[nodiscard]] bool entryLiveLocked(const DeviceKeyringEntry &entry) const;
+	void watchLockEvents();
 	void release(uint64 id);
 	void discard(std::optional<ArmedPolicy> policy);
 
 	const base::weak_ptr<Main::Domain> _domain;
+	const base::weak_ptr<Main::Account> _scopedAccount;
+	const uint64 _scopedAccountId = 0;
 	mutable std::mutex _mutex;
 	base::flat_map<uint64, AccountRecords> _accounts;
 	base::flat_map<uint64, uint64> _grants;
@@ -251,6 +261,8 @@ private:
 	std::optional<ArmedPolicy> _policy;
 	uint64 _nextGrantId = 0;
 	quint32 _clearEpoch = 0;
+	int _badPasscodeTries = 0;
+	crl::time _lastPasscodeTry = 0;
 	crl::time _retainUntil = 0;
 	bool _unusable = false;
 	base::Timer _retention;
@@ -263,10 +275,20 @@ private:
 [[nodiscard]] QString VaultSecretStorageKey(const QString &secretRef);
 
 [[nodiscard]] KeyringReading ParseDeviceKeyring(const QByteArray &serialized);
+[[nodiscard]] KeyringReading ParseScopedDeviceKeyring(
+	const QByteArray &serialized,
+	uint64 accountId);
 [[nodiscard]] QByteArray SerializeDeviceKeyring(const DeviceKeyring &keyring);
 [[nodiscard]] KeyringReading ReadDeviceKeyring(Storage::Domain &local);
 [[nodiscard]] bool WriteDeviceKeyring(
 	Storage::Domain &local,
+	const DeviceKeyring &keyring);
+[[nodiscard]] KeyringReading ReadScopedDeviceKeyring(
+	Storage::Account &local,
+	uint64 accountId);
+[[nodiscard]] bool WriteScopedDeviceKeyring(
+	Storage::Account &local,
+	uint64 accountId,
 	const DeviceKeyring &keyring);
 
 [[nodiscard]] std::optional<VaultPreparedWrap> PrepareVaultPasscodeWrap(

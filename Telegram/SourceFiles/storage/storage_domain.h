@@ -138,6 +138,9 @@ public:
 	Domain(not_null<Main::Domain*> owner, const QString &dataName);
 	~Domain();
 
+	[[nodiscard]] bool reserveScopedStorage();
+	[[nodiscard]] bool scopedStorageReserved() const;
+
 	[[nodiscard]] StartResult start(PasscodeDerivation derived);
 	void startAdded(
 		not_null<Main::Account*> account,
@@ -234,6 +237,7 @@ private:
 	quint64 _verificationNonce = 0;
 	int _oldVersion = 0;
 	bool _keyDataDirty = false;
+	bool _scopedStorageReserved = false;
 
 	rpl::event_stream<> _passcodeKeyChanged;
 

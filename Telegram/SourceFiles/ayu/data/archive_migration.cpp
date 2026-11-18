@@ -7,6 +7,7 @@
 #include <array>
 #include <optional>
 #include <set>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -88,17 +89,21 @@ bool RealDirectory(const Fs::path &path) {
 	return true;
 }
 
+bool ValidLocator(std::string_view locator) {
+	return locator.size() == 32
+		&& locator.find_first_not_of('0') != std::string_view::npos
+		&& std::ranges::all_of(locator, [](char ch) {
+			return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+		});
+}
+
 bool ValidTargets(std::span<const LegacyArchiveFileTarget> targets) {
 	auto ids = std::set<int64_t>();
 	auto locators = std::set<std::string>();
 	for (auto i = size_t(0); i != targets.size(); ++i) {
 		const auto &target = targets[i];
 		if (target.userId <= 0 || !ids.insert(target.userId).second
-			|| target.locator.size() != 32
-			|| target.locator.find_first_not_of('0') == std::string::npos
-			|| !std::ranges::all_of(target.locator, [](char ch) {
-				return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-			})
+			|| !ValidLocator(target.locator)
 			|| !locators.insert(target.locator).second
 			|| std::ranges::all_of(target.key, [](auto value) { return value == std::byte(0); })
 			|| std::ranges::any_of(targets.first(i), [&](const auto &earlier) {
@@ -238,17 +243,21 @@ bool PublishFile(const Fs::path &temporary, const Fs::path &finalPath) {
 #endif
 }
 
-Connection OpenLegacy(const Fs::path &path) {
-	if (Inspect(path) != Entry::File) {
-		return nullptr;
-	}
+bool SafeArchiveSidecars(const Fs::path &path) {
 	for (const auto suffix : { "-wal", "-shm", "-journal" }) {
 		auto sidecar = path;
 		sidecar += suffix;
 		const auto kind = Inspect(sidecar);
 		if (kind != Entry::File && kind != Entry::Missing) {
-			return nullptr;
+			return false;
 		}
+	}
+	return true;
+}
+
+Connection OpenLegacy(const Fs::path &path) {
+	if (Inspect(path) != Entry::File || !SafeArchiveSidecars(path)) {
+		return nullptr;
 	}
 	const auto name = path.u8string();
 	auto raw = static_cast<sqlite3*>(nullptr);
@@ -266,6 +275,27 @@ bool Execute(sqlite3 &database, const char *sql) {
 }
 
 using Schema = std::vector<std::array<std::string, 4>>;
+
+bool HasOnlyArchiveOwner(sqlite3 &database, int64_t userId) {
+	constexpr auto kTables = std::array{
+		"DeletedDialog",
+		"DeletedMessage",
+		"EditedMessage",
+		"SpyMessageContentsRead",
+		"SpyMessageRead",
+	};
+	return std::ranges::all_of(kTables, [&](const char *table) {
+		const auto sql = std::string("SELECT 1 FROM ") + table
+			+ " WHERE userId IS NOT ?1 OR typeof(userId) != 'integer' LIMIT 1";
+		auto raw = static_cast<sqlite3_stmt*>(nullptr);
+		const auto prepared = sqlite3_prepare_v2(&database, sql.c_str(), -1, &raw, nullptr);
+		const auto statement = std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)>(
+			raw, &sqlite3_finalize);
+		return prepared == SQLITE_OK
+			&& sqlite3_bind_int64(statement.get(), 1, userId) == SQLITE_OK
+			&& sqlite3_step(statement.get()) == SQLITE_DONE;
+	});
+}
 
 std::optional<Schema> ReadSchema(sqlite3 &database) {
 	auto raw = static_cast<sqlite3_stmt*>(nullptr);
@@ -416,6 +446,32 @@ ArchivePartitionResult StageLegacyArchiveFiles(
 		}
 	}
 	return Result::Success;
+}
+
+ArchiveSqlCipher::Connection OpenVerifiedScopedArchive(
+		const std::filesystem::path &path,
+		int64_t userId,
+		ArchiveSqlCipher::Key key,
+		const std::string &schemaSql) {
+	const auto directory = path.parent_path();
+	const auto account = directory.parent_path();
+	const auto accounts = account.parent_path();
+	auto error = std::error_code();
+	if (userId <= 0 || path.filename() != kArchiveFilename
+		|| directory.filename() != "user" || accounts.filename() != "accounts"
+		|| accounts.parent_path().filename() != "profile-sets"
+		|| !ValidLocator(account.filename().string()) || !ValidAccount(account)
+		|| !RealDirectory(directory) || Inspect(path) != Entry::File
+		|| !Fs::file_size(path, error) || error || !SafeArchiveSidecars(path)) {
+		return nullptr;
+	}
+	auto connection = ArchiveSqlCipher::Open(path, OpenMode::ReadWrite, key);
+	const auto expected = ExpectedSchema(schemaSql);
+	if (!connection || !expected || ReadSchema(*connection) != expected
+		|| !HasOnlyArchiveOwner(*connection, userId)) {
+		return nullptr;
+	}
+	return connection;
 }
 
 } // namespace Ayu

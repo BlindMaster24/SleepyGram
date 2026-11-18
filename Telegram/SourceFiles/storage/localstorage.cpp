@@ -33,6 +33,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "lang/lang_instance.h"
 
 #include <QtCore/QDirIterator>
+#include <QtCore/QFileInfo>
 #include <QtCore/QSaveFile>
 
 #ifndef Q_OS_WIN
@@ -92,6 +93,8 @@ bool _backgroundCanWrite = true;
 int32 _oldSettingsVersion = 0;
 bool _settingsRewriteNeeded = false;
 bool _settingsWriteAllowed = false;
+bool _scopedSettings = false;
+const auto kScopedPreferencesName = u"sleepy-preferences"_q;
 
 enum class WriteMapWhen {
 	Now,
@@ -351,26 +354,74 @@ void sync() {
 void finish() {
 	delete base::take(_localLoader);
 	Storage::details::Finish();
+	if (_scopedSettings) {
+		SettingsKey = nullptr;
+	}
 }
 
 void InitialLoadTheme();
 bool ApplyDefaultNightMode();
 void readLangPack();
 
-void start() {
+namespace {
+
+bool StartSettings(QString directory, MTP::AuthKeyPtr encryptionKey) {
 	Expects(_basePath.isEmpty());
 
+	const auto scoped = bool(encryptionKey);
+	if (scoped) {
+		const auto info = QFileInfo(directory);
+		if (!info.isDir() || !info.isReadable() || !info.isWritable()
+			|| info.isSymLink() || info.isJunction()
+			|| info.canonicalFilePath() != directory) {
+			return false;
+		}
+	}
 	_localLoader = new TaskQueue(kFileLoaderQueueStopTimeout);
 
-	_basePath = cWorkingDir() + u"tdata/"_q;
+	_scopedSettings = scoped;
+	_basePath = std::move(directory) + '/';
 	if (!QDir().exists(_basePath)) QDir().mkpath(_basePath);
+	const auto failRead = [&] {
+		if (scoped) {
+			delete base::take(_localLoader);
+			_basePath.clear();
+			SettingsKey = nullptr;
+			return false;
+		}
+		writeSettings();
+		return true;
+	};
 
 	ReadSettingsContext context;
 	FileReadDescriptor settingsData;
 	// We dropped old test authorizations when migrated to multi auth.
 	//const auto name = cTestMode() ? u"settings_test"_q : u"settings"_q;
 	const auto name = u"settings"_q;
-	if (!ReadFile(settingsData, name, _basePath)) {
+	if (scoped) {
+		for (const auto suffix : { 's', '0', '1' }) {
+			const auto file = QFileInfo(_basePath + name + suffix);
+			if (file.isSymLink() || file.isJunction()
+				|| (file.exists() && !file.isFile())) {
+				return failRead();
+			}
+		}
+	}
+	const auto backups = scoped
+		? LegacyBackupPolicy::Preserve
+		: LegacyBackupPolicy::RemoveAfterRead;
+	if (!ReadFile(settingsData, name, _basePath, backups)) {
+		if (scoped) {
+			for (const auto suffix : { 's', '0', '1' }) {
+				if (QFileInfo::exists(_basePath + name + suffix)) {
+					return failRead();
+				}
+			}
+			SettingsKey = std::move(encryptionKey);
+			_settingsRewriteNeeded = true;
+			ApplyDefaultNightMode();
+			return true;
+		}
 		_readOldSettings(true, context);
 		_readOldUserSettings(false, context); // needed further in _readUserSettings
 		_readOldMtpData(false, context); // needed further in _readMtpData
@@ -378,26 +429,28 @@ void start() {
 
 		_settingsRewriteNeeded = true;
 		ApplyDefaultNightMode();
-		return;
+		return true;
 	}
 	LOG(("App Info: reading settings..."));
 
 	QByteArray salt, settingsEncrypted;
 	settingsData.stream >> salt >> settingsEncrypted;
 	if (!CheckStreamStatus(settingsData.stream)) {
-		return writeSettings();
+		return failRead();
 	}
 
 	if (salt.size() != LocalEncryptSaltSize) {
 		LOG(("App Error: bad salt in settings file, size: %1").arg(salt.size()));
-		return writeSettings();
+		return failRead();
 	}
-	SettingsKey = CreateLegacyLocalKey(QByteArray(), salt);
+	SettingsKey = scoped
+		? std::move(encryptionKey)
+		: CreateLegacyLocalKey(QByteArray(), salt);
 
 	EncryptedDescriptor settings;
 	if (!DecryptLocal(settings, settingsEncrypted, SettingsKey)) {
 		LOG(("App Error: could not decrypt settings from settings file..."));
-		return writeSettings();
+		return failRead();
 	}
 
 	LOG(("App Info: reading encrypted settings..."));
@@ -405,11 +458,11 @@ void start() {
 		quint32 blockId;
 		settings.stream >> blockId;
 		if (!CheckStreamStatus(settings.stream)) {
-			return writeSettings();
+			return failRead();
 		}
 
 		if (!ReadSetting(blockId, settings.stream, settingsData.version, context)) {
-			return writeSettings();
+			return failRead();
 		}
 	}
 
@@ -429,6 +482,67 @@ void start() {
 	}
 
 	readLangPack();
+	return true;
+}
+
+} // namespace
+
+void start() {
+	const auto started = StartSettings(cWorkingDir() + u"tdata"_q, {});
+	Assert(started);
+}
+
+bool startScoped(const QString &settingsDirectory, MTP::AuthKeyPtr encryptionKey) {
+	return encryptionKey && StartSettings(
+		QDir::cleanPath(settingsDirectory), std::move(encryptionKey));
+}
+
+bool usesScopedSettings() {
+	return _scopedSettings;
+}
+
+bool matchesScopedSettings(const MTP::AuthKeyPtr &key) {
+	return _scopedSettings && !_basePath.isEmpty()
+		&& SettingsKey && SettingsKey->equals(key);
+}
+
+std::optional<QByteArray> readScopedPreferences() {
+	if (!_scopedSettings || _basePath.isEmpty() || !SettingsKey) {
+		return std::nullopt;
+	}
+	auto exists = false;
+	for (const auto suffix : { 's', '0', '1' }) {
+		const auto info = QFileInfo(_basePath + kScopedPreferencesName + suffix);
+		if (info.isSymLink() || info.isJunction() || (info.exists() && !info.isFile())) {
+			return std::nullopt;
+		}
+		exists = exists || info.exists();
+	}
+	if (!exists) {
+		return QByteArray();
+	}
+	auto file = FileReadDescriptor();
+	if (!ReadEncryptedFile(
+		file, kScopedPreferencesName, _basePath,
+		SettingsKey, LegacyBackupPolicy::Preserve)) {
+		return std::nullopt;
+	}
+	auto data = QByteArray();
+	file.stream >> data;
+	return (file.stream.status() == QDataStream::Ok && file.stream.atEnd())
+		? std::optional(std::move(data))
+		: std::nullopt;
+}
+
+bool writeScopedPreferences(const QByteArray &contents) {
+	if (!readScopedPreferences()) {
+		return false;
+	}
+	auto data = EncryptedDescriptor(Serialize::bytearraySize(contents));
+	data.stream << contents;
+	auto file = FileWriteDescriptor(kScopedPreferencesName, _basePath, true);
+	file.writeEncrypted(data, SettingsKey);
+	return file.finish();
 }
 
 void writeSettings() {
@@ -448,7 +562,7 @@ void writeSettings() {
 
 	if (!QDir().exists(_basePath)) QDir().mkpath(_basePath);
 
-    AyuSettings::save();
+	AyuSettings::save();
 
 	// We dropped old test authorizations when migrated to multi auth.
 	//const auto name = cTestMode() ? u"settings_test"_q : u"settings"_q;
@@ -457,7 +571,9 @@ void writeSettings() {
 	if (_settingsSalt.isEmpty() || !SettingsKey) {
 		_settingsSalt.resize(LocalEncryptSaltSize);
 		base::RandomFill(_settingsSalt.data(), _settingsSalt.size());
-		SettingsKey = CreateLegacyLocalKey(QByteArray(), _settingsSalt);
+		if (!_scopedSettings) {
+			SettingsKey = CreateLegacyLocalKey(QByteArray(), _settingsSalt);
+		}
 	}
 	settings.writeData(_settingsSalt);
 

@@ -124,6 +124,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/ayu_infra.h"
 #include "ayu/ayu_settings.h"
 #include "ayu/features/profile_sets/profile_migration.h"
+#include "ayu/features/profile_sets/profile_generation.h"
 #include "ayu/features/streamer_mode/streamer_mode.h"
 
 
@@ -230,11 +231,17 @@ Application::Application()
 , _langCloudManager(std::make_unique<Lang::CloudManager>(langpack()))
 , _emojiKeywords(std::make_unique<ChatHelpers::EmojiKeywords>())
 , _tray(std::make_unique<Tray>())
+, _passcodeLock(!legacyProfileAccessAllowed())
 , _setupEmailLock(false)
 , _autoLockTimer([=] { checkAutoLock(); }) {
-	if (!legacyProfileAccessAllowed()) {
-		return;
+	if (legacyProfileAccessAllowed()) {
+		initializeDesktop();
 	}
+}
+
+void Application::initializeDesktop() {
+	Expects(!_desktopInitialized);
+	_desktopInitialized = true;
 	Ui::Integration::Set(&_private->uiIntegration);
 	_private->proxyRotation = std::make_unique<ProxyRotationManager>();
 
@@ -250,7 +257,9 @@ Application::Application()
 
 	passcodeLockChanges(
 	) | rpl::on_next([=] {
-		_notifications->updateAll();
+		if (_notifications) {
+			_notifications->updateAll();
+		}
 		updateWindowTitles();
 	}, _lifetime);
 
@@ -310,8 +319,8 @@ void Application::closeAdditionalWindows() {
 }
 
 Application::~Application() {
-	if (!legacyProfileAccessAllowed()) {
-		_blockedProfileWindow.reset();
+	_blockedProfileWindow.reset();
+	if (!_desktopInitialized) {
 		Instance = nullptr;
 		return;
 	}
@@ -328,7 +337,9 @@ Application::~Application() {
 	_closingAsyncWindows.clear();
 	_windows.clear();
 	_mediaView = nullptr;
-	_notifications->clearAllFast();
+	if (_notifications) {
+		_notifications->clearAllFast();
+	}
 
 	// We must manually destroy all windows before going further.
 	// DestroyWindow on Windows (at least with an active WebView) enters
@@ -342,7 +353,9 @@ Application::~Application() {
 	_domain->finish();
 	MTP::WebProxy::Transport::Shutdown();
 
-	Local::finish();
+	if (_localStorageStarted) {
+		Local::finish();
+	}
 
 	Shortcuts::Finish();
 
@@ -372,7 +385,10 @@ void Application::run() {
 			if (sidecar) {
 				_blockedProfileWindow = Window::CreateScopedProfileLockWindow(
 					_domain.get(),
-					std::move(*sidecar));
+					std::move(*sidecar),
+					[this](const MigrationController &sidecar) {
+						return startScopedDesktop(sidecar);
+					});
 			}
 		}
 		if (!_blockedProfileWindow) {
@@ -381,22 +397,58 @@ void Application::run() {
 		_blockedProfileWindow->show();
 		return;
 	}
+	runDesktop(nullptr, {}, {});
+}
+
+bool Application::startScopedDesktop(const MigrationController &sidecar) {
+	const auto access = _domain->preparedScopedProfileAccess();
+	if (!access || !access->setId || _desktopInitialized || Quitting()) {
+		return false;
+	}
+	auto key = _domain->preparedScopedSettingsKey();
+	if (!key) {
+		return false;
+	}
+	auto directory = sidecar.PrepareScopedSettingsDirectory(
+		_domain->preparedScopedProfileTransactionId(),
+		*access->setId);
+	if (!directory) {
+		return false;
+	}
+	cRefStartUrls().clear();
+	runDesktop(&sidecar, std::move(*directory), std::move(key));
+	return _scopedDesktopUnlocked;
+}
+
+void Application::runDesktop(
+		const MigrationController *sidecar,
+		QString settingsDirectory,
+		MTP::AuthKeyPtr settingsKey) {
 	// Depends on OpenSSL on macOS, so on ThirdParty::start().
 	// Depends on notifications settings.
 	_notifications = std::make_unique<Window::Notifications::System>();
 
-	startLocalStorage();
+	if (!startLocalStorage(std::move(settingsDirectory), std::move(settingsKey))) {
+		_notifications.reset();
+		Quit();
+		return;
+	}
+	if (sidecar) {
+		initializeDesktop();
+	}
 
 	style::SetCustomFont(settings().customFontFamily());
 	style::internal::StartFonts();
 
-	Test::ApplyStartupOverrides();
+	if (!sidecar) {
+		Test::ApplyStartupOverrides();
+	}
 
 	ValidateScale();
 
 	refreshGlobalProxy(); // Depends on app settings being read.
 
-	if (const auto old = Local::oldSettingsVersion(); old < AppVersion) {
+	if (const auto old = Local::oldSettingsVersion(); !sidecar && old < AppVersion) {
 		autoRegisterUrlScheme();
 		Platform::NewVersionLaunched(old);
 	}
@@ -405,7 +457,7 @@ void Application::run() {
 		cSetAutoStart(false);
 	}
 
-	if (cLaunchMode() == LaunchModeAutoStart && Platform::AutostartSkip()) {
+	if (!sidecar && cLaunchMode() == LaunchModeAutoStart && Platform::AutostartSkip()) {
 		Platform::AutostartToggle(false);
 		Quit();
 		return;
@@ -425,9 +477,11 @@ void Application::run() {
 	startEmojiImageLoader();
 	startSystemDarkModeViewer();
 	Media::Player::start(_audio.get());
-	Media::Encode::ClearStaleTempFiles();
-	Storage::ClearStaleArchiveFiles();
-	Webview::ClearStaleTemporaryStorage();
+	if (!sidecar) {
+		Media::Encode::ClearStaleTempFiles();
+		Storage::ClearStaleArchiveFiles();
+		Webview::ClearStaleTemporaryStorage();
+	}
 
 	if (MediaControlsManager::Supported()) {
 		_mediaControlsManager = std::make_unique<MediaControlsManager>();
@@ -463,7 +517,9 @@ void Application::run() {
 	[[maybe_unused]] const auto &webviewAvailability
 		= Core::CachedWebviewAvailability();
 
-	_savedWindows = std::make_unique<Window::SavedWindows>(this);
+	if (!sidecar) {
+		_savedWindows = std::make_unique<Window::SavedWindows>(this);
+	}
 
 	_windows.emplace(nullptr, std::make_unique<Window::Controller>());
 	setLastActiveWindow(_windows.front().second.get());
@@ -512,7 +568,17 @@ void Application::run() {
 
 	DEBUG_LOG(("Application Info: window created..."));
 
-	startDomain();
+	if (sidecar) {
+		if (!_domain->startPreparedScopedProfile(*sidecar)) {
+			Quit();
+			return;
+		}
+		_scopedDesktopUnlocked = true;
+		startSettingsAndBackground();
+		clearPasscodeLock();
+	} else {
+		startDomain();
+	}
 	startTray();
 
 	_lastActivePrimaryWindow->firstShow();
@@ -553,10 +619,11 @@ void Application::run() {
 
 	processCreatedWindow(_lastActivePrimaryWindow);
 
-	_savedWindows->startRestore();
-
-	Test::Fire(u"launch_finished"_q);
-	Test::Start();
+	if (_savedWindows) {
+		_savedWindows->startRestore();
+		Test::Fire(u"launch_finished"_q);
+		Test::Start();
+	}
 }
 
 void Application::autoRegisterUrlScheme() {
@@ -741,6 +808,9 @@ void Application::createTray() {
 }
 
 void Application::activate() {
+	if (!legacyProfileAccessAllowed() && !_scopedDesktopUnlocked) {
+		return;
+	}
 	for (const auto &window : _windowStack) {
 		if (window == _lastActiveWindow) {
 			break;
@@ -855,6 +925,9 @@ bool Application::eventFilter(QObject *object, QEvent *e) {
 
 	case QEvent::FileOpen: {
 		if (object == QCoreApplication::instance()) {
+			if (!legacyProfileAccessAllowed()) {
+				return true;
+			}
 			if (_urlsToOpen.isEmpty()) {
 				InvokeQueued(this, [=] {
 					const auto activateRequired = ranges::any_of(
@@ -942,7 +1015,7 @@ void Application::saveSettingsDelayed(crl::time delay) {
 }
 
 void Application::saveSettings() {
-	if (legacyProfileAccessAllowed()) {
+	if (_localStorageStarted) {
 		Local::writeSettings();
 	}
 }
@@ -1048,13 +1121,21 @@ void Application::badMtprotoConfigurationError(const MTP::ProxyData &proxy) {
 	}
 }
 
-void Application::startLocalStorage() {
-	Ui::GL::DetectLastCheckCrash();
-	Local::start();
+bool Application::startLocalStorage(
+		QString settingsDirectory,
+		MTP::AuthKeyPtr settingsKey) {
+	if (legacyProfileAccessAllowed()) {
+		Ui::GL::DetectLastCheckCrash();
+		Local::start();
+	} else if (!Local::startScoped(std::move(settingsDirectory), std::move(settingsKey))) {
+		return false;
+	}
+	_localStorageStarted = true;
 	_saveSettingsTimer.emplace([=] { saveSettings(); });
 	settings().saveDelayedRequests() | rpl::on_next([=] {
 		saveSettingsDelayed();
 	}, _lifetime);
+	return true;
 }
 
 void Application::startEmojiImageLoader() {
@@ -1487,6 +1568,25 @@ void Application::updateWindowTitles() {
 
 void Application::lockByPasscode() {
 	if (!legacyProfileAccessAllowed()) {
+		if (_scopedDesktopUnlocked && !Quitting()) {
+			_scopedDesktopUnlocked = false;
+			SetLaunchState(LaunchState::QuitRequested);
+			_passcodeLock = true;
+			cRefStartUrls().clear();
+			if (_mediaView) {
+				_mediaView->close();
+			}
+			_calls->hidePanelLayers();
+			enumerateWindows([](not_null<Window::Controller*> window) {
+				window->widget()->hide();
+				window->setupPasscodeLock();
+			});
+			_notifications->clearAllFast();
+			cSetRestartingUpdate(false);
+			cSetRestarting(true);
+			cSetRestartingToSettings(false);
+			Sandbox::QuitWhenStarted();
+		}
 		return;
 	}
 	_passcodeLock = true;
@@ -1526,7 +1626,7 @@ bool Application::legacyProfileAccessAllowed() const {
 }
 
 bool Application::passcodeLocked() const {
-	return !legacyProfileAccessAllowed() || _passcodeLock.current();
+	return _passcodeLock.current();
 }
 
 void Application::updateNonIdle() {
@@ -1551,9 +1651,6 @@ rpl::producer<bool> Application::passcodeLockChanges() const {
 }
 
 rpl::producer<bool> Application::passcodeLockValue() const {
-	if (!legacyProfileAccessAllowed()) {
-		return rpl::single(true);
-	}
 	return _passcodeLock.value();
 }
 
@@ -2368,7 +2465,8 @@ void Application::RegisterUrlScheme() {
 
 bool IsAppLaunched() {
 	return Application::Instance
-		&& Application::Instance->legacyProfileAccessAllowed();
+		&& (Application::Instance->legacyProfileAccessAllowed()
+			|| Application::Instance->_scopedDesktopUnlocked);
 }
 
 Application &App() {

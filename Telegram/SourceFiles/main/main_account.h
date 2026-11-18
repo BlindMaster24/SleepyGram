@@ -46,6 +46,9 @@ public:
 		const QByteArray &passcode);
 	[[nodiscard]] std::unique_ptr<MTP::Config> prepareToStart(
 		std::shared_ptr<MTP::AuthKey> localKey);
+	[[nodiscard]] bool prepareScopedToStart(
+		const std::shared_ptr<MTP::AuthKey> &localKey,
+		UserId expectedUser);
 	void prepareToStartAdded(
 		std::shared_ptr<MTP::AuthKey> localKey);
 	void start(std::unique_ptr<MTP::Config> config);

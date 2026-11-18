@@ -759,6 +759,10 @@ void PasscodeBox::save(bool force) {
 	if (_cloudFields.customShow && !_cloudFields.customShow->valid()) {
 		return;
 	}
+	if (!_cloudPwd && _session->domain().local().scopedStorageReserved()) {
+		closeBox();
+		return;
+	}
 	if (_setRequest) return;
 
 	QString old = _oldPasscode->text(), pwd = _newPasscode->text(), conf = _reenterPasscode->text();

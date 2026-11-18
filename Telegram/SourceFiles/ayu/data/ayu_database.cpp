@@ -11,7 +11,9 @@
 #include "base/unixtime.h"
 
 #include <algorithm>
+#include <map>
 #include <mutex>
+#include <set>
 #include <type_traits>
 #include <utility>
 
@@ -183,13 +185,110 @@ std::string ArchiveSchemaSql() {
 	return sql;
 }
 
-} // namespace
+using ArchiveStorage = decltype(MakeStorage(std::string()));
 
-auto storage = MakeStorage("./tdata/ayudata.db");
+struct ArchiveConnectionHolder final : sqlite_orm::internal::connection_holder {
+	static void Adopt(connection_holder &holder, sqlite3 *database) {
+		holder.*(&ArchiveConnectionHolder::db) = database;
+		holder.*(&ArchiveConnectionHolder::_retain_count) = 1;
+	}
+};
+
+class ScopedArchiveStorage final : public ArchiveStorage {
+public:
+	ScopedArchiveStorage(ArchiveStorage schema, Ayu::ArchiveSqlCipher::Connection opened)
+	: ArchiveStorage(schema)
+	, _opened(std::move(opened)) {
+		// Retaining the native handle keeps sqlite_orm from reopening the file without its key.
+		ArchiveConnectionHolder::Adopt(*connection, _opened.get());
+	}
+
+private:
+	Ayu::ArchiveSqlCipher::Connection _opened;
+
+};
+
+struct ArchiveRuntime final {
+	bool scoped = false;
+	uint64_t generation = 1;
+	std::unique_ptr<ArchiveStorage> legacy;
+	std::map<ID, std::unique_ptr<ScopedArchiveStorage>> accounts;
+};
+
+ArchiveRuntime archiveRuntime;
+
+ArchiveStorage &LegacyStorage() {
+	if (!archiveRuntime.legacy) {
+		archiveRuntime.legacy = std::make_unique<ArchiveStorage>(
+			MakeStorage("./tdata/ayudata.db"));
+	}
+	return *archiveRuntime.legacy;
+}
+
+ArchiveStorage *ArchiveForUser(ID userId) {
+	if (!archiveRuntime.scoped) {
+		return &LegacyStorage();
+	}
+	const auto i = archiveRuntime.accounts.find(userId);
+	return (i == archiveRuntime.accounts.end()) ? nullptr : i->second.get();
+}
+
+bool CurrentArchiveRead(AyuDatabase::ArchiveReadToken token) {
+	return token.generation == archiveRuntime.generation
+		&& (!archiveRuntime.scoped || archiveRuntime.accounts.contains(token.userId));
+}
+
+void CloseScopedArchiveBatch() {
+	archiveRuntime.accounts.clear();
+	++archiveRuntime.generation;
+}
+
+void ReserveScopedArchiveRuntime() {
+	if (!archiveRuntime.scoped) {
+		archiveRuntime.scoped = true;
+		++archiveRuntime.generation;
+		archiveRuntime.legacy.reset();
+	}
+}
+
+bool DistinctArchiveAccounts(std::span<const AyuDatabase::ScopedArchiveAccount> accounts) {
+	auto users = std::set<ID>();
+	for (auto i = size_t(0); i != accounts.size(); ++i) {
+		const auto &account = accounts[i];
+		if (account.userId <= 0 || !users.insert(account.userId).second
+			|| std::ranges::any_of(accounts.first(i), [&](const auto &earlier) {
+				auto error = std::error_code();
+				return std::ranges::equal(account.key, earlier.key)
+					|| std::filesystem::equivalent(account.path, earlier.path, error)
+					|| error;
+			})) {
+			return false;
+		}
+	}
+	return true;
+}
+
+void RotateLegacyDatabase() {
+	const auto time = base::unixtime::now();
+
+	if (QFile::exists("./tdata/ayudata.db")) {
+		QFile::rename("./tdata/ayudata.db", QString("./tdata/ayudata_%1.db").arg(time));
+	}
+
+	if (QFile::exists("./tdata/ayudata.db-shm")) {
+		QFile::rename("./tdata/ayudata.db-shm", QString("./tdata/ayudata_%1.db-shm").arg(time));
+	}
+
+	if (QFile::exists("./tdata/ayudata.db-wal")) {
+		QFile::rename("./tdata/ayudata.db-wal", QString("./tdata/ayudata_%1.db-wal").arg(time));
+	}
+}
+
+} // namespace
 
 namespace AyuMigrations {
 
-void migrateToV1(decltype(storage) &storage) {
+void migrateToV1(ArchiveStorage &storage) {
 	// drop RegexFilter table as we've added primary_key()
 	try {
 		storage.drop_table_if_exists("RegexFilter");
@@ -201,8 +300,8 @@ void migrateToV1(decltype(storage) &storage) {
 
 }
 
-void runMigrations(decltype(storage) &storage) {
-	const std::map<int, Fn<void(decltype(storage) &)>> migrations = {
+void runMigrations(ArchiveStorage &storage) {
+	const std::map<int, Fn<void(ArchiveStorage &)>> migrations = {
 		{1, AyuMigrations::migrateToV1},
 	};
 
@@ -239,7 +338,7 @@ void runMigrations(decltype(storage) &storage) {
 			} catch (...) {
 				storage.rollback();
 				LOG(("Failed to apply migration for version: %1.").arg(v));
-				AyuDatabase::moveCurrentDatabase();
+				RotateLegacyDatabase();
 
 				return;
 			}
@@ -249,6 +348,94 @@ void runMigrations(decltype(storage) &storage) {
 
 namespace AyuDatabase {
 
+ScopedArchiveLease::ScopedArchiveLease(uint64_t generation)
+: _generation(generation) {
+}
+
+ScopedArchiveLease::ScopedArchiveLease(ScopedArchiveLease &&other) noexcept
+: _generation(std::exchange(other._generation, 0)) {
+}
+
+ScopedArchiveLease &ScopedArchiveLease::operator=(ScopedArchiveLease &&other) noexcept {
+	if (this != &other) {
+		release();
+		_generation = std::exchange(other._generation, 0);
+	}
+	return *this;
+}
+
+ScopedArchiveLease::~ScopedArchiveLease() {
+	release();
+}
+
+void ScopedArchiveLease::release() {
+	if (_generation) {
+		std::lock_guard lock(databaseMutex);
+		if (_generation == archiveRuntime.generation) {
+			CloseScopedArchiveBatch();
+		}
+		_generation = 0;
+	}
+}
+
+void ReserveScopedArchives() {
+	std::lock_guard lock(databaseMutex);
+	ReserveScopedArchiveRuntime();
+}
+
+std::optional<ScopedArchiveLease> InstallScopedArchives(
+		std::span<const ScopedArchiveAccount> accounts) {
+	std::lock_guard lock(databaseMutex);
+	ReserveScopedArchiveRuntime();
+	CloseScopedArchiveBatch();
+	try {
+		if (!DistinctArchiveAccounts(accounts)) {
+			return std::nullopt;
+		}
+		auto prepared = decltype(archiveRuntime.accounts)();
+		const auto schema = ArchiveSchemaSql();
+		for (const auto &account : accounts) {
+			auto opened = Ayu::OpenVerifiedScopedArchive(
+				account.path, account.userId, account.key, schema);
+			if (!opened) {
+				return std::nullopt;
+			}
+			const auto encoded = account.path.u8string();
+			const auto filename = std::string(
+				reinterpret_cast<const char*>(encoded.data()), encoded.size());
+			prepared.emplace(account.userId, std::make_unique<ScopedArchiveStorage>(
+				MakeStorage(filename), std::move(opened)));
+		}
+		archiveRuntime.accounts = std::move(prepared);
+		return ScopedArchiveLease(archiveRuntime.generation);
+	} catch (const std::exception &) {
+		return std::nullopt;
+	}
+}
+
+void CloseScopedArchives() {
+	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		CloseScopedArchiveBatch();
+	}
+}
+
+bool LegacyArchiveFiltersAvailable() {
+	std::lock_guard lock(databaseMutex);
+	return !archiveRuntime.scoped;
+}
+
+std::optional<ArchiveReadToken> CaptureArchiveRead(ID userId) {
+	std::lock_guard lock(databaseMutex);
+	const auto token = ArchiveReadToken{ userId, archiveRuntime.generation };
+	return CurrentArchiveRead(token) ? std::optional(token) : std::nullopt;
+}
+
+bool IsArchiveReadCurrent(ArchiveReadToken token) {
+	std::lock_guard lock(databaseMutex);
+	return CurrentArchiveRead(token);
+}
+
 Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
 		const std::filesystem::path &dataDirectory,
 		std::span<const Ayu::LegacyArchiveFileTarget> targets) {
@@ -257,23 +444,18 @@ Ayu::ArchivePartitionResult StageLegacyArchivePartitions(
 }
 
 void moveCurrentDatabase() {
-	const auto time = base::unixtime::now();
-
-	if (QFile::exists("./tdata/ayudata.db")) {
-		QFile::rename("./tdata/ayudata.db", QString("./tdata/ayudata_%1.db").arg(time));
-	}
-
-	if (QFile::exists("./tdata/ayudata.db-shm")) {
-		QFile::rename("./tdata/ayudata.db-shm", QString("./tdata/ayudata_%1.db-shm").arg(time));
-	}
-
-	if (QFile::exists("./tdata/ayudata.db-wal")) {
-		QFile::rename("./tdata/ayudata.db-wal", QString("./tdata/ayudata_%1.db-wal").arg(time));
+	std::lock_guard lock(databaseMutex);
+	if (!archiveRuntime.scoped) {
+		RotateLegacyDatabase();
 	}
 }
 
 void initialize() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.sync_schema(true);
 
@@ -282,7 +464,7 @@ void initialize() {
 		storage.sync_schema(true);
 	} catch (const std::exception &ex) {
 		LOG(("Database initialization failed: %1").arg(ex.what()));
-		moveCurrentDatabase();
+		RotateLegacyDatabase();
 
 		storage.sync_schema(true);
 		if (!storage.get_pointer<SchemaVersion>(1)) {
@@ -299,6 +481,11 @@ void initialize() {
 
 void addEditedMessage(const EditedMessage &message) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(message.userId);
+	if (!database) {
+		return;
+	}
+	auto &storage = *database;
 	try {
 		storage.begin_transaction();
 		storage.insert(message);
@@ -314,6 +501,11 @@ void addEditedMessage(const EditedMessage &message) {
 
 std::vector<EditedMessage> getEditedMessages(ID userId, ID dialogId, ID messageId, ID minId, ID maxId, int totalLimit) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		return storage.get_all<EditedMessage>(
 			where(
@@ -341,6 +533,11 @@ std::vector<EditedMessage> getEditedMessages(
 		int totalLimit,
 		const std::string &searchQuery) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		const auto latestPerMessage = in(
 			column<EditedMessage>(&EditedMessage::fakeId),
@@ -400,6 +597,11 @@ std::vector<EditedMessage> getEditedMessageRevisions(
 		ID maxId,
 		int totalLimit) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		return storage.get_all<EditedMessage>(
 			where(
@@ -419,6 +621,11 @@ std::vector<EditedMessage> getEditedMessageRevisions(
 
 bool hasRevisions(ID userId, ID dialogId, ID messageId) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		return !storage.select(
 			columns(column<EditedMessage>(&EditedMessage::messageId)),
@@ -437,6 +644,11 @@ bool hasRevisions(ID userId, ID dialogId, ID messageId) {
 
 void addDeletedMessage(const DeletedMessage &message) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(message.userId);
+	if (!database) {
+		return;
+	}
+	auto &storage = *database;
 	try {
 		storage.begin_transaction();
 		storage.insert(message);
@@ -452,6 +664,11 @@ void addDeletedMessage(const DeletedMessage &message) {
 
 std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicId, ID minId, ID maxId, int totalLimit, const std::string &searchQuery) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		if (searchQuery.empty()) {
 			return storage.get_all<DeletedMessage>(
@@ -496,6 +713,11 @@ std::vector<DeletedMessage> getDeletedMessages(ID userId, ID dialogId, ID topicI
 
 bool hasDeletedMessages(ID userId, ID dialogId, ID topicId) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		return !storage.select(
 			columns(column<DeletedMessage>(&DeletedMessage::dialogId)),
@@ -514,6 +736,11 @@ bool hasDeletedMessages(ID userId, ID dialogId, ID topicId) {
 
 void removeDeletedMessage(ID userId, ID dialogId, ID messageId) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return;
+	}
+	auto &storage = *database;
 	try {
 		storage.remove_all<DeletedMessage>(
 			where(
@@ -529,6 +756,11 @@ void removeDeletedMessage(ID userId, ID dialogId, ID messageId) {
 
 void clearDeletedMessages(ID userId, ID dialogId, ID topicId) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return;
+	}
+	auto &storage = *database;
 	try {
 		storage.remove_all<DeletedMessage>(
 			where(
@@ -548,8 +780,18 @@ std::vector<ArchiveSearchResult> searchArchive(
 		int dateFrom,
 		int dateTo,
 		std::optional<ArchiveSearchCursor> cursor,
-		int pageLimit) {
+		int pageLimit,
+		std::optional<ArchiveReadToken> read) {
 	std::lock_guard lock(databaseMutex);
+	if ((archiveRuntime.scoped && !read)
+		|| (read && (read->userId != userId || !CurrentArchiveRead(*read)))) {
+		return {};
+	}
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	const auto pageSize = std::clamp(pageLimit, 1, 100);
 	const auto hasCursor = cursor.has_value();
 	const auto cursorDate = hasCursor ? cursor->date : 0;
@@ -676,6 +918,11 @@ std::vector<ArchiveSearchResult> searchArchive(
 
 ArchiveBackupCounts archiveBackupCounts(ID userId) {
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		return {
 			.edited = int(storage.count<EditedMessage>(
@@ -696,6 +943,11 @@ std::optional<ArchiveBackupSnapshot> archiveBackupSnapshot(
 		return std::nullopt;
 	}
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		auto result = ArchiveBackupSnapshot();
 		result.edited = storage.get_all<EditedMessage>(
@@ -739,6 +991,11 @@ ArchiveImportCounts importArchiveSnapshot(
 		return result;
 	}
 	std::lock_guard lock(databaseMutex);
+	const auto database = ArchiveForUser(userId);
+	if (!database) {
+		return {};
+	}
+	auto &storage = *database;
 	try {
 		storage.begin_transaction();
 		auto editedRows = storage.get_all<EditedMessage>(
@@ -801,6 +1058,10 @@ ArchiveImportCounts importArchiveSnapshot(
 template<typename T>
 std::vector<T> getAllT() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.get_all<T>();
 	} catch (std::exception &ex) {
@@ -819,6 +1080,10 @@ std::vector<RegexFilterGlobalExclusion> getAllFiltersExclusions() {
 
 std::vector<RegexFilter> getExcludedByDialogId(ID dialogId) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.get_all<RegexFilter>(
 			where(in(&RegexFilter::id,
@@ -835,6 +1100,10 @@ std::vector<RegexFilter> getExcludedByDialogId(ID dialogId) {
 
 int getCount() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.count<RegexFilter>();
 	} catch (std::exception &ex) {
@@ -845,6 +1114,10 @@ int getCount() {
 
 RegexFilter getById(std::vector<char> id) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.get<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::id) == std::move(id))
@@ -857,6 +1130,10 @@ RegexFilter getById(std::vector<char> id) {
 
 std::vector<RegexFilter> getShared() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.get_all<RegexFilter>(
 			where(is_null(column<RegexFilter>(&RegexFilter::dialogId)))
@@ -869,6 +1146,10 @@ std::vector<RegexFilter> getShared() {
 
 std::vector<RegexFilter> getByDialogId(ID dialogId) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return storage.get_all<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::dialogId) == dialogId)
@@ -881,6 +1162,10 @@ std::vector<RegexFilter> getByDialogId(ID dialogId) {
 
 void addRegexFilter(const RegexFilter &filter) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.begin_transaction();
 		storage.replace(filter); // we're using replace as we set std::vector<char> as primary key
@@ -896,6 +1181,10 @@ void addRegexFilter(const RegexFilter &filter) {
 
 void addRegexExclusion(const RegexFilterGlobalExclusion &exclusion) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.begin_transaction();
 		storage.insert(exclusion);
@@ -911,6 +1200,10 @@ void addRegexExclusion(const RegexFilterGlobalExclusion &exclusion) {
 
 void updateRegexFilter(const RegexFilter &filter) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.update_all(
 			set(
@@ -929,6 +1222,10 @@ void updateRegexFilter(const RegexFilter &filter) {
 
 void deleteFilter(const std::vector<char> &id) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.remove_all<RegexFilter>(
 			where(column<RegexFilter>(&RegexFilter::id) == id)
@@ -940,6 +1237,10 @@ void deleteFilter(const std::vector<char> &id) {
 
 void deleteExclusionsByFilterId(const std::vector<char> &id) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>(
 			where(column<RegexFilterGlobalExclusion>(&RegexFilterGlobalExclusion::filterId) == id)
@@ -951,6 +1252,10 @@ void deleteExclusionsByFilterId(const std::vector<char> &id) {
 
 void deleteExclusion(ID dialogId, std::vector<char> filterId) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>(
 			where(column<RegexFilterGlobalExclusion>(&RegexFilterGlobalExclusion::filterId) == filterId and
@@ -964,6 +1269,10 @@ void deleteExclusion(ID dialogId, std::vector<char> filterId) {
 
 void deleteAllFilters() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.remove_all<RegexFilter>();
 	} catch (std::exception &ex) {
@@ -973,6 +1282,10 @@ void deleteAllFilters() {
 
 void deleteAllExclusions() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return;
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.remove_all<RegexFilterGlobalExclusion>();
 	} catch (std::exception &ex) {
@@ -984,6 +1297,10 @@ bool replaceAllRegexFilters(
 		const std::vector<RegexFilter> &filters,
 		const std::vector<RegexFilterGlobalExclusion> &exclusions) {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		storage.begin_transaction();
 		storage.remove_all<RegexFilterGlobalExclusion>();
@@ -1008,6 +1325,10 @@ bool replaceAllRegexFilters(
 
 bool hasFilters() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return !storage.select(
 			columns(column<RegexFilter>(&RegexFilter::id)),
@@ -1021,6 +1342,10 @@ bool hasFilters() {
 
 bool hasPerDialogFilters() {
 	std::lock_guard lock(databaseMutex);
+	if (archiveRuntime.scoped) {
+		return {};
+	}
+	auto &storage = LegacyStorage();
 	try {
 		return
 			!storage.select(

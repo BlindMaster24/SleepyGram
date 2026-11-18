@@ -53,7 +53,8 @@ class ScopedProfileLockWindow final : public PreLaunchWindow {
 public:
 	ScopedProfileLockWindow(
 		not_null<Main::Domain*> domain,
-		ProfileSets::MigrationController sidecar);
+		ProfileSets::MigrationController sidecar,
+		Fn<bool(const ProfileSets::MigrationController &)> startSet);
 	~ScopedProfileLockWindow() override;
 
 protected:
@@ -71,6 +72,7 @@ private:
 
 	const not_null<Main::Domain*> _domain;
 	const ProfileSets::MigrationController _sidecar;
+	const Fn<bool(const ProfileSets::MigrationController &)> _startSet;
 	const not_null<PreLaunchLabel*> _status;
 	const not_null<PreLaunchInput*> _passcode;
 	const not_null<QListWidget*> _sets;
@@ -83,9 +85,11 @@ private:
 
 ScopedProfileLockWindow::ScopedProfileLockWindow(
 		not_null<Main::Domain*> domain,
-		ProfileSets::MigrationController sidecar)
+		ProfileSets::MigrationController sidecar,
+		Fn<bool(const ProfileSets::MigrationController &)> startSet)
 : _domain(domain)
 , _sidecar(std::move(sidecar))
+, _startSet(std::move(startSet))
 , _status(new PreLaunchLabel(this))
 , _passcode(new PreLaunchInput(this, true))
 , _sets(new QListWidget(this))
@@ -206,8 +210,13 @@ void ScopedProfileLockWindow::showPreparedProfile() {
 		_sets->setVisible(!metadata->sets.empty());
 	} else if (_domain->preparedScopedAccountCount() == 0) {
 		_status->setText(u"This set has no accounts."_q);
+	} else if (_startSet(_sidecar)) {
+		hide();
+		return;
 	} else {
-		_status->setText(u"Accounts in this set cannot start in this version."_q);
+		clearProfile();
+		showForm(u"Local data could not be opened."_q);
+		return;
 	}
 	_lock->setFocus();
 }
@@ -234,8 +243,12 @@ void ScopedProfileLockWindow::closeEvent(QCloseEvent *e) {
 
 std::unique_ptr<PreLaunchWindow> CreateScopedProfileLockWindow(
 		not_null<Main::Domain*> domain,
-		ProfileSets::MigrationController sidecar) {
-	return std::make_unique<ScopedProfileLockWindow>(domain, std::move(sidecar));
+		ProfileSets::MigrationController sidecar,
+		Fn<bool(const ProfileSets::MigrationController &)> startSet) {
+	return std::make_unique<ScopedProfileLockWindow>(
+		domain,
+		std::move(sidecar),
+		std::move(startSet));
 }
 
 PasscodeAttempt TryPasscode(

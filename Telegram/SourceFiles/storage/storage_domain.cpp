@@ -423,7 +423,30 @@ Domain::Domain(not_null<Main::Domain*> owner, const QString &dataName)
 
 Domain::~Domain() = default;
 
+bool Domain::reserveScopedStorage() {
+	if (_scopedStorageReserved) {
+		return true;
+	} else if (_localKey
+		|| _keyData->legacy
+		|| !_keyData->openKeyEncrypted.isEmpty()
+		|| !_keyData->passcodeWraps.empty()) {
+		return false;
+	}
+	_scopedStorageReserved = true;
+	_keyData.reset();
+	_verificationNonce = 0;
+	_oldVersion = 0;
+	return true;
+}
+
+bool Domain::scopedStorageReserved() const {
+	return _scopedStorageReserved;
+}
+
 StartResult Domain::start(PasscodeDerivation derived) {
+	if (_scopedStorageReserved) {
+		return StartResult::IncorrectPasscode;
+	}
 	const auto modern = startModern(derived);
 	if (modern == StartModernResult::Success) {
 		if (_keyData->legacy || _keyDataDirty || _oldVersion < AppVersion) {
@@ -449,6 +472,9 @@ StartResult Domain::start(PasscodeDerivation derived) {
 void Domain::startAdded(
 		not_null<Main::Account*> account,
 		std::unique_ptr<MTP::Config> config) {
+	if (_scopedStorageReserved) {
+		return;
+	}
 	Expects(_localKey != nullptr);
 
 	account->prepareToStartAdded(_localKey);
@@ -773,6 +799,9 @@ Domain::StartModernResult Domain::startModern(
 }
 
 void Domain::writeAccounts() {
+	if (_scopedStorageReserved) {
+		return;
+	}
 	Expects(!_owner->accounts().empty());
 	Expects(!_keyData->openKeyEncrypted.isEmpty()
 		|| !_keyData->passcodeWraps.empty());
@@ -868,6 +897,9 @@ bool Domain::wrapOnDiskOpensLocalKey(
 
 WalletEngineValue Domain::readWalletKeyring() const {
 	using State = WalletEngineValue::State;
+	if (_scopedStorageReserved) {
+		return { .state = State::Broken };
+	}
 	const auto name = ComputeWalletKeyringName(_dataName);
 	const auto path = BaseGlobalPath();
 	const auto base = path + name;
@@ -891,6 +923,9 @@ WalletEngineValue Domain::readWalletKeyring() const {
 }
 
 bool Domain::writeWalletKeyring(const QByteArray &bytes) const {
+	if (_scopedStorageReserved) {
+		return false;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto path = BaseGlobalPath();
@@ -909,6 +944,9 @@ bool Domain::writeWalletKeyring(const QByteArray &bytes) const {
 }
 
 bool Domain::removeWalletKeyring() {
+	if (_scopedStorageReserved) {
+		return false;
+	}
 	const auto base = BaseGlobalPath() + ComputeWalletKeyringName(_dataName);
 	auto result = true;
 	for (const auto suffix : { 's', '0', '1' }) {
@@ -921,6 +959,9 @@ bool Domain::removeWalletKeyring() {
 }
 
 void Domain::startFromScratch() {
+	if (_scopedStorageReserved) {
+		return;
+	}
 	if (!removeWalletKeyring()) {
 		LOG(("Wallet Error: could not remove the discarded device keyring."));
 	}
@@ -947,10 +988,16 @@ std::unique_ptr<PasscodeWrap> Domain::wrapToOpen() const {
 }
 
 PasscodeDerivation Domain::prepareOpen(const QByteArray &passcode) const {
+	if (_scopedStorageReserved) {
+		return PasscodeDerivation(nullptr, {});
+	}
 	return PasscodeDerivation(wrapToOpen(), passcode);
 }
 
 PasscodeDerivation Domain::prepareNewWrap(const QByteArray &passcode) const {
+	if (_scopedStorageReserved) {
+		return PasscodeDerivation(nullptr, {});
+	}
 	return PasscodeDerivation(
 		std::make_unique<PasscodeWrap>(PasscodeWrap{
 			.kdf = DefaultPasscodeKdf(),
@@ -973,6 +1020,9 @@ PasscodeDerivation Domain::prepareNewWrap(const QByteArray &passcode) const {
 // opens it. That state reports a passcode with the app lock armed, and this
 // leg is what lets the lock it arms be opened by the passcode that armed it.
 bool Domain::checkPasscode(PasscodeDerivation derived) const {
+	if (_scopedStorageReserved) {
+		return false;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto wrap = wrapToOpen();
@@ -1018,6 +1068,9 @@ SetPasscodeResult Domain::setPasscode(
 SetPasscodeResult Domain::setPasscode(
 		PasscodeDerivation derived,
 		PasscodeVerification verification) {
+	if (_scopedStorageReserved) {
+		return SetPasscodeResult::Failed;
+	}
 	Expects(!derived.empty());
 
 	return changePasscode(&derived, verification);
@@ -1050,6 +1103,9 @@ SetPasscodeResult Domain::setPasscode(
 SetPasscodeResult Domain::changePasscode(
 		PasscodeDerivation *derived,
 		PasscodeVerification verification) {
+	if (_scopedStorageReserved) {
+		return SetPasscodeResult::Failed;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto singleUse = gsl::finally([&] { _verificationNonce = 0; });
@@ -1119,6 +1175,9 @@ SetPasscodeResult Domain::installPasscode(
 
 SetPasscodeResult Domain::createPasscodeWithoutAppLock(
 		PasscodeDerivation derived) {
+	if (_scopedStorageReserved) {
+		return SetPasscodeResult::Failed;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto singleUse = gsl::finally([&] { _verificationNonce = 0; });
@@ -1147,6 +1206,9 @@ SetPasscodeResult Domain::createPasscodeWithoutAppLock(
 SetPasscodeResult Domain::setAppLockEnabled(
 		bool enabled,
 		PasscodeVerification verification) {
+	if (_scopedStorageReserved) {
+		return SetPasscodeResult::Failed;
+	}
 	Expects(_localKey != nullptr);
 
 	const auto singleUse = gsl::finally([&] { _verificationNonce = 0; });
@@ -1188,6 +1250,9 @@ SetPasscodeResult Domain::setAppLockEnabled(
 // name instead of being reachable through setPasscode(). The write stays
 // checked so failure does not claim the passcode was removed.
 void Domain::clearPasscodeAfterReset() {
+	if (_scopedStorageReserved) {
+		return;
+	}
 	Expects(_localKey != nullptr);
 
 	auto updated = *_keyData;
@@ -1221,11 +1286,15 @@ rpl::producer<> Domain::localPasscodeChanged() const {
 }
 
 bool Domain::hasPasscode() const {
-	return !_keyData->passcodeWraps.empty() || _keyData->legacyPasscode;
+	return _scopedStorageReserved
+		|| !_keyData->passcodeWraps.empty()
+		|| _keyData->legacyPasscode;
 }
 
 bool Domain::appLockEnabled() const {
-	return _keyData->legacyPasscode || !_keyData->openKeyVerified;
+	return _scopedStorageReserved
+		|| _keyData->legacyPasscode
+		|| !_keyData->openKeyVerified;
 }
 
 bool Domain::hasLocalPasscode() const {

@@ -15,6 +15,7 @@ class History;
 class PreLaunchWindow;
 
 namespace Ayu::ProfileSets {
+class MigrationController;
 enum class ProfileStartupMode : uchar;
 } // namespace Ayu::ProfileSets
 
@@ -387,7 +388,16 @@ private:
 	void clearEmojiSourceImages();
 	[[nodiscard]] auto prepareEmojiSourceImages()
 		-> std::shared_ptr<Ui::Emoji::UniversalImages>;
-	void startLocalStorage();
+	void initializeDesktop();
+	[[nodiscard]] bool startScopedDesktop(
+		const Ayu::ProfileSets::MigrationController &sidecar);
+	void runDesktop(
+		const Ayu::ProfileSets::MigrationController *sidecar,
+		QString settingsDirectory,
+		MTP::AuthKeyPtr settingsKey);
+	[[nodiscard]] bool startLocalStorage(
+		QString settingsDirectory,
+		MTP::AuthKeyPtr settingsKey);
 	void startShortcuts();
 	void startDomain();
 	void startEmojiImageLoader();
@@ -421,6 +431,9 @@ private:
 
 	static Application *Instance;
 	const Ayu::ProfileSets::ProfileStartupMode _profileStartupMode;
+	bool _desktopInitialized = false;
+	bool _localStorageStarted = false;
+	bool _scopedDesktopUnlocked = false;
 	struct InstanceSetter {
 		InstanceSetter(not_null<Application*> instance) {
 			Expects(Instance == nullptr);

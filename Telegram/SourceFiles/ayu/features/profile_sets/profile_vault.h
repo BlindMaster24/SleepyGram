@@ -82,6 +82,7 @@ struct SetVaultAccess final {
 	SetId id;
 	std::vector<AccountKey> accounts;
 	std::vector<AccountVaultLocator> locators;
+	QByteArray settingsKey;
 	quint32 version = kProfileVaultVersion;
 };
 

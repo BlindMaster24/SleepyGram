@@ -5408,7 +5408,9 @@ void Session::resetCustodyAfterForgottenPasscode(
 		Fn<void(CustodyResetResult)> done) {
 	const auto weak = base::make_weak(_session);
 	const auto current = [weak] {
-		return weak && !weak->domain().local().appLockEnabled()
+		return weak
+			&& !weak->local().usesScopedStorage()
+			&& !weak->domain().local().appLockEnabled()
 			&& LiveKeyProtection() == VaultKind::Passcode;
 	};
 	if (custodyBusy() || !current()) {
@@ -5455,6 +5457,10 @@ void Session::resetDeviceCustody(
 		const std::shared_ptr<CommentScope> &scope,
 		Fn<bool()> current,
 		Fn<void(CustodyResetResult)> done) {
+	if (vault().usesScopedStorage()) {
+		done(CustodyResetResult::Refused);
+		return;
+	}
 	struct State {
 		std::vector<base::weak_ptr<Main::Session>> sessions;
 		int pending = 0;
@@ -5659,7 +5665,7 @@ const CustodyStore &Session::custody() {
 		if (!_custody) {
 			LOG(("Wallet Error: custody store unreadable, treating as empty."));
 			_custody = CustodyStore();
-		} else {
+		} else if (!vault().usesScopedStorage()) {
 			DropPreVaultCustody(_session->local(), *_custody);
 		}
 	}

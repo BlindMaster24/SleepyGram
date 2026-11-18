@@ -206,6 +206,7 @@ int RunChecks() {
 		granted && error == ProfileGenerationError::None
 		&& granted->access().role == ProfileGenerationRole::Set
 		&& granted->access().setId == SetId{ 1, 1 }
+		&& granted->settingsKey().size() == kProfileVaultKeySize
 		&& !granted->adminMetadata()
 		&& granted->plan().targets().size() == 1
 		&& granted->plan().targets().front().id == AccountId{ 4, 1 }
@@ -217,7 +218,7 @@ int RunChecks() {
 	}
 	granted->Close();
 	check("generation-close-calls-adapter-cleanup", closeCalls
-		== std::vector<AccountId>{ { 4, 1 } });
+		== std::vector<AccountId>{ { 4, 1 } } && granted->settingsKey().isEmpty());
 
 	const auto empty = OpenCommittedProfileGeneration(
 		*sidecar,
@@ -241,6 +242,7 @@ int RunChecks() {
 		&& master->access().role == ProfileGenerationRole::Master
 		&& !master->access().setId
 		&& master->plan().targets().empty()
+		&& master->settingsKey().isEmpty()
 		&& master->adminMetadata() && *master->adminMetadata() == fixture->metadata
 		&& adapterCalls.size() == 1);
 	if (!master) {

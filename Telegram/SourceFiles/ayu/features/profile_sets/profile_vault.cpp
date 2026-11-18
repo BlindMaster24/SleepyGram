@@ -53,6 +53,8 @@ constexpr auto kAdminPayloadContext = quint32(1);
 constexpr auto kSetPayloadContext = quint32(2);
 constexpr auto kLocatorRecordSize = 16 + kAccountVaultLocatorSize;
 constexpr auto kGrantKeyRecordSize = 16 + kProfileVaultKeySize;
+constexpr auto kSettingsKeyTrailerSize = 1 + kProfileVaultKeySize;
+constexpr auto kSettingsKeyTrailerVersion = char(1);
 
 using AccountKeysById = std::map<AccountId, const AccountKey*>;
 using LocatorsById = std::map<AccountId, const AccountVaultLocator*>;
@@ -451,7 +453,8 @@ std::optional<ParsedAdminPayload> ParseAdminPayload(
 QByteArray SerializeSetPayload(
 		SetId id,
 		const QByteArray &keyring,
-		const std::vector<AccountVaultLocator> &locators) {
+		const std::vector<AccountVaultLocator> &locators,
+		const QByteArray &settingsKey) {
 	auto result = QByteArray();
 	AppendUint32(result, kSetPayloadContext);
 	AppendUint64(result, id.high);
@@ -462,6 +465,8 @@ QByteArray SerializeSetPayload(
 		AppendUint64(result, locator.id.low);
 		result.append(locator.value);
 	}
+	result.append(kSettingsKeyTrailerVersion);
+	result.append(settingsKey);
 	return result;
 }
 
@@ -781,6 +786,7 @@ std::optional<SealedSetGrant> SealSetGrant(
 		const AccountSet &set,
 		const AccountKeysById &accounts,
 		const LocatorsById &locators,
+		const DerivedCredential &admin,
 		const QByteArray &grantKey) {
 	auto subset = std::vector<AccountKey>();
 	auto scopedLocators = std::vector<AccountVaultLocator>();
@@ -797,7 +803,18 @@ std::optional<SealedSetGrant> SealSetGrant(
 	if (keyring.isEmpty()) {
 		return std::nullopt;
 	}
-	auto plaintext = SerializeSetPayload(set.id, keyring, scopedLocators);
+	auto label = QByteArray("SleepyGram scoped settings v1");
+	label.append(vault.id);
+	AppendUint64(label, set.id.high);
+	AppendUint64(label, set.id.low);
+	auto settingsKey = HmacSha256(admin.key, label);
+	const auto wipeSettingsKey = gsl::finally([&] {
+		OPENSSL_cleanse(settingsKey.data(), settingsKey.size());
+	});
+	if (settingsKey.size() != kProfileVaultKeySize || AllZero(settingsKey)) {
+		return std::nullopt;
+	}
+	auto plaintext = SerializeSetPayload(set.id, keyring, scopedLocators, settingsKey);
 	auto sealed = SealedBlob();
 	auto grant = SealedSetGrant{ .id = set.id, .verifier = set.verifier };
 	const auto ok = Seal(grantKey, SetAad(vault, grant), plaintext, &sealed);
@@ -930,7 +947,7 @@ std::optional<ProfileVault> RewriteVault(
 		if (retain && old->second->accounts == set.accounts) {
 			vault.grants.push_back(*previousGrants.at(set.id));
 		} else {
-			auto grant = SealSetGrant(vault, set, accountKeys, locatorsById, key);
+			auto grant = SealSetGrant(vault, set, accountKeys, locatorsById, admin, key);
 			if (!grant) {
 				SetError(error, ProfileVaultError::InvalidGrant);
 				return std::nullopt;
@@ -1192,11 +1209,14 @@ ProfileVaultAccess OpenProfileVault(
 		OPENSSL_cleanse(plaintext.data(), plaintext.size());
 	});
 	const auto legacy = (vault.version == kLegacyProfileVaultVersion);
-	const auto parsed = ParseSetPayload(plaintext, legacy);
+	auto parsed = ParseSetPayload(plaintext, legacy);
 	if (!parsed || parsed->id != grant->id) {
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
 	}
+	const auto wipePayload = gsl::finally([&] {
+		OPENSSL_cleanse(parsed->locators.data(), parsed->locators.size());
+	});
 	auto keyringKey = legacy
 		? CredentialKeyringKey(credential, vault, grant->id)
 		: SetKeyringKey(grantKey);
@@ -1206,11 +1226,22 @@ ProfileVaultAccess OpenProfileVault(
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
 	}
+	const auto locatorSize = qsizetype(accounts->size()) * kLocatorRecordSize;
+	auto settingsKey = QByteArray();
+	if (!legacy && parsed->locators.size() == locatorSize + kSettingsKeyTrailerSize
+		&& parsed->locators[locatorSize] == kSettingsKeyTrailerVersion) {
+		settingsKey = parsed->locators.right(kProfileVaultKeySize);
+		OPENSSL_cleanse(
+			parsed->locators.data() + locatorSize,
+			kSettingsKeyTrailerSize);
+		parsed->locators.truncate(locatorSize);
+	}
 	auto locators = legacy
 		? std::optional(std::vector<AccountVaultLocator>())
 		: ParseLocators(parsed->locators, *accounts);
-	if (!locators) {
+	if (!locators || (!settingsKey.isEmpty() && AllZero(settingsKey))) {
 		CleanseAccountKeys(*accounts);
+		OPENSSL_cleanse(settingsKey.data(), settingsKey.size());
 		SetError(error, ProfileVaultError::AuthenticationFailed);
 		return WrongPassword();
 	}
@@ -1219,6 +1250,7 @@ ProfileVaultAccess OpenProfileVault(
 		.id = grant->id,
 		.accounts = std::move(*accounts),
 		.locators = std::move(*locators),
+		.settingsKey = std::move(settingsKey),
 		.version = vault.version,
 	};
 }
