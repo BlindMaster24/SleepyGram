@@ -57,7 +57,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Test plural-key preflight
+      - name: Test language key preflight
         run: python3 .github/ci/test_preflight_lang.py
       - name: Test build diagnostics
         run: python3 .github/ci/test_build_diagnostics.py
@@ -69,7 +69,7 @@ jobs:
         run: python3 .github/ci/test_prune_macos_qt_sources.py
       - name: Test macOS Swift runtime packaging
         run: python3 .github/ci/test_macos_swift_runtime.py
-      - name: Check plural string forms
+      - name: Check language forms and subset keys
         run: python3 .github/ci/preflight_lang.py Telegram/Resources/langs/lang.strings
 
   linux-x64:

@@ -42,12 +42,12 @@ void AvatarCornersPreview::paintEvent(QPaintEvent *e) {
 	p.drawText(
 		row.nameLeft + xShift,
 		row.nameTop + st::semiboldFont->ascent,
-		tr::sleepy_releases(tr::now));
+		tr::lng_sleepy_releases(tr::now));
 
 	p.setPen(st::dialogsTextFg);
 	p.setFont(st::dialogsTextFont);
 	p.drawText(
 		row.textLeft + xShift,
 		row.textTop + st::dialogsTextFont->ascent,
-		tr::sleepy_avatar_preview(tr::now));
+		tr::lng_sleepy_avatar_preview(tr::now));
 }

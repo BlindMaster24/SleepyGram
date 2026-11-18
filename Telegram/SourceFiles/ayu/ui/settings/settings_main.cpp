@@ -148,7 +148,7 @@ void BuildLinks(SectionBuilder &builder) {
 	});
 	builder.addButton({
 		.id = u"sleepy/source"_q,
-		.title = tr::sleepy_source_code(),
+		.title = tr::lng_sleepy_source_code(),
 		.icon = { &st::menuIconIpAddress },
 		.onClick = [] {
 			QDesktopServices::openUrl(
@@ -157,7 +157,7 @@ void BuildLinks(SectionBuilder &builder) {
 	});
 	builder.addButton({
 		.id = u"sleepy/issues"_q,
-		.title = tr::sleepy_report_issue(),
+		.title = tr::lng_sleepy_report_issue(),
 		.icon = { &st::menuIconChats },
 		.onClick = [] {
 			QDesktopServices::openUrl(

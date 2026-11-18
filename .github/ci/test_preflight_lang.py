@@ -1,9 +1,19 @@
 import unittest
 
-from preflight_lang import plural_key_errors
+from preflight_lang import plural_key_errors, subset_key_errors
 
 
 class PluralPreflightTests(unittest.TestCase):
+    def test_reports_keys_omitted_by_language_subsets(self):
+        lines = [
+            '"lng_sleepy_source_code" = "Source Code";',
+            '"ayu_CrashReporting" = "Crash Reporting";',
+            '"sleepy_source_code" = "Source Code";',
+        ]
+        self.assertEqual(subset_key_errors(lines), [(
+            3, "sleepy_source_code", "use lng_ or ayu_ for generated language subsets",
+        )])
+
     def test_accepts_complete_plural_forms(self):
         lines = [
             '"lng_count#one" = "{count} item";',

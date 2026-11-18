@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Catch the plural-key shape rejected by codegen_lang before building."""
+"""Check plural forms and prefixes supported by codegen_lang subsets."""
 
 import argparse
 import re
@@ -11,6 +11,16 @@ KEY_VALUE = re.compile(
     r'"(?P<value>[^"\\]*(?:\\.[^"\\]*)*)"'
 )
 PLURAL_TAGS = {"zero", "one", "two", "few", "many", "other"}
+SUBSET_PREFIXES = ("lng_", "ayu_")
+
+
+def subset_key_errors(lines):
+    errors = []
+    for number, line in enumerate(lines, 1):
+        match = KEY_VALUE.match(line)
+        if match and not match["key"].startswith(SUBSET_PREFIXES):
+            errors.append((number, match["key"], "use lng_ or ayu_ for generated language subsets"))
+    return errors
 
 
 def plural_key_errors(lines):
@@ -59,9 +69,12 @@ def check_file(path):
             f"::error file={path},line={number}::plural key '{key}': "
             f"{reason} (codegen_lang error 806)"
         )
-    if failures:
+    subset_failures = subset_key_errors(lines)
+    for number, key, reason in subset_failures:
+        print(f"::error file={path},line={number}::language key '{key}': {reason}")
+    if failures or subset_failures:
         return 1
-    print(f"Plural-key preflight passed: {path}")
+    print(f"Language key preflight passed: {path}")
     return 0
 
 

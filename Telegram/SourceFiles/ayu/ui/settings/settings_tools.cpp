@@ -549,7 +549,7 @@ void ExportTransferSettings(
 void BuildTools(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	const auto controller = builder.controller();
 
-	builder.addSubsectionTitle(tr::sleepy_archive_and_transfer());
+	builder.addSubsectionTitle(tr::lng_sleepy_archive_and_transfer());
 	builder.addButton({
 		.id = u"ayu/archiveSearch"_q,
 		.title = tr::ayu_ArchiveSearchTitle(),
@@ -654,7 +654,7 @@ void BuildTools(SectionBuilder &builder, AyuSectionBuilder &ayu) {
 	builder.addSkip();
 	builder.addDivider();
 	builder.addSkip();
-	builder.addSubsectionTitle(tr::sleepy_maintenance());
+	builder.addSubsectionTitle(tr::lng_sleepy_maintenance());
 	BuildCrashReporting(builder, ayu);
 	builder.addButton({
 		.id = u"ayu/registerUrlScheme"_q,

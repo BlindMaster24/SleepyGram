@@ -76,7 +76,7 @@ MessagePreview::MessagePreview(
 
 	const auto releasesUser = HistoryView::GenerateUser(
 		history,
-		tr::sleepy_releases(tr::now));
+		tr::lng_sleepy_releases(tr::now));
 	const auto messageItem = history->addNewLocalMessage({
 		.id = history->nextNonHistoryEntryId(),
 		.flags = (MessageFlag::FakeHistoryItem
