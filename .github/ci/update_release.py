@@ -136,9 +136,16 @@ def publish(args: argparse.Namespace) -> None:
     commit = existing_tag(repo, tag)
     if commit is not None and commit != sha:
         raise ValueError(f"Tag {tag} points at a different commit.")
+    notes = args.repo_root / "docs" / "releases" / f"{tag}.md"
+    body = notes.read_text(encoding="utf-8").strip() if notes.is_file() else ""
+    run_id = os.environ["GITHUB_RUN_ID"]
+    if not run_id.isdecimal():
+        raise ValueError("Invalid release workflow run ID.")
+    build = f"[`{sha[:10]}` · GitHub Actions](https://github.com/{repo}/actions/runs/{run_id})"
+    body = f"{body}\n\n{build}" if body else build
     api_id = gh_api(repo, "releases", "--method", "POST", "-f", f"tag_name={tag}",
                     "-f", f"target_commitish={sha}", "-F", "draft=true", "-F", "prerelease=false",
-                    "-f", f"name=SleepyGram {tag}", "-f", f"body=SleepyGram build for {sha}.")["id"]
+                    "-f", f"name=SleepyGram {tag}", "-f", f"body={body}")["id"]
     print(f"Created draft release {tag} (ID {api_id}).", flush=True)
     subprocess.run(["gh", "release", "upload", tag, "--repo", repo, *assets.values()], check=True)
     check_uploaded_assets(list_release_items(repo, f"releases/{api_id}/assets"), assets)

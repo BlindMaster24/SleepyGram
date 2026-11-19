@@ -137,7 +137,11 @@ class SignedUpdateTests(unittest.TestCase):
         args = argparse.Namespace(directory=self.output, repo_root=REPO)
         draft = {"id": 1, "draft": True, "prerelease": False, "tag_name": tag}
         public = {**draft, "draft": False}
-        environment = {"GITHUB_SHA": sha, "GITHUB_REPOSITORY": "slpkbt/SleepyGram"}
+        environment = {
+            "GITHUB_SHA": sha,
+            "GITHUB_REPOSITORY": "slpkbt/SleepyGram",
+            "GITHUB_RUN_ID": "12345",
+        }
         for good_upload in (False, True):
             with self.subTest(good_upload=good_upload):
                 with patch.dict(os.environ, environment), redirect_stdout(io.StringIO()), \
@@ -151,6 +155,11 @@ class SignedUpdateTests(unittest.TestCase):
                         self.assertEqual(api.call_count, 1)
                     else:
                         publish(args)
+                        body = next(value[5:] for value in api.call_args_list[0].args if value.startswith("body="))
+                        self.assertIn("/actions/runs/12345", body)
+                        notes = REPO / "docs" / "releases" / f"{tag}.md"
+                        if notes.is_file():
+                            self.assertTrue(body.startswith(notes.read_text(encoding="utf-8").strip()))
                         self.assertEqual(api.call_args_list[-1].args[-1], "releases/latest")
                         self.assertIn("make_latest=true", api.call_args_list[-2].args)
 
