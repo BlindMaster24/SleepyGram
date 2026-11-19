@@ -2682,6 +2682,14 @@ void InnerWidget::mousePressEvent(QMouseEvent *e) {
 	setPeerSearchPressed(_peerSearchSelected, _selectedRightButton);
 	setPreviewPressed(_previewSelected);
 	setSearchedPressed(_searchedSelected);
+	_pressedSearchMessageId = FullMsgId();
+	if (e->button() == Qt::LeftButton
+		&& base::in_range(_searchedPressed, 0, _searchResults.size())) {
+		_dragStart = e->pos();
+		if (const auto item = _searchResults[_searchedPressed]->item()) {
+			_pressedSearchMessageId = item->fullId();
+		}
+	}
 	setCommunityPressed(_communitySelected);
 	_pressedMorePosts = _selectedMorePosts;
 	_pressedChatTypeFilter = _selectedChatTypeFilter;
@@ -3251,22 +3259,36 @@ void InnerWidget::mousePressReleased(
 	setPreviewPressed(-1);
 	auto searchedPressed = _searchedPressed;
 	setSearchedPressed(-1);
+	const auto pressedSearchMessageId = base::take(_pressedSearchMessageId);
 	auto communityPressed = _communityPressed;
 	setCommunityPressed(-1);
 	const auto pressedMorePosts = _pressedMorePosts;
 	_pressedMorePosts = false;
 	const auto pressedChatTypeFilter = _pressedChatTypeFilter;
 	_pressedChatTypeFilter = false;
+	const auto releasedAt = mapFromGlobal(globalPosition);
+	const auto releasedSearchResult = [&] {
+		if (!rect().contains(releasedAt)
+			|| releasedAt.y() < searchedOffset()) {
+			return -1;
+		}
+		const auto index = (releasedAt.y() - searchedOffset()) / _st->height;
+		return base::in_range(index, 0, _searchResults.size()) ? index : -1;
+	}();
 	auto searchMessageSelectionToggled = false;
 	if (!wasDragging
 		&& button == Qt::LeftButton
+		&& pressedSearchMessageId
 		&& base::in_range(searchedPressed, 0, _searchResults.size())
+		&& searchedPressed == releasedSearchResult
+		&& (releasedAt - _dragStart).manhattanLength()
+			< QApplication::startDragDistance()
 		&& ((modifiers.testFlag(Qt::ControlModifier)
 				|| modifiers.testFlag(Qt::MetaModifier))
 			|| !_selectedSearchMessages.empty())) {
-		const auto item = _searchResults[searchedPressed]->item();
-		if (item) {
-			toggleSearchMessageSelection(item->fullId());
+		const auto item = _searchResults[releasedSearchResult]->item();
+		if (item && item->fullId() == pressedSearchMessageId) {
+			toggleSearchMessageSelection(pressedSearchMessageId);
 			searchMessageSelectionToggled = true;
 		}
 	}

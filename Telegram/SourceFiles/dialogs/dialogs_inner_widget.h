@@ -774,6 +774,7 @@ private:
 	int _searchedMigratedCount = 0;
 	int _searchedSelected = -1;
 	int _searchedPressed = -1;
+	FullMsgId _pressedSearchMessageId;
 
 	CommunityRowsView _communityViewable;
 	object_ptr<CommunityRequestableList> _communityRequestableList
