@@ -57,7 +57,7 @@ jobs:
         id: trust
         shell: bash
         env:
-          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ inputs.publish_release && vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE || '' }}
           RELEASE_REQUESTED: ${{ inputs.publish_release }}
           RELEASE_PLATFORM: ${{ inputs.platform }}
           RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
@@ -196,7 +196,7 @@ jobs:
 
       - name: Prepare public update trust
         env:
-          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ inputs.publish_release && vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE || '' }}
         run: python3 .github/ci/update_package.py trust --output "$RUNNER_TEMP/update-keys"
 
       - name: Build
@@ -572,7 +572,7 @@ jobs:
 
       - name: Prepare public update trust
         env:
-          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ inputs.publish_release && vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE || '' }}
         run: python3 tdesktop/.github/ci/update_package.py trust --output "$RUNNER_TEMP/update-keys" --repo-root tdesktop
 
       - name: Configure macOS app
@@ -886,7 +886,7 @@ jobs:
       - name: Prepare public update trust
         working-directory: TBuild/tdesktop
         env:
-          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ inputs.publish_release && vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE || '' }}
         run: python .github/ci/update_package.py trust --output "$env:RUNNER_TEMP\update-keys"
 
       - name: Configure
