@@ -63,6 +63,8 @@ jobs:
         run: python3 .github/ci/test_build_diagnostics.py
       - name: Test build manifest
         run: python3 .github/ci/test_build_artifact.py
+      - name: Test packaged startup checks
+        run: python3 .github/ci/test_smoke.py
       - name: Test emergency action fixtures
         run: python3 tools/tests/test_emergency_actions.py
       - name: Test macOS Qt cache pruning
@@ -95,6 +97,11 @@ jobs:
 
       - name: Sync AyuGram submodules
         run: python3 Telegram/build/sync_ayu_submodules.py
+
+      - name: Install Linux startup test dependencies
+        run: |
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends xvfb x11-utils
 
       - name: Prepare Dockerfile
         run: |
@@ -194,6 +201,7 @@ jobs:
             cmake --build /usr/src/tdesktop/out --config Release --parallel 2 --target check_revocable_profiles
 
       - name: Package and verify
+        id: package
         shell: bash
         run: |
           set -euo pipefail
@@ -232,39 +240,54 @@ jobs:
             --archive "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz"
 
       - name: Startup smoke
+        id: smoke
         shell: bash
         run: |
           set -euo pipefail
           extracted="$RUNNER_TEMP/sleepygram-linux-x64-extracted"
           mkdir -p "$extracted"
           tar -xJf "$RUNNER_TEMP/SleepyGram-linux-x64.tar.xz" -C "$extracted"
-          if command -v Xvfb >/dev/null 2>&1; then
-            Xvfb :99 -screen 0 1024x768x24 -nolisten tcp -ac >"$RUNNER_TEMP/xvfb.log" 2>&1 &
-            xvfb_pid=$!
-            trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
-            for attempt in {1..20}; do
-              [ -S /tmp/.X11-unix/X99 ] && break
-              sleep 0.25
-            done
-            docker run --rm --network none \
-              -u "$(id -u)" \
-              -e DISPLAY=:99 \
-              -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
-              -v "$PWD:/usr/src/tdesktop:ro" \
-              -v "$extracted:/package:ro" \
-              "$IMAGE_TAG" \
-              python3 /usr/src/tdesktop/.github/ci/smoke.py \
-                --platform linux-x64 --directory /package --qpa-platform xcb --require-startup
-          else
-            echo "::warning::Xvfb is unavailable; trying Qt offscreen startup"
-            docker run --rm --network none \
-              -u "$(id -u)" \
-              -v "$PWD:/usr/src/tdesktop:ro" \
-              -v "$extracted:/package:ro" \
-              "$IMAGE_TAG" \
-              python3 /usr/src/tdesktop/.github/ci/smoke.py \
-                --platform linux-x64 --directory /package --require-startup
+          display_file="$RUNNER_TEMP/sleepygram-xvfb-display"
+          xvfb_log="$RUNNER_TEMP/sleepygram-xvfb.log"
+          Xvfb -displayfd 3 -screen 0 1024x768x24 -nolisten tcp -noreset -ac \
+            3>"$display_file" >"$xvfb_log" 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid" 2>/dev/null || true' EXIT
+          ready=false
+          for attempt in {1..100}; do
+            kill -0 "$xvfb_pid" 2>/dev/null || break
+            display_number=$(cat "$display_file")
+            if [[ "$display_number" =~ ^[0-9]+$ && -S "/tmp/.X11-unix/X$display_number" ]] \
+              && xdpyinfo -display ":$display_number" >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 0.2
+          done
+          if [[ "$ready" != true ]]; then
+            cat "$xvfb_log"
+            echo "::error::The Linux startup test could not start an X11 display."
+            exit 1
           fi
+          docker run --rm --network none \
+            -u "$(id -u)" \
+            -e "DISPLAY=:$display_number" \
+            -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+            -v "$PWD:/usr/src/tdesktop:ro" \
+            -v "$extracted:/package:ro" \
+            "$IMAGE_TAG" \
+            python3 /usr/src/tdesktop/.github/ci/smoke.py \
+              --platform linux-x64 --directory /package --qpa-platform xcb --require-startup
+
+      - name: Save package for startup diagnosis
+        if: ${{ failure() && steps.package.outcome == 'success' && steps.smoke.outcome == 'failure' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-linux-startup
+          path: |
+            ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
+            ${{ runner.temp }}/sleepygram-xvfb.log
+          retention-days: 3
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -836,7 +859,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Windows package validation failed" }
           $extracted = Join-Path $env:RUNNER_TEMP "sleepygram-windows-x64-extracted"
           Expand-Archive -LiteralPath $archive -DestinationPath $extracted -Force
-          python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted --require-startup
+          python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted --qpa-platform windows --require-startup
           if ($LASTEXITCODE -ne 0) { throw "Windows startup smoke failed" }
 
       - name: Upload artifact
