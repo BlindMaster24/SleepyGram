@@ -86,18 +86,11 @@ jobs:
       - name: Test Linux update recovery before the platform builds
         run: |
           sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends qt6-base-dev libssl-dev liblzma-dev
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends qt6-base-dev libssl-dev liblzma-dev zlib1g-dev
           git submodule update --init -- Telegram/lib_base
-          keys="$PWD/Telegram/Resources/update/sleepygram-test"
-          cmake -Droot_pem="$keys/root-public.pem" -Dmanifest="$keys/manifest.min.json" \
-            -Dmanifest_sig="$keys/manifest.sig" -Doutput="$RUNNER_TEMP/update_keys_data.h" \
-            -P Telegram/cmake/update_keys_header.cmake
-          c++ -std=c++20 -O2 -fPIC -I "$RUNNER_TEMP" -I Telegram/SourceFiles -I Telegram/lib_base \
-            Telegram/SourceFiles/_other/sleepy_updater.cpp \
-            Telegram/SourceFiles/core/sleepy_update_install.cpp Telegram/SourceFiles/core/update_keys.cpp \
-            Telegram/SourceFiles/core/update_unpack.cpp Telegram/SourceFiles/core/update_verify.cpp \
-            $(pkg-config --cflags --libs Qt6Core openssl liblzma) -o "$RUNNER_TEMP/Updater"
-          python3 tools/tests/test_sleepy_updater.py --helper "$RUNNER_TEMP/Updater"
+          cmake -S .github/ci/update-native -B "$RUNNER_TEMP/update-native" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/update-native" --parallel 2 --target Updater
+          python3 tools/tests/test_sleepy_updater.py --helper "$RUNNER_TEMP/update-native/Updater"
       - name: Test language key preflight
         run: python3 .github/ci/test_preflight_lang.py
       - name: Test build diagnostics
@@ -1084,17 +1077,16 @@ jobs:
           set -euo pipefail
           sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends qt6-base-dev liblzma-dev zlib1g-dev libssl-dev
-          c++ -std=c++20 -fPIC -O2 -DPACKER_DISABLE_PRIVATE -Wno-deprecated-declarations -I Telegram/SourceFiles \
-            Telegram/SourceFiles/_other/packer.cpp Telegram/SourceFiles/core/update_verify.cpp \
-            $(pkg-config --cflags --libs Qt6Core openssl liblzma zlib) -o "$RUNNER_TEMP/SleepyGramPacker"
-          python3 .github/ci/update_test.py --packer "$RUNNER_TEMP/SleepyGramPacker"
+          cmake -S .github/ci/update-native -B "$RUNNER_TEMP/update-native" -DCMAKE_BUILD_TYPE=Release
+          cmake --build "$RUNNER_TEMP/update-native" --parallel 2 --target Packer
+          python3 .github/ci/update_test.py --packer "$RUNNER_TEMP/update-native/Packer"
 
       - name: Sign and verify with the client verifier
         env:
           SLEEPYGRAM_UPDATE_STABLE_KEY_PEM: ${{ secrets.SLEEPYGRAM_UPDATE_STABLE_KEY_PEM }}
         run: |
           python3 .github/ci/update_release.py sign --directory release-assets \
-            --keys "$RUNNER_TEMP/update-keys" --packer "$RUNNER_TEMP/SleepyGramPacker"
+            --keys "$RUNNER_TEMP/update-keys" --packer "$RUNNER_TEMP/update-native/Packer"
 
       - name: Upload to draft, verify assets, and publish as latest
         env:
