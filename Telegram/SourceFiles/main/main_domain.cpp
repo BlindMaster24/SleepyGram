@@ -41,6 +41,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_generation.h"
+#include "storage/details/storage_native_path.h"
 
 
 namespace Main {
@@ -322,7 +323,7 @@ bool Domain::launchScopedAccounts(
 			account->paths.databasePath + u"archive.db"_q);
 		archives.push_back({
 			.userId = int64_t(account->identity.userId.bare),
-			.path = archive.filesystemFilePath(),
+			.path = Storage::NativeFilePath(archive.filePath()),
 			.key = archiveKey,
 		});
 		if (!config) {

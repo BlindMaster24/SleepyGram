@@ -3,6 +3,7 @@
 
 #include "base/basic_types.h"
 #include "storage/details/storage_cache_migration_paths.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -330,7 +331,7 @@ std::optional<QByteArray> Fingerprint(
 	if (!info.isFile() || info.isSymLink() || info.isJunction()
 		|| info.canonicalFilePath() != path
 		|| info.size() < 0 || info.size() > MaximumFileBytes(relative)
-		|| std::filesystem::hard_link_count(info.filesystemFilePath(), error) != 1
+		|| std::filesystem::hard_link_count(Storage::NativeFilePath(info.filePath()), error) != 1
 		|| error) {
 		return std::nullopt;
 	}
@@ -665,7 +666,7 @@ bool MatchesNativeFile(
 }
 
 bool RemoveNativeEntry(const QString &root, const Entry &entry) {
-	auto target = QFileInfo(root + '/' + entry.relativePath).filesystemFilePath();
+	auto target = Storage::NativeFilePath(QFileInfo(root + '/' + entry.relativePath).filePath());
 	target.make_preferred();
 	const auto drive = target.root_name().native();
 	if (drive.size() != 2 || drive[1] != L':') {
@@ -779,7 +780,8 @@ bool MatchesNativeFile(
 
 bool OpenNativeRoot(const QString &root, NativeDescriptor &rootFd) {
 	rootFd.reset(open("/", kDirectoryFlags));
-	for (const auto &part : QFileInfo(root).filesystemFilePath().relative_path()) {
+	const auto path = Storage::NativeFilePath(QFileInfo(root).filePath());
+	for (const auto &part : path.relative_path()) {
 		rootFd.reset(openat(rootFd.get(), part.c_str(), kDirectoryFlags));
 		if (rootFd.get() < 0) {
 			return false;
@@ -801,7 +803,7 @@ bool RemoveNativeEntry(const QString &root, const Entry &entry) {
 	}
 #endif
 	auto current = NativeDescriptor(dup(rootFd.get()));
-	const auto relative = QFileInfo(entry.relativePath).filesystemFilePath();
+	const auto relative = Storage::NativeFilePath(QFileInfo(entry.relativePath).filePath());
 	for (const auto &part : relative.parent_path()) {
 		current.reset(openat(current.get(), part.c_str(), kDirectoryFlags));
 		struct stat directory = {};

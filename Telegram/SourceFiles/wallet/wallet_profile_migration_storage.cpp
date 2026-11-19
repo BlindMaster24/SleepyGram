@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/version.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_native_path.h"
 #include "wallet/wallet_profile_migration.h"
 
 #include <QtCore/QCryptographicHash>
@@ -88,7 +89,7 @@ std::optional<SourceVariant> InspectSourceVariant(
 		|| info.canonicalFilePath() != path
 		|| info.size() < kTdfHeaderSize + kTdfChecksumSize + qsizetype(sizeof(quint32))
 		|| info.size() > kMaximumFileBytes
-		|| std::filesystem::hard_link_count(info.filesystemFilePath(), error) != 1
+		|| std::filesystem::hard_link_count(Storage::NativeFilePath(info.filePath()), error) != 1
 		|| error) {
 		return std::nullopt;
 	}

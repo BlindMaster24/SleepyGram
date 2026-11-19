@@ -3,6 +3,7 @@
 
 #include "storage/cache/storage_cache_binlog_reader.h"
 #include "storage/details/storage_cache_migration_paths.h"
+#include "storage/details/storage_native_path.h"
 #include "base/openssl_help.h"
 
 #include <QtCore/QDir>
@@ -61,7 +62,7 @@ bool CanonicalFile(const QFileInfo &info) {
 	auto error = std::error_code();
 	return info.isFile() && !info.isSymLink() && !info.isJunction()
 		&& info.absoluteFilePath() == info.canonicalFilePath()
-		&& std::filesystem::hard_link_count(info.filesystemFilePath(), error) == 1
+		&& std::filesystem::hard_link_count(NativeFilePath(info.filePath()), error) == 1
 		&& !error;
 }
 

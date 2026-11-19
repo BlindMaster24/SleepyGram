@@ -1,6 +1,7 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/offline_history/offline_history_scoped.h"
 #include "mtproto/mtproto_auth_key.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -179,8 +180,8 @@ void CheckRefusals() {
 	auto error = std::error_code();
 	if (QFile::rename(source, elsewhere)) {
 		std::filesystem::create_symlink(
-			QFileInfo(elsewhere).filesystemFilePath(),
-			QFileInfo(source).filesystemFilePath(),
+			::Storage::NativeFilePath(QFileInfo(elsewhere).filePath()),
+			::Storage::NativeFilePath(QFileInfo(source).filePath()),
 			error);
 		Check(!error && !fixture.stage() && Read(elsewhere) == fixture.body,
 			"symbolic link cannot bring unrelated files into offline receipt");

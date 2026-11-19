@@ -12,6 +12,7 @@
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QFileInfo>
 
@@ -301,7 +302,8 @@ std::optional<Window::EmergencyRulesSnapshot> LoadSettings(
 	}
 	const auto journalDirectory = workspace.emergencyJournalDirectory();
 	if (!journalDirectory.isEmpty()) {
-		const auto log = EA::FileJournalStore(QFileInfo(journalDirectory).filesystemFilePath());
+		const auto log = EA::FileJournalStore(
+			Storage::NativeFilePath(QFileInfo(journalDirectory).filePath()));
 		if (const auto latest = log.latestReset(inventory->live.id)) {
 			const auto unconfirmed = [](const EA::JournalEffectState &effect) {
 				return effect.state != EA::EffectState::NotRequested && effect.state != EA::EffectState::Succeeded;

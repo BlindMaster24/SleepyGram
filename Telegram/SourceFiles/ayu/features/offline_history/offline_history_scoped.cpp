@@ -2,6 +2,7 @@
 #include "ayu/features/offline_history/offline_history_scoped.h"
 
 #include "mtproto/mtproto_auth_key.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
@@ -70,7 +71,7 @@ bool CanonicalFile(const QFileInfo &info) {
 	auto error = std::error_code();
 	return info.isFile() && !info.isSymLink() && !info.isJunction()
 		&& info.canonicalFilePath() == info.absoluteFilePath()
-		&& std::filesystem::hard_link_count(info.filesystemFilePath(), error) == 1
+		&& std::filesystem::hard_link_count(::Storage::NativeFilePath(info.filePath()), error) == 1
 		&& !error;
 }
 

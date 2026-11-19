@@ -4,9 +4,10 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import smoke
 
@@ -31,13 +32,15 @@ class StartupSmokeTests(unittest.TestCase):
     def smoke(self, platform, *options):
         return smoke.main(["--platform", platform, "--directory", str(self.package), *options])
 
-    def run_with_output(self, platform, output, status, *, options=("--require-startup",)):
+    def run_with_output(self, platform, output, status, *, options=("--require-startup",), expected_qpa=None):
         self.executable(platform)
         captured = io.StringIO()
         process = Mock()
         process.wait.return_value = status
 
-        def launch(*args, stdout, **kwargs):
+        def launch(*args, stdout, env, **kwargs):
+            if expected_qpa:
+                self.assertEqual(env["QT_QPA_PLATFORM"], expected_qpa)
             stdout.write(output)
             return process
 
@@ -63,6 +66,8 @@ class StartupSmokeTests(unittest.TestCase):
                     self.assertTrue(Path(command[2]).is_dir())
                     self.assertNotIn(self.package.resolve(), Path(command[2]).parents)
                     self.assertEqual(env["QT_QPA_PLATFORM"], backend)
+                    self.assertEqual(env["QT_FORCE_STDERR_LOGGING"], "1")
+                    self.assertEqual(env["QT_MESSAGE_PATTERN"], "%{message}")
                     self.assertEqual(env["DISPLAY"], "synthetic-display")
                     for name in ("TEST_API_KEY", "QT_PLUGIN_PATH", "QT_QPA_PLATFORM_PLUGIN_PATH"):
                         self.assertNotIn(name, env)
@@ -83,6 +88,7 @@ class StartupSmokeTests(unittest.TestCase):
                 ):
                     self.assertEqual(self.smoke(platform, "--require-startup"), 0)
                     stop.assert_called_once_with(process)
+                self.assertEqual(process.wait.call_args_list, [call(timeout=smoke.WAIT_SECONDS), call(timeout=5)])
                 self.assertIn(f"stayed alive for {smoke.WAIT_SECONDS}s", captured.getvalue())
 
     def test_explicit_qpa_override_reports_missing_plugin_without_leaking_output(self):
@@ -91,7 +97,7 @@ class StartupSmokeTests(unittest.TestCase):
                 b"Could not find the Qt platform plugin \"offscreen\" in \"/private/profile\"\n"
                 b"Available platform plugins are: xcb, sensitive-plugin, minimal.\n"
                 b"::error::test-secret\n"
-            ), -6, options=("--qpa-platform", "offscreen", "--require-startup"))
+            ), -6, options=("--qpa-platform", "offscreen", "--require-startup"), expected_qpa="offscreen")
         message = str(error.exception)
         self.assertIn("Qt platform offscreen", message)
         self.assertIn("not found", message)
@@ -134,6 +140,29 @@ class StartupSmokeTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertIn("::warning::", message)
         self.assertIn("windows failed to initialize", message)
+
+    @unittest.skipIf(os.name == "nt", "fixture uses a POSIX executable script")
+    def test_required_cli_reports_sanitized_real_early_exit(self):
+        executable = self.executable("linux-x64")
+        executable.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' 'qt.qpa.xcb: could not connect to display fake-sensitive-display' >&2\n"
+            "printf '%s\\n' '::error::fake-application-annotation' >&2\n"
+            "exit 7\n",
+            encoding="utf-8",
+        )
+        executable.chmod(0o700)
+        script = Path(smoke.__file__).resolve()
+        result = subprocess.run([
+            sys.executable, str(script), "--platform", "linux-x64",
+            "--directory", str(self.package), "--require-startup",
+        ], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(result.stderr.startswith("::error::Startup smoke"))
+        self.assertIn("status 7", result.stderr)
+        self.assertIn("Check Xvfb and the X11 socket mount", result.stderr)
+        self.assertNotIn("fake-sensitive-display", result.stderr)
+        self.assertNotIn("fake-application-annotation", result.stderr)
 
 
 if __name__ == "__main__":

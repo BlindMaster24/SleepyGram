@@ -2,6 +2,7 @@
 #include "storage/details/storage_cache_migration.h"
 
 #include "storage/cache/storage_cache_binlog_reader.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDir>
@@ -207,8 +208,8 @@ void CheckArchivePaths() {
 		return;
 	}
 	const auto blob = root + u"/0/10/203040506070"_q;
-	const auto outsideNative = QFileInfo(outside).filesystemFilePath();
-	const auto blobNative = QFileInfo(blob).filesystemFilePath();
+	const auto outsideNative = NativeFilePath(QFileInfo(outside).filePath());
+	const auto blobNative = NativeFilePath(QFileInfo(blob).filePath());
 	auto error = std::error_code();
 	if (!QFile::remove(blob)) {
 		Check(false, "replace the synthetic cache blob");

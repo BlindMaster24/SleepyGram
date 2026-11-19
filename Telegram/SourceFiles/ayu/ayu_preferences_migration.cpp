@@ -1,6 +1,8 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/ayu_preferences_migration.h"
 
+#include "storage/details/storage_native_path.h"
+
 #include <QtCore/QCryptographicHash>
 #include <QtCore/QDir>
 #include <QtCore/QFile>
@@ -522,7 +524,7 @@ std::optional<LegacyPartition> ReadLegacyPartition(
 	auto file = QFile(path);
 	if (!info.isFile() || info.canonicalFilePath() != path
 		|| info.size() <= 0 || info.size() > kMaximumBytes
-		|| std::filesystem::hard_link_count(info.filesystemFilePath(), error) != 1
+		|| std::filesystem::hard_link_count(Storage::NativeFilePath(info.filePath()), error) != 1
 		|| error || !file.open(QIODevice::ReadOnly)) {
 		return std::nullopt;
 	}

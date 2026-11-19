@@ -2,6 +2,7 @@
 #include "ayu/features/profile_sets/legacy_retirement.h"
 
 #include "base/basic_types.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -132,7 +133,7 @@ void CheckCapture() {
 	const auto alias = paths.basePath + fixture.accounts.front().dataFiles.front();
 	auto error = std::error_code();
 	const auto native = [](const QString &filePath) {
-		return QFileInfo(filePath).filesystemFilePath();
+		return Storage::NativeFilePath(QFileInfo(filePath).filePath());
 	};
 	const auto removed = QFile::remove(alias);
 	if (removed && Write(otherPath, "original target")) {
@@ -473,7 +474,7 @@ void CheckLinks() {
 	const auto &paths = fixture.accounts.front().paths;
 	const auto auth = paths.authPath + 's';
 	const auto native = [](const QString &filePath) {
-		return QFileInfo(filePath).filesystemFilePath();
+		return Storage::NativeFilePath(QFileInfo(filePath).filePath());
 	};
 	auto error = std::error_code();
 	if (QFile::remove(auth)) {

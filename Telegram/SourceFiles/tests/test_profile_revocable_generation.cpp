@@ -1,5 +1,6 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/profile_sets/profile_generation.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -94,7 +95,8 @@ bool Write(const QString &path, const QByteArray &bytes) {
 bool HardLink(const QString &source, const QString &target) {
 	auto error = std::error_code();
 	std::filesystem::create_hard_link(
-		QFileInfo(source).filesystemFilePath(), QFileInfo(target).filesystemFilePath(), error);
+		Storage::NativeFilePath(QFileInfo(source).filePath()),
+		Storage::NativeFilePath(QFileInfo(target).filePath()), error);
 	return !error;
 }
 

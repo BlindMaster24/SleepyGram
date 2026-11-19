@@ -49,6 +49,7 @@ env:
   TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID || secrets.AYUGRAM_API_ID || secrets.TELEGRAM_API_ID || secrets.API_ID || '2040' }}
   TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH || secrets.AYUGRAM_API_HASH || secrets.TELEGRAM_API_HASH || secrets.API_HASH || 'b18441a1ff607e10a989891a5462e627' }}
   CI_QT_VERSION: 6.11.2
+  CI_MACOS_MINIMUM: '12.0'
 
 jobs:
   preflight:
@@ -537,7 +538,7 @@ jobs:
             -DCMAKE_OBJC_FLAGS=-fobjc-weak -DCMAKE_OBJCXX_FLAGS=-fobjc-weak \
             -DCMAKE_OSX_SYSROOT="$sdk" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$CI_MACOS_MINIMUM" \
             -DTDESKTOP_API_ID="$TDESKTOP_API_ID" \
             -DTDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
             -DDESKTOP_APP_DISABLE_AUTOUPDATE=ON \
@@ -594,7 +595,7 @@ jobs:
           cmp "tdesktop/Telegram/Resources/art/$icon" "$app/Contents/Resources/$icon"
           mkdir -p "$app/Contents/Helpers"
           cp tdesktop/out/Release/SleepyGramRemovalHelper "$app/Contents/Helpers/"
-          python3 tdesktop/.github/ci/prepare_macos_swift_runtime.py --bundle "$app" --minimum 11.0
+          python3 tdesktop/.github/ci/prepare_macos_swift_runtime.py --bundle "$app" --minimum "$CI_MACOS_MINIMUM"
           while IFS= read -r -d '' binary; do
             if file -b "$binary" | grep -q 'Mach-O'; then
               archs="$(lipo -archs "$binary")"

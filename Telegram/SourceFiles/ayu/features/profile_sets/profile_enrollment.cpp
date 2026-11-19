@@ -11,6 +11,7 @@
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QFileInfo>
 #include <openssl/crypto.h>
@@ -133,7 +134,8 @@ bool StageNewAccount(
 		.key = archiveKey,
 	};
 	const auto data = QFileInfo(QFileInfo(workspace.workspacePath()).path());
-	return AyuDatabase::StageEmptyScopedArchivePartitions(data.filesystemFilePath(),
+	return AyuDatabase::StageEmptyScopedArchivePartitions(
+		Storage::NativeFilePath(data.filePath()),
 		std::span(&archive, 1)) == ArchivePartitionResult::Success
 		&& workspace.SyncScopedAccount(name);
 }
@@ -161,10 +163,11 @@ bool DiscardStagedAccount(
 	}
 	const auto installation = EmergencyActions::InstallationId(vaultId.toHex().toStdString());
 	const auto account = EmergencyActions::AccountId(name.toStdString());
+	const auto data = QFileInfo(QFileInfo(workspace.workspacePath()).path());
 	auto clear = EmergencyActions::ScopedAccountClear(installation,
-		QFileInfo(QFileInfo(workspace.workspacePath()).path()).filesystemFilePath(), {
+		Storage::NativeFilePath(data.filePath()), {
 			.installationId = installation,
-			.accountStorageRoot = QFileInfo(accounts).filesystemFilePath(),
+			.accountStorageRoot = Storage::NativeFilePath(QFileInfo(accounts).filePath()),
 			.accounts = {{ account, name.toStdString() }},
 		});
 	return clear.clear(account) == EmergencyActions::EffectResult::ConfirmedSuccess;

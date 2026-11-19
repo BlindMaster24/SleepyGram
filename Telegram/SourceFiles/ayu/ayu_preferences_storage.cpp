@@ -4,6 +4,7 @@
 #include "base/basic_types.h"
 #include "core/version.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_native_path.h"
 #include "storage/serialize_common.h"
 
 #include <QtCore/QDir>
@@ -53,7 +54,7 @@ std::optional<QByteArray> ReadRecord(
 	if (!info.isFile() || info.isSymLink() || info.isJunction()
 		|| info.canonicalFilePath() != info.absoluteFilePath()
 		|| info.size() <= 0 || info.size() > kMaximumFileBytes
-		|| std::filesystem::hard_link_count(info.filesystemFilePath(), error) != 1
+		|| std::filesystem::hard_link_count(Storage::NativeFilePath(info.filePath()), error) != 1
 		|| error) {
 		return std::nullopt;
 	}

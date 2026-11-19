@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "mtproto/mtproto_auth_key.h"
 #include "mtproto/mtproto_dc_options.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_native_path.h"
 #include "twidget/sdk_policy.h"
 
 #include <QtCore/QDataStream>
@@ -239,7 +240,7 @@ struct MigrationRecord {
 			|| info.isJunction()
 			|| info.canonicalFilePath() != info.absoluteFilePath()
 			|| std::filesystem::hard_link_count(
-				info.filesystemFilePath(),
+				Storage::NativeFilePath(info.filePath()),
 				error) != 1
 			|| error
 			|| uint64(info.size()) > maximum + kRecordEnvelopeAllowance) {

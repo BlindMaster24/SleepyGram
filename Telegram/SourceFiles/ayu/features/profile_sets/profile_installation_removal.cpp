@@ -6,6 +6,7 @@
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "ayu/features/profile_sets/profile_revocable_emergency_bundle.h"
 #include "base/basic_types.h"
+#include "storage/details/storage_native_path.h"
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QCryptographicHash>
@@ -170,7 +171,7 @@ std::optional<ApprovedRemovalPackage> ReadRemovalPackage(
 	auto result = ApprovedRemovalPackage();
 	result.receipt.installationId = installation;
 	result.receipt.kind = layout->kind;
-	result.receipt.packageRoot = QFileInfo(layout->root).filesystemFilePath();
+	result.receipt.packageRoot = Storage::NativeFilePath(QFileInfo(layout->root).filePath());
 	result.receipt.packageRoot.make_preferred();
 	auto binding = QCryptographicHash(QCryptographicHash::Sha256);
 	binding.addData(layout->root.toUtf8());
@@ -189,7 +190,10 @@ std::optional<ApprovedRemovalPackage> ReadRemovalPackage(
 		binding.addData(QByteArrayView("\0", 1));
 		binding.addData(QByteArrayView(reinterpret_cast<const char*>(sha->data()), sha->size()));
 		if (relative == layout->helper) {
-			result.helper = { .source = QFileInfo(path).filesystemFilePath(), .digest = *sha };
+			result.helper = {
+				.source = Storage::NativeFilePath(QFileInfo(path).filePath()),
+				.digest = *sha,
+			};
 		}
 	}
 	if (result.helper.source.empty() || EA::InspectInstallationRemoval(result.receipt)
@@ -228,7 +232,7 @@ bool LaunchProfileInstallationRemoval(
 	if (journals.isEmpty()) {
 		return false;
 	}
-	auto store = EA::FileJournalStore(QFileInfo(journals).filesystemFilePath());
+	auto store = EA::FileJournalStore(Storage::NativeFilePath(QFileInfo(journals).filePath()));
 	const auto operations = store.operationIds();
 	if (!operations || std::ranges::find(*operations, journal.operationId) == operations->end()) {
 		return false;
@@ -240,7 +244,8 @@ bool LaunchProfileInstallationRemoval(
 	}
 	auto scope = EA::InstallationDataCleanupScope{
 		.installationId = record.journal.installationId,
-		.dataDirectory = QFileInfo(root.absolutePath()).filesystemFilePath().make_preferred(),
+		.dataDirectory = Storage::NativeFilePath(
+			QFileInfo(root.absolutePath()).filePath()).make_preferred(),
 		.generationIds = { record.successorGeneration },
 	};
 	for (const auto &operation : *operations) {

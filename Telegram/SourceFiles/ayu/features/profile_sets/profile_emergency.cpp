@@ -8,6 +8,7 @@
 #include "ayu/features/profile_sets/profile_installation_removal.h"
 #include "ayu/features/profile_sets/profile_revocable_emergency_admission.h"
 #include "ayu/features/profile_sets/profile_revocable_emergency_bundle.h"
+#include "storage/details/storage_native_path.h"
 #include "storage/storage_account.h"
 
 #ifdef Q_OS_MAC
@@ -46,7 +47,7 @@ Id StorageId(std::string_view value) {
 }
 
 std::filesystem::path NativePath(const QString &path) {
-	return QFileInfo(path).filesystemFilePath();
+	return Storage::NativeFilePath(QFileInfo(path).filePath());
 }
 
 std::filesystem::path DataRoot(const MigrationController &workspace) {

@@ -89,7 +89,9 @@ def sanitized_environment(root: Path, qpa_platform: str) -> dict[str, str]:
         "XDG_DATA_HOME": str(home / ".local" / "share"),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "QT_QPA_PLATFORM": qpa_platform,
+        "QT_FORCE_STDERR_LOGGING": "1",
         "QT_LOGGING_RULES": "*.debug=false",
+        "QT_MESSAGE_PATTERN": "%{message}",
     })
     for name in ("APPDATA", "LOCALAPPDATA", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"):
         Path(environment[name]).mkdir(parents=True, exist_ok=True)

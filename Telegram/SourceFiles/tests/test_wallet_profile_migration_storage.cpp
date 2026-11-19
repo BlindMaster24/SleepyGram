@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "core/version.h"
 #include "storage/details/storage_file_utilities.h"
+#include "storage/details/storage_native_path.h"
 #include "storage/serialize_common.h"
 
 #include <QtCore/QCryptographicHash>
@@ -183,8 +184,8 @@ int main() {
 		"bad TDF checksum");
 	check(WriteBytes(modern, source), "restore synthetic Open ring");
 	auto filesystemError = std::error_code();
-	const auto modernPath = QFileInfo(modern).filesystemFilePath();
-	const auto secondPath = QFileInfo(second).filesystemFilePath();
+	const auto modernPath = Storage::NativeFilePath(QFileInfo(modern).filePath());
+	const auto secondPath = Storage::NativeFilePath(QFileInfo(second).filePath());
 	std::filesystem::create_hard_link(modernPath, secondPath, filesystemError);
 	check(!filesystemError && MatchesState(read(), State::InvalidSource), "hard links rejected");
 	check(QFile::remove(second), "remove synthetic hard link");
@@ -193,8 +194,8 @@ int main() {
 	check(!filesystemError && MatchesState(read(), State::InvalidSource), "symlink variant rejected");
 	check(QFile::remove(second), "remove synthetic symlink");
 	const auto alias = root + u"/aliased-root"_q;
-	std::filesystem::create_directory_symlink(QFileInfo(root).filesystemFilePath(),
-		QFileInfo(alias).filesystemFilePath(), filesystemError);
+	std::filesystem::create_directory_symlink(Storage::NativeFilePath(QFileInfo(root).filePath()),
+		Storage::NativeFilePath(QFileInfo(alias).filePath()), filesystemError);
 	check(!filesystemError && MatchesState(ReadLegacyWalletProfileRing(alias, kDataName, key),
 		State::InvalidSource), "symlink directory rejected");
 #endif
