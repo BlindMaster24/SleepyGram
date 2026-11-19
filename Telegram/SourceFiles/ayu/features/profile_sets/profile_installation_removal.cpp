@@ -4,6 +4,7 @@
 #include "ayu/features/emergency_actions/emergency_recovery_record.h"
 #include "ayu/features/emergency_actions/installation_data_cleanup.h"
 #include "ayu/features/profile_sets/profile_migration.h"
+#include "ayu/features/profile_sets/profile_revocable_emergency_bundle.h"
 #include "base/basic_types.h"
 
 #include <QtCore/QCoreApplication>
@@ -205,9 +206,21 @@ bool LaunchProfileInstallationRemoval(
 		ApprovedRemovalPackage package,
 		const EA::EmergencyActionJournal &journal) {
 	const auto committed = workspace.LoadCommitted();
-	if (workspace.isIsolatedFixture() || !committed || committed->emergencyRecovery.isEmpty()
+	if (workspace.isIsolatedFixture() || !committed
 		|| committed->transactionId.toHex().toStdString() != record.successorGeneration
 		|| !EA::MatchesEmergencyRecoveryJournal(record, journal)) {
+		return false;
+	}
+	if (committed->layout == MigrationGenerationLayout::RevocableGates) {
+		const auto checkpoint = ParseRevocableEmergencyCheckpoint(committed->installationId,
+			committed->transactionId, committed->accountGateTable, committed->revocableEmergencyRules,
+			committed->revocableEmergencyRecovery);
+		if (!checkpoint || checkpoint->journal.action != EA::EmergencyAction::RemoveInstallation
+			|| checkpoint->journal.operationId != journal.operationId
+			|| checkpoint->installationPackageDigest != package.digest) {
+			return false;
+		}
+	} else if (committed->emergencyRecovery.isEmpty()) {
 		return false;
 	}
 	const auto root = QFileInfo(workspace.workspacePath());
@@ -217,7 +230,7 @@ bool LaunchProfileInstallationRemoval(
 	}
 	auto store = EA::FileJournalStore(QFileInfo(journals).filesystemFilePath());
 	const auto operations = store.operationIds();
-	if (!operations || !std::ranges::contains(*operations, journal.operationId)) {
+	if (!operations || std::ranges::find(*operations, journal.operationId) == operations->end()) {
 		return false;
 	}
 	const auto setSettings = QFileInfo(QDir(root.absoluteFilePath()).filePath(u"set-settings"_q));

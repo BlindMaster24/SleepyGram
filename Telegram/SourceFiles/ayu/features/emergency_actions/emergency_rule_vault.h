@@ -85,6 +85,22 @@ using RebuildEmergencyExecutionCapsule = std::function<
 		const DryRunPlan &nextPlan,
 		EmergencyExecutionCapsuleKey key)>;
 
+struct EmergencyRuleRewrite final {
+	LiveInstallation reviewedLive;
+	EmergencyExecutionCapsuleDigest executionCapsuleDigest;
+};
+
+struct KeepEmergencyRule final {};
+struct RejectEmergencyRuleRewrite final {};
+using EmergencyRuleRewriteDecision = std::variant<
+	KeepEmergencyRule,
+	EmergencyRuleRewrite,
+	RejectEmergencyRuleRewrite>;
+using RewriteEmergencyRuleCapability = std::function<
+	EmergencyRuleRewriteDecision(
+		const EmergencyRuleTicket &previous,
+		EmergencyExecutionCapsuleKey key)>;
+
 class EmergencyRuleTicket final {
 public:
 	EmergencyRuleTicket(EmergencyRuleTicket&&) noexcept = default;
@@ -113,6 +129,11 @@ private:
 		const LiveInstallation&,
 		const EmergencyRuleMasterContext&,
 		const RebuildEmergencyExecutionCapsule&);
+	friend std::optional<SealedEmergencyRules> RewriteEmergencyRulesForMaster(
+		const EmergencyRuleAuthority&,
+		std::span<const uint8_t>,
+		const EmergencyRuleMasterContext&,
+		const RewriteEmergencyRuleCapability&);
 
 	EmergencyRuleTicket(
 		EmergencyRuleAuthority authority,
@@ -150,6 +171,12 @@ OpenEmergencyRulesForMaster(
 	std::span<const uint8_t> sealed,
 	std::span<const uint8_t> masterDerivedKey);
 
+[[nodiscard]] bool EmergencyRulesAcceptNormalCredentials(
+	const EmergencyRuleAuthority &authority,
+	std::span<const uint8_t> sealed,
+	std::span<const uint8_t> masterDerivedKey,
+	std::span<const NormalCredential> normalCredentials);
+
 // The emergency passwords must still use the same profile KDF salt and parameters.
 [[nodiscard]] std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 	const EmergencyRuleAuthority &previousAuthority,
@@ -159,6 +186,12 @@ OpenEmergencyRulesForMaster(
 	const LiveInstallation &nextLive,
 	const EmergencyRuleMasterContext &nextMaster,
 	const RebuildEmergencyExecutionCapsule &rebuild = {});
+
+[[nodiscard]] std::optional<SealedEmergencyRules> RewriteEmergencyRulesForMaster(
+	const EmergencyRuleAuthority &authority,
+	std::span<const uint8_t> sealed,
+	const EmergencyRuleMasterContext &master,
+	const RewriteEmergencyRuleCapability &rewrite);
 
 namespace details {
 

@@ -45,6 +45,20 @@ bool SafeDataName(const QString &name) {
 	});
 }
 
+bool SafeRoot(const QString &path) {
+	return QDir::isAbsolutePath(path) && !path.startsWith(':') && !path.contains(QChar(0));
+}
+
+std::vector<AccountStorageBinding> ScopedBindings(
+		const std::vector<AccountVaultLocator> &locators) {
+	auto result = std::vector<AccountStorageBinding>();
+	result.reserve(locators.size());
+	for (const auto &locator : locators) {
+		result.push_back({ .id = locator.id, .dataName = AccountVaultDataName(locator) });
+	}
+	return result;
+}
+
 struct KeyWiper final {
 	std::vector<AccountKey> &keys;
 	~KeyWiper() {
@@ -83,12 +97,9 @@ std::optional<AccountStoragePlan> BuildAccountStoragePlan(
 		std::vector<AccountStorageBinding> bindings,
 		AccountStoragePlanError *error) {
 	SetError(error, AccountStoragePlanError::InvalidRoot);
-	if (!QDir::isAbsolutePath(rootPath)
-		|| rootPath.startsWith(':')
-		|| rootPath.contains(QChar(0))) {
+	if (!SafeRoot(rootPath)) {
 		return std::nullopt;
 	}
-	rootPath = QDir::cleanPath(rootPath);
 
 	const auto admin = std::get_if<AdminVaultAccess>(&access);
 	const auto set = std::get_if<SetVaultAccess>(&access);
@@ -114,17 +125,41 @@ std::optional<AccountStoragePlan> BuildAccountStoragePlan(
 			SetError(error, AccountStoragePlanError::None);
 			return AccountStoragePlan();
 		}
-		bindings.reserve(locators.size());
-		for (const auto &locator : locators) {
-			bindings.push_back({
-				.id = locator.id,
-				.dataName = AccountVaultDataName(locator),
-			});
-		}
+		bindings = ScopedBindings(locators);
 	} else if (version != kLegacyProfileVaultVersion || !locators.empty()) {
 		return std::nullopt;
 	}
+	return AccountStoragePlan::BuildBound(
+		QDir::cleanPath(rootPath), std::move(keys), bindings, scoped, error);
+}
 
+std::optional<AccountStoragePlan> BuildScopedAccountStoragePlan(
+		QString rootPath,
+		std::vector<AccountKey> keys,
+		const std::vector<AccountVaultLocator> &locators,
+		AccountStoragePlanError *error) {
+	const auto wipe = KeyWiper{ keys };
+	if (!SafeRoot(rootPath)) {
+		SetError(error, AccountStoragePlanError::InvalidRoot);
+		return std::nullopt;
+	} else if (ValidateAccountKeys(keys) != KeyringError::None) {
+		SetError(error, AccountStoragePlanError::InvalidKeys);
+		return std::nullopt;
+	} else if (locators.size() != keys.size()) {
+		SetError(error, AccountStoragePlanError::InvalidBindings);
+		return std::nullopt;
+	}
+	return AccountStoragePlan::BuildBound(
+		QDir::cleanPath(rootPath), std::move(keys), ScopedBindings(locators), true, error);
+}
+
+std::optional<AccountStoragePlan> AccountStoragePlan::BuildBound(
+		QString rootPath,
+		std::vector<AccountKey> keys,
+		const std::vector<AccountStorageBinding> &bindings,
+		bool scoped,
+		AccountStoragePlanError *error) {
+	const auto wipe = KeyWiper{ keys };
 	auto bindingsById = std::map<AccountId, const AccountStorageBinding*>();
 	auto names = std::set<QString>();
 	for (const auto &binding : bindings) {

@@ -290,9 +290,12 @@ NSUUID *ToUuid(const ScopedWebviewStoreId &id) {
 }
 
 API_AVAILABLE(macos(14.0))
-void RemoveNext(std::shared_ptr<NamedCleanup> work, size_t next) {
+void RemoveNext(std::shared_ptr<NamedCleanup> work, uint8_t pending, size_t next) {
 	if (!work->active()) {
 		return;
+	}
+	while (next != work->ids.size() && !(pending & (1U << next))) {
+		++next;
 	}
 	if (next == work->ids.size()) {
 		[WKWebsiteDataStore fetchAllDataStoreIdentifiers:^(NSArray<NSUUID*> *present) {
@@ -309,7 +312,7 @@ void RemoveNext(std::shared_ptr<NamedCleanup> work, size_t next) {
 				work->finish(EffectResult::ConfirmedFailure);
 			} else {
 				dispatch_async(dispatch_get_main_queue(), ^{
-					RemoveNext(work, next + 1);
+					RemoveNext(work, pending, next + 1);
 				});
 			}
 		}];
@@ -322,14 +325,25 @@ void StartCleanup(const std::shared_ptr<NamedCleanup> &work) {
 	if (@available(macOS 14.0, *)) {
 		@try {
 			@autoreleasepool {
-				const auto id = ToUuid(work->ids.front());
-				const auto store = [WKWebsiteDataStore dataStoreForIdentifier:id];
-				if (!store.isPersistent || ![store.identifier isEqual:id]) {
+				const auto store = [WKWebsiteDataStore nonPersistentDataStore];
+				if (!store || store.isPersistent) {
 					work->finish(EffectResult::ConfirmedFailure);
 					return;
 				}
+				[WKWebsiteDataStore fetchAllDataStoreIdentifiers:^(NSArray<NSUUID*> *present) {
+					if (!present) {
+						work->finish(EffectResult::ConfirmedFailure);
+						return;
+					}
+					auto pending = uint8_t(0);
+					for (auto i = size_t(0); i != work->ids.size(); ++i) {
+						if ([present containsObject:ToUuid(work->ids[i])]) {
+							pending |= uint8_t(1U << i);
+						}
+					}
+					RemoveNext(work, pending, 0);
+				}];
 			}
-			RemoveNext(work, 0);
 		} @catch (NSException *) {
 			work->finish(EffectResult::ConfirmedFailure);
 		}

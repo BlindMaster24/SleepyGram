@@ -6,6 +6,9 @@
 #include "ayu/features/profile_sets/profile_account_storage.h"
 #include "ayu/features/profile_sets/profile_emergency_bundle.h"
 #include "ayu/features/profile_sets/profile_installation_removal.h"
+#include "ayu/features/profile_sets/profile_revocable_emergency_bundle.h"
+#include "ayu/features/profile_sets/profile_revocable_emergency_capability.h"
+#include "ayu/features/profile_sets/profile_revocable_vault.h"
 #include "crl/crl_async.h"
 #include "crl/crl_on_main.h"
 #include "mtproto/mtproto_config.h"
@@ -65,10 +68,78 @@ struct EmergencyMasterAccess final {
 	}
 	CommittedMigration committed;
 	ProfileVault vault;
+	std::optional<RevocableProfileVault> revocable;
+	std::optional<AccountGateTable> gates;
+	std::optional<RevocableAdminVaultAccess> revocableAdmin;
 	DerivedCredential credential;
 	AdminVaultAccess admin;
 	std::vector<EA::NamedEmergencyRule> rules;
 };
+
+bool OpenRevocableMaster(
+		const MigrationController &workspace,
+		EmergencyMasterAccess &access,
+		QString &passcode,
+		Result &error) {
+	const auto &committed = access.committed;
+	access.revocable = RevocableProfileVault::Parse(committed.profileVault);
+	access.gates = ParseAccountGateTable(committed.accountGateTable, committed.installationId);
+	if (!access.revocable || !access.gates || access.revocable->installationId() != committed.installationId
+		|| !committed.revocableEmergencyRecovery.isEmpty() || committed.retirementPending) {
+		return false;
+	}
+	const auto &vault = *access.revocable;
+	access.vault.id = vault.installationId();
+	access.vault.salt = vault.salt();
+	access.vault.kdf = vault.kdf();
+	access.credential = details::DeriveProfileVaultCredentialOnWorker(vault.salt(), vault.kdf(), passcode);
+	if (!access.credential.valid()) {
+		error = Result::WrongMaster;
+		return false;
+	}
+	return workspace.WithCurrentRevocableGeneration(committed.proof(), [&](const auto&) {
+		auto opened = vault.open(access.credential);
+		const auto admin = std::get_if<RevocableAdminVaultAccess>(&opened);
+		if (!admin) {
+			error = Result::WrongMaster;
+			return false;
+		}
+		access.revocableAdmin.emplace(std::move(*admin));
+		access.admin.metadata = access.revocableAdmin->metadata;
+		auto live = std::set<AccountId>();
+		for (const auto &grant : access.revocableAdmin->accounts) {
+			auto opened = OpenAccountGate(*access.gates, grant.handle);
+			if (std::holds_alternative<AccountGateRevoked>(opened)) {
+				continue;
+			}
+			const auto key = std::get_if<AccountKey>(&opened);
+			if (!key || !live.emplace(key->id).second) {
+				return false;
+			}
+			access.admin.locators.push_back({ key->id, grant.handle.binding().locator });
+			access.admin.accounts.push_back(std::move(*key));
+		}
+		for (auto &set : access.admin.metadata.sets) {
+			std::erase_if(set.accounts, [&](AccountId id) { return !live.contains(id); });
+		}
+		if (committed.revocableEmergencyRules.isEmpty()) {
+			return true;
+		}
+		const auto bundle = ParseRevocableProfileEmergencyBundle(committed.installationId,
+			committed.revocableEmergencyRules);
+		auto rules = bundle ? EA::OpenEmergencyRulesForMaster(bundle->rules.authority,
+			BytesOf(bundle->rules.rules), BytesOf(access.credential.key)) : std::nullopt;
+		if (!rules) {
+			return false;
+		}
+		std::erase_if(*rules, [&](const auto &entry) {
+			return entry.details.executionCapsuleDigest
+				&& bundle->consumed.contains(ByteArrayOf(*entry.details.executionCapsuleDigest));
+		});
+		access.rules = std::move(*rules);
+		return true;
+	});
+}
 
 std::unique_ptr<EmergencyMasterAccess> OpenMaster(
 		const MigrationController &workspace,
@@ -83,6 +154,11 @@ std::unique_ptr<EmergencyMasterAccess> OpenMaster(
 	} else if (committed->transactionId != expected) {
 		error = Result::Stale;
 		return nullptr;
+	}
+	if (committed->layout == MigrationGenerationLayout::RevocableGates) {
+		auto access = std::make_unique<EmergencyMasterAccess>();
+		access->committed = std::move(*committed);
+		return OpenRevocableMaster(workspace, *access, passcode, error) ? std::move(access) : nullptr;
 	}
 	auto vault = ParseProfileVault(committed->profileVault);
 	if (!vault || vault->version != kProfileVaultVersion) {
@@ -231,6 +307,7 @@ std::optional<Window::EmergencyRulesSnapshot> LoadSettings(
 				return effect.state != EA::EffectState::NotRequested && effect.state != EA::EffectState::Succeeded;
 			};
 			auto summary = Window::EmergencyResetSummary();
+			summary.installationRemovalRefused = (latest->installationRemoval.state == EA::EffectState::Refused);
 			for (const auto &account : latest->accounts) {
 				summary.clearedAccounts += (account.localDataClear.state == EA::EffectState::Succeeded);
 				summary.unconfirmedDeviceRevokes += unconfirmed(account.remoteSessionRevoke);
@@ -281,6 +358,90 @@ std::optional<ProfileVault> AddFallbackEnrollmentSet(
 	auto replacement = std::vector<SetGrantCredential>{ { id, emergency } };
 	const auto wipeReplacement = gsl::finally([&] { Wipe(replacement.front().credential); });
 	return UpdateProfileVault(pruned, admin, master->metadata, replacement);
+}
+
+std::optional<EA::EmergencyExecutionCapsuleDigest> PackageDigest(const ApprovedRemovalPackage *package) {
+	if (!package || package->digest.size() != qsizetype(EA::kEmergencyInstallationDigestBytes)) {
+		return std::nullopt;
+	}
+	auto result = EA::EmergencyExecutionCapsuleDigest();
+	std::ranges::copy(BytesOf(package->digest), result.begin());
+	return result;
+}
+
+std::optional<EA::SealedEmergencyExecutionCapsule> SealRevocableRule(
+		const EmergencyMasterAccess &master,
+		const EA::EmergencyRuleGeneration &generation,
+		const EA::EmergencyRuleDetails &details,
+		const EA::LiveInstallation &live,
+		const EA::DryRunPlan &plan,
+		std::span<const AccountId> targetIds,
+		std::span<const EA::EmergencyExecutionAccount> targets,
+		const ApprovedRemovalPackage *package,
+		QString &safePasscode,
+		const DerivedCredential &emergency) {
+	auto accounts = std::vector<RevocableEmergencyAccount>();
+	accounts.reserve(targetIds.size());
+	for (auto i = size_t(0); i != targetIds.size(); ++i) {
+		const auto &grants = master.revocableAdmin->accounts;
+		const auto grant = std::ranges::find(grants, targetIds[i], [](const auto &entry) {
+			return entry.handle.binding().id;
+		});
+		if (grant == grants.end()) {
+			return std::nullopt;
+		}
+		auto handleBytes = grant->handle.serialize();
+		auto permitBytes = grant->permit.serialize();
+		const auto wipe = gsl::finally([&] { Wipe(handleBytes); Wipe(permitBytes); });
+		auto handle = AccountGateHandle::Parse(handleBytes);
+		auto permit = AccountGateRevocationPermit::Parse(permitBytes);
+		if (!handle || !permit) {
+			return std::nullopt;
+		}
+		accounts.push_back({ std::move(*handle), std::move(*permit), targets[i].remoteIdentity });
+	}
+	auto safe = std::optional<RevocableEmergencySafeSetView>();
+	auto safeCredential = DerivedCredential();
+	const auto wipe = gsl::finally([&] { Wipe(safeCredential); });
+	if (plan.safeDestination == EA::SafeDestinationKind::Profile) {
+		safeCredential = details::DeriveProfileVaultCredentialOnWorker(
+			master.vault.salt, master.vault.kdf, safePasscode);
+		const auto opened = master.revocable->open(safeCredential);
+		const auto access = std::get_if<RevocableSetVaultAccess>(&opened);
+		if (!access || EA::ProfileId(Identifier(access->id())) != plan.safeProfileId) {
+			return std::nullopt;
+		}
+		safe = RevocableEmergencySafeSetView{ access->id(), safeCredential.verifier, safeCredential.key };
+	}
+	return SealRevocableEmergencyCapability(generation, details, live, *master.gates,
+		accounts, safe, PackageDigest(package), BytesOf(emergency.key));
+}
+
+Result PublishRevocableRules(
+		const MigrationController &workspace,
+		const EmergencyMasterAccess &master,
+		const QByteArray &transaction,
+		const QByteArray &bundle) {
+	const auto &current = master.committed;
+	auto artifacts = std::vector<MigrationInput>{
+		{ MigrationArtifact::ProfileVault, current.profileVault },
+		{ MigrationArtifact::AccountGateTable, current.accountGateTable },
+	};
+	if (!bundle.isEmpty()) {
+		artifacts.push_back({ MigrationArtifact::RevocableEmergencyRules, bundle });
+	}
+	auto error = MigrationError::None;
+	const auto published = workspace.ReplaceRevocableCommitted(current.proof(), current.installationId,
+		artifacts, [&](const auto &candidate) {
+			return candidate.transactionId == transaction && candidate.profileVault == current.profileVault
+				&& candidate.accountGateTable == current.accountGateTable
+				&& candidate.revocableEmergencyRules == bundle && candidate.revocableEmergencyRecovery.isEmpty();
+		}, &error, transaction);
+	if (!published) {
+		return (error == MigrationError::StaleGeneration
+			|| error == MigrationError::PublicationUncertain) ? Result::Stale : Result::Failed;
+	}
+	return workspace.RetireRevocableGenerations(published->proof()) ? Result::Success : Result::Stale;
 }
 
 Result SaveSettings(
@@ -385,6 +546,22 @@ Result SaveSettings(
 				.remoteIdentity = grant.identity,
 			});
 		}
+		if (access->revocable) {
+			const auto sealed = SealRevocableRule(*access, generation, {
+				.actionId = id, .rule = rule, .operationId = operation,
+				.revision = config.emergencyRules.back().revision,
+			}, inventory->live, plan, removed, targets, uninstall ? &*package : nullptr,
+				entry.safeSetPasscode, credential);
+			if (!sealed || !capsules.emplace(ByteArrayOf(sealed->digest), ByteArrayOf(sealed->bytes)).second) {
+				return Result::CredentialsRejected;
+			}
+			inputs.push_back({
+				.actionId = id, .name = entry.name.trimmed().toUtf8().toStdString(),
+				.verifier = verifier, .key = BytesOf(credential.key),
+				.executionCapsuleDigest = sealed->digest,
+			});
+			continue;
+		}
 		auto pruned = (uninstall && removed.empty())
 			? std::optional(access->vault)
 			: PruneProfileVaultAccounts(access->vault, access->credential, removed);
@@ -397,7 +574,9 @@ Result SaveSettings(
 		const auto vault = SerializeProfileVault(*pruned);
 		auto remaining = access->admin.accounts;
 		const auto wipeRemaining = gsl::finally([&] { for (auto &key : remaining) Wipe(key.key); });
-		std::erase_if(remaining, [&](const AccountKey &key) { return std::ranges::contains(removed, key.id); });
+		std::erase_if(remaining, [&](const AccountKey &key) {
+			return std::ranges::find(removed, key.id) != removed.end();
+		});
 		const auto keyring = SealAccountKeyring(remaining, access->credential.key);
 		const auto successor = EA::EmergencyExecutionSuccessor{
 			.transactionId = MigrationController::NewTransactionId().toHex().toStdString(),
@@ -444,6 +623,41 @@ Result SaveSettings(
 			.verifier = verifier, .key = BytesOf(credential.key),
 			.executionCapsuleDigest = capsule->digest,
 		});
+	}
+	if (access->revocable) {
+		if (inputs.empty()) {
+			return PublishRevocableRules(workspace, *access, next, {});
+		}
+		const auto sealed = EA::SealEmergencyRules(generation, BytesOf(access->credential.key), config,
+			inventory->live, inputs);
+		if (!sealed) {
+			return Result::Failed;
+		}
+		const auto bundle = SerializeRevocableProfileEmergencyBundle({ .rules = {
+			sealed->authority, ByteArrayOf(sealed->bytes), capsules,
+		} });
+		const auto restored = ParseRevocableProfileEmergencyBundle(access->committed.installationId, bundle);
+		if (!restored) {
+			return Result::Failed;
+		}
+		for (const auto &input : inputs) {
+			const auto authenticated = EA::AuthenticateEmergencyRule(restored->rules.authority,
+				BytesOf(restored->rules.rules), input.key);
+			const auto ticket = std::get_if<EA::EmergencyRuleTicket>(&authenticated);
+			if (!ticket || ticket->details().actionId != input.actionId
+				|| ticket->details().executionCapsuleDigest != input.executionCapsuleDigest) {
+				return Result::Failed;
+			}
+			const auto blob = restored->rules.capsules.find(ByteArrayOf(*input.executionCapsuleDigest));
+			const auto removing = (ticket->details().rule.action == EA::EmergencyAction::RemoveInstallation);
+			if (blob == restored->rules.capsules.end()
+				|| !std::holds_alternative<OpenedRevocableEmergencyCapability>(OpenRevocableEmergencyCapability(
+					restored->rules.authority.generation, *ticket, *access->gates, BytesOf(blob->second),
+					PackageDigest(removing ? &*package : nullptr), input.key))) {
+				return Result::Failed;
+			}
+		}
+		return PublishRevocableRules(workspace, *access, next, bundle);
 	}
 	auto artifacts = std::vector<MigrationInput>{
 		{ MigrationArtifact::ProfileVault, access->committed.profileVault },
@@ -536,7 +750,9 @@ std::optional<QByteArray> RebindProfileEmergencyRulesOnWorker(
 			const auto account = std::ranges::find(inventory->live.accounts, policy.accountId, &EA::LiveAccount::id);
 			if (account != end(inventory->live.accounts)) {
 				for (const auto &device : policy.selectedSessionIds) {
-					if (!std::ranges::contains(account->sessionIds, device)) account->sessionIds.push_back(device);
+					if (std::ranges::find(account->sessionIds, device) == account->sessionIds.end()) {
+						account->sessionIds.push_back(device);
+					}
 				}
 			}
 		}
@@ -611,7 +827,7 @@ std::optional<QByteArray> RebindProfileEmergencyRulesOnWorker(
 			auto remaining = masterAccess.admin.accounts;
 			const auto wipeRemaining = gsl::finally([&] { for (auto &account : remaining) Wipe(account.key); });
 			std::erase_if(remaining, [&](AccountKey &account) {
-				const auto remove = std::ranges::contains(removed, account.id);
+				const auto remove = std::ranges::find(removed, account.id) != removed.end();
 				if (remove) Wipe(account.key);
 				return remove;
 			});

@@ -206,6 +206,69 @@ void RecoveryAndLocalTransitionsAreIdempotent() {
 		HasEffect(ResumeEffects(journal), JournalEffect::SafeDestinationActivation));
 }
 
+void InstallationRefusalIsTerminalAndRequiresConfirmedLocalCleanup() {
+	auto plan = Plan();
+	plan.action = EmergencyAction::RemoveInstallation;
+	plan.targetScope = TargetScope::CurrentInstallation;
+	plan.safeDestination = SafeDestinationKind::None;
+	plan.safeProfileId = {};
+	plan.wouldRemoveInstallation = true;
+	const auto initial = MakeJournal(plan);
+	if (!initial) {
+		Check("installation-refusal-fixture-planned", false);
+		return;
+	}
+	auto journal = *initial;
+	Check("installation-refusal-requires-confirmed-local-cleanup",
+		MarkInstallationRemovalRefused(journal) == TransitionResult::Rejected
+		&& journal.installationRemoval.state == EffectState::Pending
+		&& FinishRemotePhase(journal)
+		&& BeginEffect(journal, JournalEffect::LocalDataClear, plan.accounts.front().accountId)
+			== TransitionResult::Applied
+		&& ResolveEffect(journal, JournalEffect::LocalDataClear, EffectResult::ConfirmedSuccess,
+			plan.accounts.front().accountId) == TransitionResult::Applied);
+	auto pending = journal;
+	auto running = journal;
+	auto retry = journal;
+	auto complete = journal;
+	Check("installation-refusal-accepts-pending-running-and-retry-but-never-success",
+		BeginEffect(running, JournalEffect::InstallationRemoval) == TransitionResult::Applied
+		&& BeginEffect(retry, JournalEffect::InstallationRemoval) == TransitionResult::Applied
+		&& RecoverInterruptedEffects(retry) == 1
+		&& BeginEffect(complete, JournalEffect::InstallationRemoval) == TransitionResult::Applied
+		&& ResolveEffect(complete, JournalEffect::InstallationRemoval, EffectResult::ConfirmedSuccess)
+			== TransitionResult::Applied
+		&& MarkInstallationRemovalRefused(pending) == TransitionResult::Applied
+		&& MarkInstallationRemovalRefused(running) == TransitionResult::Applied
+		&& MarkInstallationRemovalRefused(retry) == TransitionResult::Applied
+		&& MarkInstallationRemovalRefused(complete) == TransitionResult::Rejected);
+	Check("installation-refusal-preserves-local-outcome-and-cannot-replay",
+		LocalCleanupComplete(running) && Status(running) == JournalStatus::NeedsAttention
+		&& RecoverInterruptedEffects(running) == 0 && ResumeEffects(running).empty()
+		&& BeginEffect(running, JournalEffect::InstallationRemoval) == TransitionResult::Rejected
+		&& MarkInstallationRemovalRefused(running) == TransitionResult::AlreadyApplied);
+	const auto priorBytes = EncodeJournal(journal);
+	const auto refusedBytes = EncodeJournal(running);
+	if (priorBytes.size() < 6 || refusedBytes.size() < 6) {
+		Check("versioned-installation-refusal-fixture-encoded", false);
+		return;
+	}
+	const auto reopened = DecodeJournal(refusedBytes);
+	auto oldVersion = refusedBytes;
+	oldVersion[4] = std::byte(4);
+	Check("refusal-has-a-versioned-codec-and-old-layout-retains-its-original-version",
+		priorBytes[4] == std::byte(4) && DecodeJournal(priorBytes)
+		&& refusedBytes.size() == priorBytes.size() && refusedBytes[4] == std::byte(5)
+		&& reopened && reopened->installationRemoval.state == EffectState::Refused
+		&& EncodeJournal(*reopened) == refusedBytes && !DecodeJournal(oldVersion));
+	auto invalid = running;
+	invalid.accounts.front().localDataClear.state = EffectState::Refused;
+	auto reset = MakeJournal(Plan()).value();
+	Check("refusal-is-never-a-local-account-or-ordinary-reset-state",
+		EncodeJournal(invalid).empty()
+		&& MarkInstallationRemovalRefused(reset) == TransitionResult::Rejected);
+}
+
 void CodecRejectsMalformedAndFutureData() {
 	const auto bytes = EncodeJournal(MakeJournal(Plan()).value());
 	auto truncated = bytes;
@@ -291,6 +354,7 @@ int main() {
 	DurableJournalRoundTripsExactPlanTargets();
 	NetworkUnknownCannotBeRetried();
 	RecoveryAndLocalTransitionsAreIdempotent();
+	InstallationRefusalIsTerminalAndRequiresConfirmedLocalCleanup();
 	CodecRejectsMalformedAndFutureData();
 	LegacyJournalDecodesToExactFrozenSessionTargets();
 	StoreUsesAtomicStorageBoundary();

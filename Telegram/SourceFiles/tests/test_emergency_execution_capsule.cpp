@@ -490,6 +490,143 @@ void MasterRebindsResetAllForNewlyEnrolledAccounts(bool withSafeGrant) {
 		&& !OpenEmergencyRulesForMaster(rebound->authority, rebound->bytes, fixture.emergencyKey));
 }
 
+void MasterRewritesEnrolledAccountsWithoutAdvancingRuleEpoch(
+		EmergencyAction action,
+		TargetScope scope) {
+	auto fixture = Fixture();
+	fixture.live.accounts.resize(2);
+	fixture.live.profiles.clear();
+	fixture.details.rule.action = action;
+	fixture.details.rule.targetScope = scope;
+	fixture.details.rule.selectedAccountIds.clear();
+	fixture.details.rule.safeProfileId = {};
+	fixture.safe.reset();
+	const auto removalDigest = Bytes(191);
+	if (action == EmergencyAction::RemoveInstallation) {
+		fixture.successor.installationDigest = removalDigest;
+	}
+	const auto capsule = fixture.seal();
+	const auto sealed = capsule ? fixture.sealRule(capsule->digest) : std::nullopt;
+	if (!sealed) {
+		Check("stable-epoch-fixture-sealed", false);
+		return;
+	}
+	const auto master = EmergencyRuleMasterContext{ fixture.masterKey, Bytes(11), {} };
+	auto attempts = 0;
+	const auto keep = [&](const auto &, EmergencyExecutionCapsuleKey) {
+		++attempts;
+		return EmergencyRuleRewriteDecision(KeepEmergencyRule());
+	};
+	const auto conflict = std::array{ NormalCredential{ NormalPasscodeId("normal"), Bytes(12) } };
+	Check("master-rewrite-checks-current-authority-and-new-credentials-before-callback",
+		!RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes,
+			{ fixture.emergencyKey, Bytes(11), {} }, keep)
+		&& !RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes,
+			{ fixture.masterKey, Bytes(11), conflict }, keep)
+		&& !RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes,
+			{ fixture.masterKey, Bytes(12), {} }, keep) && attempts == 0);
+	const auto kept = RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes, master, keep);
+	Check("keep-rewrite-preserves-authenticated-bytes-and-authority",
+		kept && kept->bytes == sealed->bytes && kept->authority == sealed->authority && attempts == 1);
+	const auto enrolled = AccountId("new-enrollee");
+	const auto addition = LiveAccount{ enrolled, SessionId("new-current"), { SessionId("new-current") } };
+	auto live = fixture.live;
+	live.accounts.insert(live.accounts.begin(), addition);
+	const auto replacing = [&](const LiveInstallation &proposed, const EmergencyExecutionCapsuleDigest &digest) {
+		return RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes, master,
+			[&](const auto &, EmergencyExecutionCapsuleKey) {
+				return EmergencyRuleRewrite{ proposed, digest };
+			});
+	};
+	auto wrongInstallation = live;
+	wrongInstallation.id = InstallationId("second-installation");
+	auto multiple = live;
+	multiple.accounts.push_back({ AccountId("z-extra"), addition.currentSessionId, addition.sessionIds });
+	auto changedOld = live;
+	changedOld.accounts.back().currentSessionId = addition.currentSessionId;
+	changedOld.accounts.back().sessionIds = addition.sessionIds;
+	Check("master-rewrite-rejects-cross-installation-or-inexact-target-change",
+		!replacing(wrongInstallation, Bytes(103)) && !replacing(multiple, Bytes(103))
+		&& !replacing(changedOld, Bytes(103)) && !replacing(live, {})
+		&& !replacing(live, capsule->digest)
+		&& !RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes, master,
+			[](const auto &, EmergencyExecutionCapsuleKey) { return RejectEmergencyRuleRewrite(); }));
+	auto accounts = std::vector(fixture.accounts.begin(), fixture.accounts.end());
+	accounts.push_back({ enrolled, std::string(32, 'c'), fixture.accountKeyOther });
+	auto nextCapsule = std::optional<SealedEmergencyExecutionCapsule>();
+	const auto rewritten = RewriteEmergencyRulesForMaster(sealed->authority, sealed->bytes, master,
+		[&](const EmergencyRuleTicket &prior, EmergencyExecutionCapsuleKey key)
+		-> EmergencyRuleRewriteDecision {
+			const auto old = OpenEmergencyExecutionCapsuleForRebind(prior, capsule->bytes, key);
+			const auto &details = prior.details();
+			if (!old || !prior.reviewedLive() || prior.reviewedLive()->accounts.size() != 2
+				|| prior.authority() != sealed->authority || details.rule != fixture.details.rule
+				|| details.operationId != fixture.details.operationId
+				|| details.revision != fixture.details.revision) {
+				return RejectEmergencyRuleRewrite();
+			}
+			const auto plan = BuildDryRunPlan(details.operationId, details.rule, live);
+			nextCapsule = SealEmergencyExecutionCapsuleForRebind(
+				fixture.generation, details, plan, accounts, fixture.successor, old->safeDestination(), key);
+			if (!nextCapsule) {
+				return RejectEmergencyRuleRewrite();
+			}
+			return EmergencyRuleRewrite{ live, nextCapsule->digest };
+		});
+	if (!rewritten || !nextCapsule) {
+		Check("master-rewrite-adds-one-enrolled-account-without-changing-rule-epoch", false);
+		return;
+	}
+	auto auth = AuthenticateEmergencyRule(rewritten->authority, rewritten->bytes, fixture.emergencyKey);
+	const auto ticket = std::get_if<EmergencyRuleTicket>(&auth);
+	const auto reviewed = ticket ? ticket->reviewedLive() : nullptr;
+	const auto plan = reviewed ? BuildDryRunPlan(ticket->details().operationId, ticket->details().rule, *reviewed)
+		: DryRunPlan();
+	const auto opened = ticket ? OpenEmergencyExecutionCapsule(
+		*ticket, plan, nextCapsule->bytes, fixture.emergencyKey) : std::nullopt;
+	Check(action == EmergencyAction::RemoveInstallation
+		? "master-rewrite-adds-one-enrolled-account-to-current-installation"
+		: "master-rewrite-adds-one-enrolled-account-to-all-accounts",
+		opened && opened->accounts().size() == 3 && plan.accounts.front().accountId == enrolled
+		&& plan.accounts.front().remoteTarget == RemoteSessionTargetKind::None
+		&& rewritten->authority.generation == sealed->authority.generation
+		&& rewritten->authority.digest != sealed->authority.digest
+		&& ticket->details().actionId == fixture.details.actionId
+		&& ticket->details().rule == fixture.details.rule
+		&& ticket->details().operationId == fixture.details.operationId
+		&& ticket->details().revision == fixture.details.revision
+		&& !OpenEmergencyExecutionCapsule(*ticket, plan, capsule->bytes, fixture.emergencyKey)
+		&& std::holds_alternative<EmergencyVaultUnavailable>(
+			AuthenticateEmergencyRule(sealed->authority, rewritten->bytes, fixture.emergencyKey)));
+}
+
+void StableEpochRewritePreservesSelectedAndHistoricalSlots() {
+	auto fixture = Fixture();
+	const auto master = EmergencyRuleMasterContext{ fixture.masterKey, Bytes(11), {} };
+	const auto digest = Bytes(147);
+	const auto selected = fixture.sealRule(digest);
+	auto called = 0;
+	const auto add = [&](const EmergencyRuleTicket &prior, EmergencyExecutionCapsuleKey) {
+		++called;
+		auto live = *prior.reviewedLive();
+		live.accounts.push_back({ AccountId("z-new"), SessionId("new"), { SessionId("new") } });
+		return EmergencyRuleRewrite{ std::move(live), Bytes(177) };
+	};
+	Check("stable-epoch-rewrite-cannot-widen-selected-account-rules",
+		selected && !RewriteEmergencyRulesForMaster(selected->authority, selected->bytes, master, add)
+		&& called == 1);
+	fixture.details.capsuleVersion = EmergencyExecutionCapsuleVersion::Legacy;
+	const auto v1 = fixture.sealRule(digest);
+	const auto digestless = fixture.sealRule(std::nullopt);
+	const auto sameAfterRewrite = [&](const std::optional<SealedEmergencyRules> &rules) {
+		const auto rewritten = rules ? RewriteEmergencyRulesForMaster(rules->authority, rules->bytes, master, add)
+			: std::nullopt;
+		return rewritten && rewritten->bytes == rules->bytes && rewritten->authority == rules->authority;
+	};
+	Check("stable-epoch-rewrite-preserves-v1-and-digestless-slots-without-invoking-callback",
+		sameAfterRewrite(v1) && sameAfterRewrite(digestless) && called == 1);
+}
+
 void InstallationDigestRemainsBoundToTheCapsule() {
 	auto fixture = Fixture();
 	fixture.live.accounts.resize(2);
@@ -519,6 +656,9 @@ int main() {
 	LegacyCapsulesRemainUsableButCannotBeRebound();
 	MasterRebindsResetAllForNewlyEnrolledAccounts(true);
 	MasterRebindsResetAllForNewlyEnrolledAccounts(false);
+	MasterRewritesEnrolledAccountsWithoutAdvancingRuleEpoch(EmergencyAction::ResetAccountData, TargetScope::AllAccounts);
+	MasterRewritesEnrolledAccountsWithoutAdvancingRuleEpoch(EmergencyAction::RemoveInstallation, TargetScope::CurrentInstallation);
+	StableEpochRewritePreservesSelectedAndHistoricalSlots();
 	InstallationDigestRemainsBoundToTheCapsule();
 	return failures ? 1 : 0;
 }

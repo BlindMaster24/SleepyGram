@@ -22,6 +22,7 @@ enum class EffectState : uint8_t {
 	FailedRetryable,
 	Unconfirmed,
 	Skipped,
+	Refused,
 };
 
 enum class NetworkOutcome : uint8_t {
@@ -111,6 +112,9 @@ struct PendingEffect final {
 [[nodiscard]] bool FinishRemotePhase(EmergencyActionJournal &journal);
 
 [[nodiscard]] bool LocalCleanupComplete(const EmergencyActionJournal &journal);
+
+[[nodiscard]] TransitionResult MarkInstallationRemovalRefused(
+	EmergencyActionJournal &journal);
 
 [[nodiscard]] TransitionResult BeginEffect(
 	EmergencyActionJournal &journal,

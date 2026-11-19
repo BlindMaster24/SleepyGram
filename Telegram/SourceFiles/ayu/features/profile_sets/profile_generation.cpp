@@ -170,13 +170,17 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 		QByteArray transactionId,
 		std::optional<Metadata> adminMetadata,
 		QByteArray settingsKey,
-		std::vector<AccountId> adminAccountIds)
+		std::vector<AccountId> adminAccountIds,
+		std::optional<MigrationGenerationProof> revocableProof,
+		QString revocableWorkspace)
 : _plan(std::move(plan))
 , _access(access)
 , _transactionId(std::move(transactionId))
 , _settingsKey(std::move(settingsKey))
 , _adminMetadata(std::move(adminMetadata))
-, _adminAccountIds(std::move(adminAccountIds)) {
+, _adminAccountIds(std::move(adminAccountIds))
+, _revocableProof(std::move(revocableProof))
+, _revocableWorkspace(std::move(revocableWorkspace)) {
 }
 
 OpenedProfileGeneration::OpenedProfileGeneration(
@@ -188,6 +192,8 @@ OpenedProfileGeneration::OpenedProfileGeneration(
 , _closeAdapters(std::move(other._closeAdapters))
 , _adminMetadata(std::move(other._adminMetadata))
 , _adminAccountIds(std::move(other._adminAccountIds))
+, _revocableProof(std::move(other._revocableProof))
+, _revocableWorkspace(std::move(other._revocableWorkspace))
 , _started(other._started)
 , _closed(std::exchange(other._closed, true)) {
 }
@@ -207,6 +213,29 @@ void OpenedProfileGeneration::Close() {
 	OPENSSL_cleanse(_settingsKey.data(), _settingsKey.size());
 	_settingsKey.clear();
 	_closed = true;
+}
+
+bool OpenedProfileGeneration::WithCurrent(
+		const MigrationController &sidecar,
+		const std::function<bool()> &callback,
+		MigrationError *error) const {
+	if (_closed || !callback) {
+		if (error) {
+			*error = MigrationError::InvalidInput;
+		}
+		return false;
+	}
+	if (!_revocableProof) {
+		return sidecar.WithCurrentGeneration(_transactionId, callback, error);
+	}
+	if (sidecar.workspacePath() != _revocableWorkspace) {
+		if (error) {
+			*error = MigrationError::UnsafeWorkspace;
+		}
+		return false;
+	}
+	return sidecar.WithCurrentRevocableGeneration(*_revocableProof,
+		[&](const CommittedMigration &) { return callback(); }, error);
 }
 
 bool OpenedProfileGeneration::Start(
@@ -255,12 +284,14 @@ bool OpenedProfileGeneration::Start(
 		return true;
 	};
 	auto migrationError = MigrationError::None;
-	if (!sidecar.WithCurrentGeneration(_transactionId, start, &migrationError)) {
+	if (!WithCurrent(sidecar, start, &migrationError)) {
 		if (migrationError == MigrationError::CallbackFailed) {
 			return false;
 		}
 		return fail(migrationError == MigrationError::StaleGeneration
 			? ProfileGenerationError::StaleGeneration
+			: (migrationError == MigrationError::RevocableRetirementRequired)
+			? ProfileGenerationError::RevocableRetirementRequired
 			: ProfileGenerationError::InvalidSidecar);
 	}
 	_started = true;
@@ -336,7 +367,8 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 		SetError(error, ProfileGenerationError::InvalidSidecar);
 		return std::nullopt;
 	}
-	if (!committed->emergencyRecovery.isEmpty() || !committed->legacyRetirement.isEmpty()) {
+	if (committed->layout != MigrationGenerationLayout::LegacyKeys
+		|| !committed->emergencyRecovery.isEmpty() || !committed->legacyRetirement.isEmpty()) {
 		SetError(error, ProfileGenerationError::InvalidSidecar);
 		return std::nullopt;
 	}
@@ -441,48 +473,17 @@ std::optional<OpenedProfileGeneration> AuthenticateCommittedProfileGeneration(
 		std::nullopt, std::move(set.settingsKey));
 }
 
-ProfileGenerationError CommitProfileSetChange(
-		const MigrationController &sidecar,
-		const QByteArray &expectedTransactionId,
+ProfileGenerationError details::ApplyProfileSetChange(
+		Metadata &metadata,
 		const ProfileSetChange &change,
-		DerivedCredential admin,
-		std::optional<DerivedCredential> replacement,
-		RebindProfileEmergencyRules rebind) {
+		std::optional<DerivedCredential> &replacement,
+		std::vector<SetGrantCredential> &replacements) {
 	using Error = ProfileGenerationError;
 	using Kind = ProfileSetChangeKind;
-	auto adminWiper = CredentialWiper{ admin };
-	const auto replacementWiper = gsl::finally([&] {
-		if (replacement) {
-			CleanseCredential(*replacement);
-		}
-	});
-	const auto current = !sidecar.isIsolatedFixture()
-		? sidecar.LoadCommitted()
-		: std::nullopt;
-	if (!current) {
-		return Error::InvalidSidecar;
-	} else if (current->transactionId != expectedTransactionId) {
-		return Error::StaleGeneration;
-	}
-	const auto vault = ParseProfileVault(current->profileVault);
-	if (!vault || vault->version != kProfileVaultVersion) {
-		return Error::InvalidVault;
-	} else if (!admin.valid() || !EqualKey(admin.verifier, vault->adminVerifier)) {
-		return Error::WrongPassword;
-	}
-	auto opened = OpenProfileVault(*vault, admin);
-	auto accessWiper = AccessWiper{ opened };
-	const auto master = std::get_if<AdminVaultAccess>(&opened);
-	if (!master) {
-		return Error::InvalidVault;
-	}
-
-	auto &metadata = master->metadata;
 	auto i = std::ranges::find(
 		metadata.sets,
 		change.id.value_or(SetId()),
 		&AccountSet::id);
-	auto replacements = std::vector<SetGrantCredential>();
 	if (change.kind == Kind::Remove) {
 		if (i == end(metadata.sets) || replacement
 			|| !change.name.isEmpty() || !change.accounts.empty()) {
@@ -515,12 +516,54 @@ ProfileGenerationError CommitProfileSetChange(
 			});
 		}
 	}
+	return Error::None;
+}
+
+ProfileGenerationError CommitProfileSetChange(
+		const MigrationController &sidecar,
+		const QByteArray &expectedTransactionId,
+		const ProfileSetChange &change,
+		DerivedCredential admin,
+		std::optional<DerivedCredential> replacement,
+		RebindProfileEmergencyRules rebind) {
+	using Error = ProfileGenerationError;
+	auto adminWiper = CredentialWiper{ admin };
+	const auto replacementWiper = gsl::finally([&] {
+		if (replacement) {
+			CleanseCredential(*replacement);
+		}
+	});
+	const auto current = !sidecar.isIsolatedFixture()
+		? sidecar.LoadCommitted()
+		: std::nullopt;
+	if (!current) {
+		return Error::InvalidSidecar;
+	} else if (current->transactionId != expectedTransactionId) {
+		return Error::StaleGeneration;
+	}
+	const auto vault = ParseProfileVault(current->profileVault);
+	if (!vault || vault->version != kProfileVaultVersion) {
+		return Error::InvalidVault;
+	} else if (!admin.valid() || !EqualKey(admin.verifier, vault->adminVerifier)) {
+		return Error::WrongPassword;
+	}
+	auto opened = OpenProfileVault(*vault, admin);
+	auto accessWiper = AccessWiper{ opened };
+	const auto master = std::get_if<AdminVaultAccess>(&opened);
+	if (!master) {
+		return Error::InvalidVault;
+	}
+	auto replacements = std::vector<SetGrantCredential>();
+	const auto changed = details::ApplyProfileSetChange(master->metadata, change, replacement, replacements);
+	if (changed != Error::None) {
+		return changed;
+	}
 	auto error = Error::None;
 	const auto saved = CommitProfileSetChanges(
 		sidecar,
 		expectedTransactionId,
 		std::move(admin),
-		metadata,
+		master->metadata,
 		std::move(replacements),
 		&error,
 		rebind);

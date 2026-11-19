@@ -411,20 +411,51 @@ std::optional<LiveInstallation> ProjectReviewedLive(
 	return result;
 }
 
+bool SameLiveAccount(const LiveAccount &first, const LiveAccount &second) {
+	return first.id == second.id
+		&& first.currentSessionId == second.currentSessionId
+		&& first.sessionIds == second.sessionIds;
+}
+
+bool SameLiveProfile(const LiveProfile &first, const LiveProfile &second) {
+	return first.id == second.id && first.accountIds == second.accountIds;
+}
+
 bool ValidReviewedLive(const EmergencyRuleDetails &record, const LiveInstallation &snapshot) {
 	const auto plan = BuildDryRunPlan(record.operationId, record.rule, snapshot);
 	const auto projected = ProjectReviewedLive(snapshot, plan);
 	return MakeJournal(plan) && projected
-		&& std::ranges::equal(snapshot.accounts, projected->accounts,
-			[](const auto &first, const auto &second) {
-				return first.id == second.id
-					&& first.currentSessionId == second.currentSessionId
-					&& first.sessionIds == second.sessionIds;
-			})
-		&& std::ranges::equal(snapshot.profiles, projected->profiles,
-			[](const auto &first, const auto &second) {
-				return first.id == second.id && first.accountIds == second.accountIds;
-			});
+		&& std::ranges::equal(snapshot.accounts, projected->accounts, SameLiveAccount)
+		&& std::ranges::equal(snapshot.profiles, projected->profiles, SameLiveProfile);
+}
+
+bool ValidEnrolledAccountRewrite(
+		const EmergencyRuleDetails &record,
+		const LiveInstallation &previous,
+		const LiveInstallation &next) {
+	if (record.rule.targetScope == TargetScope::SelectedAccounts
+		|| next.id != previous.id
+		|| next.accounts.size() != previous.accounts.size() + 1
+		|| !std::ranges::equal(previous.profiles, next.profiles, SameLiveProfile)
+		|| !ValidReviewedLive(record, next)) {
+		return false;
+	}
+	auto added = static_cast<const LiveAccount*>(nullptr);
+	auto prior = previous.accounts.begin();
+	for (const auto &account : next.accounts) {
+		if (prior != previous.accounts.end() && SameLiveAccount(*prior, account)) {
+			++prior;
+		} else if (added) {
+			return false;
+		} else {
+			added = &account;
+		}
+	}
+	return added && prior == previous.accounts.end()
+		&& std::ranges::none_of(record.rule.remoteSessionPolicies, [&](const auto &policy) {
+			return policy.accountId == added->id
+				&& policy.kind != RemoteSessionTargetKind::None;
+		});
 }
 
 bool WriteReviewedLive(Writer &writer, const LiveInstallation &live) {
@@ -807,6 +838,20 @@ std::optional<std::vector<NamedEmergencyRule>> OpenEmergencyRulesForMaster(
 	return result;
 }
 
+bool EmergencyRulesAcceptNormalCredentials(
+		const EmergencyRuleAuthority &authority,
+		std::span<const uint8_t> sealed,
+		std::span<const uint8_t> masterDerivedKey,
+		std::span<const NormalCredential> normalCredentials) {
+	const auto rules = OpenMasterRules(authority, sealed, masterDerivedKey);
+	return rules && normalCredentials.size() <= kMaxNormalCredentials
+		&& std::ranges::none_of(*rules, [&](const auto &rule) {
+			return std::ranges::any_of(normalCredentials, [&](const auto &normal) {
+				return Same(normal.verifier, rule.secrets->verifier.data);
+			});
+		});
+}
+
 std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 		const EmergencyRuleAuthority &previousAuthority,
 		std::span<const uint8_t> previousSealed,
@@ -887,6 +932,87 @@ std::optional<SealedEmergencyRules> RebindEmergencyRulesForMaster(
 		rule.reviewedLive = std::move(reviewed);
 	}
 	return SealMasterRules(nextGeneration, nextMaster.derivedKey, *rules);
+}
+
+std::optional<SealedEmergencyRules> RewriteEmergencyRulesForMaster(
+		const EmergencyRuleAuthority &authority,
+		std::span<const uint8_t> sealed,
+		const EmergencyRuleMasterContext &master,
+		const RewriteEmergencyRuleCapability &rewrite) {
+	if (!rewrite || master.normalCredentials.size() > kMaxNormalCredentials) {
+		return std::nullopt;
+	}
+	const auto base = RuleConfiguration{
+		.activeInstallationId = authority.generation.installationId,
+		.masterVerifier = master.verifier,
+		.normalCredentials = {
+			master.normalCredentials.begin(),
+			master.normalCredentials.end(),
+		},
+	};
+	auto masterCredentialKey = Key();
+	if (ValidateRuleConfiguration(base) != RuleValidationError::None
+		|| !DeriveSlotKey(master.derivedKey, false, masterCredentialKey)) {
+		return std::nullopt;
+	}
+	const auto rules = OpenMasterRules(authority, sealed, master.derivedKey);
+	if (!rules || std::ranges::any_of(*rules, [&](const auto &rule) {
+		const auto &verifier = rule.secrets->verifier.data;
+		return Same(rule.secrets->key.data, masterCredentialKey.data)
+			|| Same(verifier, master.verifier)
+			|| std::ranges::any_of(master.normalCredentials, [&](const auto &normal) {
+				return Same(normal.verifier, verifier);
+			});
+	})) {
+		return std::nullopt;
+	}
+	auto result = SealedEmergencyRules{
+		.bytes = { sealed.begin(), sealed.end() },
+		.authority = authority,
+	};
+	auto changed = false;
+	for (auto i = size_t(0); i != rules->size(); ++i) {
+		const auto &rule = (*rules)[i];
+		const auto &previous = rule.named.details;
+		if (!previous.executionCapsuleDigest || !rule.reviewedLive
+			|| previous.capsuleVersion != EmergencyExecutionCapsuleVersion::Rebindable) {
+			continue;
+		}
+		auto capsuleKey = Key();
+		if (!DeriveCapsuleKey(rule.secrets->key.data, capsuleKey.data)) {
+			return std::nullopt;
+		}
+		const auto ticket = EmergencyRuleTicket(authority, previous, rule.reviewedLive);
+		auto decision = rewrite(ticket, capsuleKey.data);
+		if (std::holds_alternative<KeepEmergencyRule>(decision)) {
+			continue;
+		}
+		const auto replacement = std::get_if<EmergencyRuleRewrite>(&decision);
+		if (!replacement || !ValidKey(replacement->executionCapsuleDigest)
+			|| Same(replacement->executionCapsuleDigest, *previous.executionCapsuleDigest)
+			|| !ValidEnrolledAccountRewrite(previous, *rule.reviewedLive, replacement->reviewedLive)) {
+			return std::nullopt;
+		}
+		auto next = previous;
+		next.executionCapsuleDigest = replacement->executionCapsuleDigest;
+		const auto reviewed = std::optional(std::move(replacement->reviewedLive));
+		auto plaintext = Secret<kRuleBytes>();
+		auto writer = Writer(plaintext.data);
+		if (!WriteRule(writer, next, reviewed)
+			|| !SealSlot(
+				rule.secrets->key,
+				authority.generation,
+				i,
+				plaintext.data,
+				RuleSlot(std::span(result.bytes), i))) {
+			return std::nullopt;
+		}
+		changed = true;
+	}
+	if (changed && !Hash(result.bytes, result.authority.digest)) {
+		return std::nullopt;
+	}
+	return result;
 }
 
 } // namespace Ayu::EmergencyActions

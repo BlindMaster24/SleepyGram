@@ -774,13 +774,14 @@ std::optional<Inspection> Inspect(const VerifiedInstallationReceipt &receipt, bo
 	return result;
 }
 
-bool RemoveWindowsFiles(Inspection &inspection) {
+bool RemoveWindowsFiles(Inspection &inspection, bool &changed) {
 	for (auto &file : inspection.files) {
 		auto disposition = FILE_DISPOSITION_INFO{ .DeleteFile = TRUE };
 		if (!SetFileInformationByHandle(
 				file.handle.get(), FileDispositionInfo, &disposition, sizeof(disposition))) {
 			return false;
 		}
+		changed = true;
 		file.handle.reset();
 		if (GetFileAttributesW(file.nativePath.c_str()) != INVALID_FILE_ATTRIBUTES) {
 			return false;
@@ -974,10 +975,18 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 		|| !acknowledge
 		|| (bool(dataEffects.clear) != !receipt.dataCleanup.empty())
 		|| (bool(dataEffects.finalize) != !receipt.dataCleanup.empty())
+		|| (dataEffects.refuse && receipt.dataCleanup.empty())
 		|| timeout < std::chrono::milliseconds::zero()
 		|| timeout > std::chrono::minutes(5)) {
 		return InstallationRemovalResult::TicketRejected;
 	}
+#if defined(_WIN32) || defined(__APPLE__) || defined(__linux__)
+	const auto refuse = [&](InstallationRemovalResult result) {
+		return dataEffects.refuse && !dataEffects.refuse()
+			? InstallationRemovalResult::RefusalNotRecorded
+			: result;
+	};
+#endif
 #ifdef _WIN32
 	const auto parent = DuplicateParentHandle(inheritedParent);
 	if (!parent || !ticket.parentProcessId || ticket.parentProcessId == GetCurrentProcessId()
@@ -1012,10 +1021,21 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 		return InstallationRemovalResult::Partial;
 	}
 	auto ready = Inspect(receipt, true);
-	if (!ready || !MatchesTicket(receipt, *ready, ticket, handoffSecret)) {
-		return InstallationRemovalResult::InstallationChanged;
+	if (!ready) {
+		const auto current = Inspect(receipt, false);
+		return (current && MatchesTicket(receipt, *current, ticket, handoffSecret))
+			? InstallationRemovalResult::Partial
+			: refuse(InstallationRemovalResult::InstallationChanged);
 	}
-	return (RemoveWindowsFiles(*ready) && (!dataEffects.finalize || dataEffects.finalize()))
+	if (!MatchesTicket(receipt, *ready, ticket, handoffSecret)) {
+		return refuse(InstallationRemovalResult::InstallationChanged);
+	}
+	auto changed = false;
+	if (!RemoveWindowsFiles(*ready, changed)) {
+		ready.reset();
+		return changed ? refuse(InstallationRemovalResult::Partial) : InstallationRemovalResult::Partial;
+	}
+	return (!dataEffects.finalize || dataEffects.finalize())
 		? InstallationRemovalResult::Removed
 		: InstallationRemovalResult::Partial;
 #elif defined(__APPLE__) || defined(__linux__)
@@ -1047,16 +1067,25 @@ InstallationRemovalResult InstallationRemovalReceiver::RemoveAfterParentExit(
 	}
 	const auto ready = Inspect(receipt);
 	if (!ready || !MatchesTicket(receipt, *ready, ticket, handoffSecret)) {
-		return InstallationRemovalResult::InstallationChanged;
+		return refuse(InstallationRemovalResult::InstallationChanged);
 	}
+	auto changed = false;
 	for (const auto &file : ready->files) {
 		if (!RemoveFile(ready->root.get(), file)) {
+			if (changed) {
+				return refuse(InstallationRemovalResult::Partial);
+			}
+			const auto current = Inspect(receipt);
+			if (!current || !MatchesTicket(receipt, *current, ticket, handoffSecret)) {
+				return refuse(InstallationRemovalResult::InstallationChanged);
+			}
 			return InstallationRemovalResult::Partial;
 		}
+		changed = true;
 	}
 	if (receipt.kind == InstallationPackageKind::MacBundle
 		&& !RemoveEmptyBundleDirectories(*ready)) {
-		return InstallationRemovalResult::Partial;
+		return refuse(InstallationRemovalResult::Partial);
 	}
 	return (!dataEffects.finalize || dataEffects.finalize())
 		? InstallationRemovalResult::Removed : InstallationRemovalResult::Partial;

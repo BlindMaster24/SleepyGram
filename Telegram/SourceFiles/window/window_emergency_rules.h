@@ -36,6 +36,7 @@ struct EmergencyResetSummary final {
 	int clearedAccounts = 0;
 	int unconfirmedDeviceRevokes = 0;
 	int unconfirmedLogouts = 0;
+	bool installationRemovalRefused = false;
 };
 
 struct EmergencyRulesSnapshot final {

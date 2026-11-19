@@ -432,6 +432,9 @@ void EmergencyRulesPanel::showList() {
 	if (_snapshot && _snapshot->lastReset) {
 		const auto &last = *_snapshot->lastReset;
 		AddText(layout, u"Last reset cleared local data for %1 accounts."_q.arg(last.clearedAccounts));
+		if (last.installationRemovalRefused) {
+			AddText(layout, u"SleepyGram could not fully remove its installation."_q);
+		}
 		if (last.unconfirmedDeviceRevokes || last.unconfirmedLogouts) {
 			AddText(layout, u"Unconfirmed on Telegram: %1 device revokes, %2 sign-outs."_q
 				.arg(last.unconfirmedDeviceRevokes).arg(last.unconfirmedLogouts));

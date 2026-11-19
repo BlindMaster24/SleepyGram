@@ -494,9 +494,12 @@ void ScopedProfileLockWindow::submitSetChange() {
 	setSubmitting(true);
 	_status->setText(u"Saving changes…"_q);
 	const auto weak = QPointer<ScopedProfileLockWindow>(this);
+	const auto proof = _domain->preparedScopedProfileProof();
 	ProfileSets::SaveProfileSetChange(
 		_sidecar,
-		_domain->preparedScopedProfileTransactionId(),
+		proof ? *proof : ProfileSets::MigrationGenerationProof{
+			_domain->preparedScopedProfileTransactionId(), {},
+		},
 		std::move(change),
 		std::move(master),
 		std::move(setPasscode),

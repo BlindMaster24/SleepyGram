@@ -38,6 +38,7 @@ enum class InstallationRemovalResult : uint8_t {
 	ParentUnavailable,
 	ParentStillRunning,
 	InstallationChanged,
+	RefusalNotRecorded,
 };
 
 inline constexpr auto kInstallationRemovalKeyBytes = size_t(32);
@@ -71,6 +72,7 @@ struct InstallationRemovalProcessHandle final {
 struct InstallationRemovalDataEffects final {
 	std::function<bool()> clear;
 	std::function<bool()> finalize;
+	std::function<bool()> refuse;
 };
 
 [[nodiscard]] InstallationRemovalCapability InspectInstallationRemoval(

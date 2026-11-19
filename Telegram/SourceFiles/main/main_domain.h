@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 namespace Ayu::ProfileSets {
 class MigrationController;
 class OpenedProfileGeneration;
+struct MigrationGenerationProof;
 struct Metadata;
 struct AccountId;
 struct ProfileGenerationAccess;
@@ -77,6 +78,8 @@ public:
 	[[nodiscard]] auto preparedScopedAdminAccountIds() const
 		-> const std::vector<Ayu::ProfileSets::AccountId>*;
 	[[nodiscard]] QByteArray preparedScopedProfileTransactionId() const;
+	[[nodiscard]] auto preparedScopedProfileProof() const
+		-> const Ayu::ProfileSets::MigrationGenerationProof*;
 	[[nodiscard]] std::shared_ptr<MTP::AuthKey> preparedScopedSettingsKey() const;
 	[[nodiscard]] int preparedScopedAccountCount() const;
 

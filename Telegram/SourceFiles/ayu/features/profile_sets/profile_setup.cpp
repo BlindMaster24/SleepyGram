@@ -2,6 +2,7 @@
 #include "ayu/features/profile_sets/profile_setup.h"
 
 #include "ayu/ayu_preferences_migration.h"
+#include "ayu/features/profile_sets/profile_generation.h"
 #include "ayu/features/profile_sets/profile_staging.h"
 #include "ayu/features/profile_sets/profile_migration.h"
 #include "crl/crl_async.h"
@@ -396,8 +397,40 @@ Result Setup(ProfileSetupRequest &request) {
 			&& record.accountKeyring == draft->accountKeyring
 			&& record.legacyRetirement == receipt && record.emergencyRules.isEmpty();
 	});
-	return !committed ? Result::VerificationFailed
-		: FinishProfileRetirement(request.dataDirectory) ? Result::Complete
+	if (!committed) {
+		return Result::VerificationFailed;
+	} else if (!FinishProfileRetirement(request.dataDirectory)) {
+		return Result::RetirementPending;
+	} else if (request.layout != ProfileSetupLayout::RevocableGates) {
+		return Result::Complete;
+	}
+	const auto current = workspace->LoadCommitted();
+	if (!current || current->layout != MigrationGenerationLayout::LegacyKeys
+		|| current->profileVault != committed->profileVault
+		|| current->accountKeyring != committed->accountKeyring
+		|| !current->legacyRetirement.isEmpty()) {
+		return Result::RetirementPending;
+	}
+	const auto vault = ParseProfileVault(current->profileVault);
+	if (!vault) {
+		return Result::RevocablePromotionDeferred;
+	}
+	auto admin = Derive(vault->salt, vault->kdf, request.masterPasscode);
+	auto first = Derive(vault->salt, vault->kdf, request.firstSetPasscode);
+	const auto wipeCredentials = gsl::finally([&] { Wipe(admin); Wipe(first); });
+	const auto promoted = PromoteFreshRevocableProfileSetup(
+		*workspace, current->proof(), std::move(admin), std::move(first),
+		[&](const CommittedRevocableProfileGeneration &) {
+			return ScopedDataDigest(*workspace) == dataDigest;
+		});
+	if (!promoted) {
+		const auto active = workspace->LoadCommitted();
+		return (active && active->proof() == current->proof())
+			? Result::RevocablePromotionDeferred
+			: Result::RetirementPending;
+	}
+	return workspace->RetireRevocableGenerations(*promoted)
+		? Result::Complete
 		: Result::RetirementPending;
 }
 
@@ -419,6 +452,9 @@ bool FinishProfileRetirement(const QString &dataDirectory) {
 	const auto committed = workspace ? workspace->LoadCommitted() : std::nullopt;
 	if (!committed) {
 		return false;
+	} else if (committed->layout == MigrationGenerationLayout::RevocableGates) {
+		return committed->revocableEmergencyRecovery.isEmpty()
+			&& workspace->RetireRevocableGenerations(committed->proof());
 	} else if (committed->legacyRetirement.isEmpty()) {
 		return committed->emergencyRecovery.isEmpty()
 			&& workspace->RetireInactiveGenerations(committed->transactionId);

@@ -1,7 +1,10 @@
 // This is the source code of AyuGram for Desktop.
 #include "ayu/features/emergency_actions/installation_data_cleanup.h"
 
+#include "ayu/features/emergency_actions/emergency_action_journal.h"
+
 #include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 #include <charconv>
@@ -19,7 +22,9 @@
 #include <aclapi.h>
 #else
 #include <cerrno>
+#include <cstdio>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -40,6 +45,7 @@ constexpr auto kJournals = std::string_view("emergency-journal/");
 constexpr auto kStage = std::string_view("stage/");
 constexpr auto kJournalSuffix = std::string_view(".journal");
 constexpr auto kJournalDigits = std::string_view("abcdefghijklmnopqrstuvwxyz234567");
+constexpr auto kExecutionLock = std::string_view("profile-sets/emergency-journal/execution.lock");
 
 constexpr auto kSettingsFiles = std::array<std::string_view, 6>{
 	"settingss", "settings0", "settings1",
@@ -51,14 +57,16 @@ constexpr auto kGlobalFiles = std::array<std::string_view, 17>{
 	"shortcuts-custom.json", "opengl_crash_check", "angle_backend", "ayu_settings.json",
 	"ayudata.db", "ayudata.db-wal", "ayudata.db-shm", "ayudata.db-journal",
 };
-constexpr auto kReplayControlFiles = std::array<std::string_view, 8>{
+constexpr auto kReplayControlFiles = std::array<std::string_view, 11>{
 	".migration-workspace", ".cutover/phase", ".cutover/active",
 	"migration.manifest.pending", "migration.manifest.committed", "migration.lock",
 	"profile-setup.bin", "emergency-journal/execution.lock",
+	".revocable-head", ".revocable-floor", ".revocable-head-tmp",
 };
-constexpr auto kGenerationFiles = std::array<std::string_view, 5>{
+constexpr auto kGenerationFiles = std::array<std::string_view, 8>{
 	"profile-vault.bin", "account-keyring.bin", "legacy-retirement.bin",
 	"emergency-rules.bin", "emergency-recovery.bin",
+	"account-gate-table.bin", "revocable-emergency-rules.bin", "revocable-emergency-recovery.bin",
 };
 
 bool ValidStableId(std::string_view id) {
@@ -465,6 +473,40 @@ bool RemoveNative(NativeLeaf &leaf, const Snapshot &expected) {
 		&& NativeFailure() == EntryStatus::Missing;
 }
 
+NativeHandle LockJournal(NativeLeaf &leaf, const Snapshot &expected) {
+	leaf.file.close();
+	auto handle = OpenNative(leaf.path, GENERIC_READ | GENERIC_WRITE, 0);
+	return (StatFile(handle) == expected) ? std::move(handle) : NativeHandle();
+}
+
+bool ReplaceJournal(
+		NativeLeaf &leaf,
+		const Snapshot &expected,
+		std::string_view temporary,
+		std::span<const std::byte> bytes) {
+	const auto path = leaf.path.parent_path() / Path(temporary);
+	auto handle = NativeHandle(CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr,
+		CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
+	if (!handle) {
+		return false;
+	}
+	auto written = DWORD(0);
+	const auto synced = WriteFile(handle.get(), bytes.data(), DWORD(bytes.size()), &written, nullptr)
+		&& written == bytes.size() && FlushFileBuffers(handle.get());
+	handle.close();
+	auto current = OpenNative(leaf.path, FILE_READ_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+	const auto same = StatFile(leaf.file) == expected && StatFile(current) == expected;
+	leaf.file.close();
+	current.close();
+	if (synced && same && MoveFileExW(path.c_str(), leaf.path.c_str(),
+			MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+		return true;
+	}
+	DeleteFileW(path.c_str());
+	return false;
+}
+
 #else
 
 using Stat = struct stat;
@@ -673,6 +715,50 @@ bool RemoveNative(NativeLeaf &leaf, const Snapshot &expected) {
 		&& fsync(leaf.directory.get()) == 0;
 }
 
+NativeHandle LockJournal(const NativeLeaf &leaf, const Snapshot &expected) {
+	auto handle = NativeHandle(openat(leaf.directory.get(), leaf.name.c_str(),
+		O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC));
+	return (StatFile(handle) == expected && flock(handle.get(), LOCK_EX | LOCK_NB) == 0)
+		? std::move(handle)
+		: NativeHandle();
+}
+
+bool WriteJournal(const NativeHandle &handle, std::span<const std::byte> bytes) {
+	while (!bytes.empty()) {
+		const auto count = write(handle.get(), bytes.data(), bytes.size());
+		if (count < 0 && errno == EINTR) {
+			continue;
+		}
+		if (count <= 0) {
+			return false;
+		}
+		bytes = bytes.subspan(size_t(count));
+	}
+	return fsync(handle.get()) == 0;
+}
+
+bool ReplaceJournal(
+		NativeLeaf &leaf,
+		const Snapshot &expected,
+		const std::string &temporary,
+		std::span<const std::byte> bytes) {
+	const auto directory = leaf.directory.get();
+	const auto file = NativeHandle(openat(directory, temporary.c_str(),
+		O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR));
+	if (!file) {
+		return false;
+	}
+	auto live = Stat{};
+	if (WriteJournal(file, bytes)
+		&& fstatat(directory, leaf.name.c_str(), &live, AT_SYMLINK_NOFOLLOW) == 0
+		&& OwnedRegular(live) && FileSnapshot(live) == expected
+		&& renameat(directory, temporary.c_str(), directory, leaf.name.c_str()) == 0) {
+		return fsync(directory) == 0;
+	}
+	unlinkat(directory, temporary.c_str(), 0);
+	return false;
+}
+
 #endif
 
 struct ObservedLeaf final {
@@ -706,6 +792,20 @@ bool Matches(const InstallationDataCleanupFile &file, const ObservedLeaf &observ
 		&& observed.snapshot.identity == file.identity && observed.digest == file.digest;
 }
 
+std::string TemporaryJournalName() {
+	auto bytes = std::array<uint8_t, 16>();
+	if (RAND_bytes(bytes.data(), int(bytes.size())) != 1) {
+		return {};
+	}
+	constexpr auto hex = std::string_view("0123456789abcdef");
+	auto result = std::string(".removal-journal-");
+	for (const auto byte : bytes) {
+		result.push_back(hex[byte >> 4]);
+		result.push_back(hex[byte & 15]);
+	}
+	return result;
+}
+
 Result Failure(EntryStatus status) {
 	return (status == EntryStatus::Unavailable)
 		? Result::FilesystemFailure : Result::UnexpectedFile;
@@ -713,7 +813,7 @@ Result Failure(EntryStatus status) {
 
 int ReplayOrder(const InstallationDataCleanupFile *file) {
 	const auto path = std::string_view(file->relativePath);
-	if (path.ends_with("/emergency-recovery.bin")) {
+	if (path.ends_with("/emergency-recovery.bin") || path.ends_with("/revocable-emergency-recovery.bin")) {
 		return 2;
 	}
 	return path.starts_with("profile-sets/emergency-journal/") ? 1 : 0;
@@ -1001,6 +1101,63 @@ InstallationDataCleanupResult ClearInstallationDataFiles(
 		}
 	}
 	return Result::Complete;
+}
+
+bool RecordInstallationRemovalRefusal(
+		const InstallationDataCleanupPlan &plan,
+		const OperationId &operation) {
+	if (!ValidStableId(operation.value) || !ValidateInstallationDataCleanupPlan(plan)) {
+		return false;
+	}
+	const auto path = std::string(kWorkspace).append(kJournals).append(JournalFile(operation));
+	const auto planned = std::ranges::find(plan.files, path, &InstallationDataCleanupFile::relativePath);
+	const auto plannedLock = std::ranges::find(plan.files, kExecutionLock,
+		&InstallationDataCleanupFile::relativePath);
+	const auto root = OpenRoot(plan.dataDirectory);
+	if (planned == plan.files.end() || plannedLock == plan.files.end()
+		|| !root || root->identity != plan.rootIdentity) {
+		return false;
+	}
+	auto lockLeaf = OpenLeaf(*root, kExecutionLock, false);
+	const auto lockSnapshot = Observe(lockLeaf);
+	if (!Matches(*plannedLock, lockSnapshot)) {
+		return false;
+	}
+	const auto lease = LockJournal(lockLeaf, lockSnapshot.snapshot);
+	if (!lease) {
+		return false;
+	}
+	auto leaf = OpenLeaf(*root, path, false);
+	const auto before = StatFile(leaf.file);
+	if (leaf.status != EntryStatus::Present || !before || !before->size
+		|| before->identity != planned->identity || before->size > kMaxJournalBytes) {
+		return false;
+	}
+	auto bytes = std::vector<uint8_t>(size_t(before->size));
+	auto remaining = std::span(bytes);
+	const auto digest = Digest(bytes.size(), [&](std::span<uint8_t> buffer) {
+		const auto count = ReadNative(leaf.file, buffer);
+		if (count && *count <= buffer.size()) {
+			std::ranges::copy(buffer.first(*count), remaining.begin());
+			remaining = remaining.subspan(*count);
+		}
+		return count;
+	});
+	if (!digest || *digest != planned->digest || StatFile(leaf.file) != before) {
+		return false;
+	}
+	auto journal = DecodeJournal(std::as_bytes(std::span(bytes)));
+	if (!journal || journal->installationId != plan.installationId
+		|| journal->operationId != operation) {
+		return false;
+	}
+	const auto marked = MarkInstallationRemovalRefused(*journal);
+	if (marked != TransitionResult::Applied) {
+		return marked == TransitionResult::AlreadyApplied;
+	}
+	const auto encoded = EncodeJournal(*journal);
+	const auto temporary = TemporaryJournalName();
+	return !encoded.empty() && !temporary.empty() && ReplaceJournal(leaf, *before, temporary, encoded);
 }
 
 } // namespace Ayu::EmergencyActions

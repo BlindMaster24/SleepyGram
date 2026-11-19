@@ -71,20 +71,15 @@ std::optional<OpenedProfileGeneration> AuthenticateScopedOnWorker(
 		error = ProfileGenerationError::InvalidSidecar;
 		return std::nullopt;
 	}
-	if (!committed->emergencyRecovery.isEmpty()) {
-		error = ProfileGenerationError::EmergencyRecoveryRequired;
+	const auto parameters = ReadCommittedProfileUnlockParameters(*committed, &error);
+	if (!parameters) {
 		return std::nullopt;
 	}
-	const auto vault = ParseProfileVault(committed->profileVault);
-	if (!vault || vault->version != kProfileVaultVersion) {
-		error = ProfileGenerationError::InvalidVault;
-		return std::nullopt;
-	}
-	if (!ValidUnlockInput(vault->salt, vault->kdf, passcode)) {
+	if (!ValidUnlockInput(parameters->salt, parameters->kdf, passcode)) {
 		error = ProfileGenerationError::WrongPassword;
 		return std::nullopt;
 	}
-	auto derived = DeriveCredential(vault->salt, vault->kdf, passcode);
+	auto derived = DeriveCredential(parameters->salt, parameters->kdf, passcode);
 	const auto wipeDerived = gsl::finally([&] {
 		OPENSSL_cleanse(derived.verifier.data(), size_t(derived.verifier.size()));
 		OPENSSL_cleanse(derived.key.data(), size_t(derived.key.size()));
@@ -93,9 +88,12 @@ std::optional<OpenedProfileGeneration> AuthenticateScopedOnWorker(
 		error = ProfileGenerationError::DerivationFailed;
 		return std::nullopt;
 	}
-	auto result = AuthenticateCommittedProfileGeneration(
-		sidecar, {}, derived, {}, {}, {}, {},
-		committed->transactionId, &error);
+	auto result = (committed->layout == MigrationGenerationLayout::RevocableGates)
+		? AuthenticateCommittedRevocableProfileGeneration(
+			sidecar, derived, committed->proof(), &error)
+		: AuthenticateCommittedProfileGeneration(
+			sidecar, {}, derived, {}, {}, {}, {},
+			committed->transactionId, &error);
 	if (fromLockScreen && !result && error == ProfileGenerationError::WrongPassword) {
 		return SubmitProfileEmergencyOnWorker(sidecar, *committed, derived, error);
 	}
@@ -104,7 +102,7 @@ std::optional<OpenedProfileGeneration> AuthenticateScopedOnWorker(
 
 ProfileGenerationError SaveSetOnWorker(
 		const MigrationController &sidecar,
-		const QByteArray &expectedTransactionId,
+		const MigrationGenerationProof &expected,
 		const ProfileSetChange &change,
 		QString &masterPasscode,
 		QString &setPasscode) {
@@ -118,28 +116,39 @@ ProfileGenerationError SaveSetOnWorker(
 		: std::nullopt;
 	if (!committed) {
 		return Error::InvalidSidecar;
-	} else if (committed->transactionId != expectedTransactionId) {
+	} else if (committed->transactionId != expected.transactionId) {
 		return Error::StaleGeneration;
 	}
-	const auto vault = ParseProfileVault(committed->profileVault);
-	if (!vault || vault->version != kProfileVaultVersion) {
-		return Error::InvalidVault;
-	} else if (!ValidUnlockInput(vault->salt, vault->kdf, masterPasscode)) {
+	const auto revocable = (committed->layout == MigrationGenerationLayout::RevocableGates);
+	if ((revocable && committed->proof() != expected)
+		|| (!revocable && !expected.manifestDigest.isEmpty())) {
+		return Error::StaleGeneration;
+	}
+	const auto legacy = revocable ? std::nullopt : ParseProfileVault(committed->profileVault);
+	auto parameterError = Error::InvalidVault;
+	const auto parameters = revocable
+		? ReadCommittedProfileUnlockParameters(*committed, &parameterError)
+		: (legacy && legacy->version == kProfileVaultVersion)
+		? std::optional(ProfileGenerationUnlockParameters{ legacy->salt, legacy->kdf })
+		: std::nullopt;
+	if (!parameters) {
+		return parameterError;
+	} else if (!ValidUnlockInput(parameters->salt, parameters->kdf, masterPasscode)) {
 		return Error::WrongPassword;
 	} else if (!setPasscode.isEmpty()
-		&& !ValidUnlockInput(vault->salt, vault->kdf, setPasscode)) {
+		&& !ValidUnlockInput(parameters->salt, parameters->kdf, setPasscode)) {
 		return Error::SettingsRejected;
 	}
-	auto master = DeriveCredential(vault->salt, vault->kdf, masterPasscode);
+	auto master = DeriveCredential(parameters->salt, parameters->kdf, masterPasscode);
 	const auto wipeMaster = gsl::finally([&] {
 		OPENSSL_cleanse(master.key.data(), master.key.size());
 		OPENSSL_cleanse(master.verifier.data(), master.verifier.size());
 	});
 	if (!master.valid()) {
 		return Error::DerivationFailed;
-	} else if (CRYPTO_memcmp(
+	} else if (legacy && CRYPTO_memcmp(
 		master.verifier.constData(),
-		vault->adminVerifier.constData(),
+		legacy->adminVerifier.constData(),
 		kVerifierSize)) {
 		return Error::WrongPassword;
 	}
@@ -153,14 +162,18 @@ ProfileGenerationError SaveSetOnWorker(
 		}
 	});
 	if (!setPasscode.isEmpty()) {
-		replacement = DeriveCredential(vault->salt, vault->kdf, setPasscode);
+		replacement = DeriveCredential(parameters->salt, parameters->kdf, setPasscode);
 		if (!replacement->valid()) {
 			return Error::DerivationFailed;
 		}
 	}
+	if (revocable) {
+		return CommitRevocableProfileSetChange(
+			sidecar, expected, change, std::move(master), std::move(replacement));
+	}
 	return CommitProfileSetChange(
 		sidecar,
-		expectedTransactionId,
+		expected.transactionId,
 		change,
 		std::move(master),
 		std::move(replacement),
@@ -253,18 +266,34 @@ void SaveProfileSetChange(
 		QString masterPasscode,
 		QString setPasscode,
 		Fn<void(ProfileGenerationError)> done) {
+	SaveProfileSetChange(
+		std::move(sidecar),
+		MigrationGenerationProof{ std::move(expectedTransactionId), {} },
+		std::move(change),
+		std::move(masterPasscode),
+		std::move(setPasscode),
+		std::move(done));
+}
+
+void SaveProfileSetChange(
+		MigrationController sidecar,
+		MigrationGenerationProof expected,
+		ProfileSetChange change,
+		QString masterPasscode,
+		QString setPasscode,
+		Fn<void(ProfileGenerationError)> done) {
 	Expects(done != nullptr);
 
 	crl::async([
 			sidecar = std::move(sidecar),
-			expectedTransactionId = std::move(expectedTransactionId),
+			expected = std::move(expected),
 			change = std::move(change),
 			masterPasscode = std::move(masterPasscode),
 			setPasscode = std::move(setPasscode),
 			done = std::move(done)]() mutable {
 		const auto error = SaveSetOnWorker(
 			sidecar,
-			expectedTransactionId,
+			expected,
 			change,
 			masterPasscode,
 			setPasscode);

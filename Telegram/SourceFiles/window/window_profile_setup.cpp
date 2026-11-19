@@ -56,6 +56,7 @@ QString SetupErrorText(Result result) {
 		return u"Setup could not verify your local data."_q;
 	case Result::Complete:
 	case Result::RetirementPending:
+	case Result::RevocablePromotionDeferred:
 		break;
 	}
 	return QString();
@@ -226,6 +227,7 @@ void ProfileSetupWindow::submit() {
 		.firstSetPasscode = TakeInput(*_setPasscode),
 		.preserveLegacyWebviewStorage = _preserveLegacyWebview->isChecked(),
 		.legacyWalletPasscode = TakeInput(*_legacyWalletPasscode),
+		.layout = ProfileSets::ProfileSetupLayout::RevocableGates,
 	};
 	const auto wipe = gsl::finally([&] {
 		request.legacyPasscode.fill(QChar(0));
@@ -281,6 +283,8 @@ void ProfileSetupWindow::completed(Result result) {
 		restart();
 	} else if (result == Result::RetirementPending) {
 		requireRestart(u"Setup was saved. Restart to finish moving your local data."_q);
+	} else if (result == Result::RevocablePromotionDeferred) {
+		requireRestart(u"Setup was saved. Restart to open the protected profile."_q);
 	} else {
 		const auto needsWalletPasscode = (result == Result::LegacyWalletPasscodeRequired)
 			|| (result == Result::LegacyWalletPasscodeRejected);

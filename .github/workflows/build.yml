@@ -187,6 +187,12 @@ jobs:
           path: ${{ runner.temp }}/linux-x64-build.log
           if-no-files-found: ignore
 
+      - name: Verify protected profile storage
+        run: |
+          docker run --rm -u "$(id -u)" \
+            -v "$PWD:/usr/src/tdesktop" "$IMAGE_TAG" \
+            cmake --build /usr/src/tdesktop/out --config Release --parallel 2 --target check_revocable_profiles
+
       - name: Package and verify
         shell: bash
         run: |
@@ -546,6 +552,10 @@ jobs:
             ${{ runner.temp }}/macos-arm64-build.log
           if-no-files-found: ignore
 
+      - name: Verify protected profile storage
+        working-directory: tdesktop
+        run: cmake --build out --config Release --parallel 2 --target check_revocable_profiles
+
       - name: Package, sign, and verify
         shell: bash
         run: |
@@ -777,6 +787,13 @@ jobs:
           name: diagnostics-windows-x64
           path: ${{ runner.temp }}\windows-x64-build.log
           if-no-files-found: ignore
+
+      - name: Verify protected profile storage
+        env:
+          _CL_: /MP1
+        run: |
+          cmake --build "$env:REPO_PATH\out" --config Release --parallel 1 --target check_revocable_profiles -- /p:PreferredToolArchitecture=x64
+          exit $LASTEXITCODE
 
       - name: Package, smoke, and verify
         run: |

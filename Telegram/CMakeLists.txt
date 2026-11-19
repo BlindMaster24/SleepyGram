@@ -287,6 +287,8 @@ set(ayugram_files
         ayu/features/profile_sets/profile_sets_password.cpp
         ayu/features/profile_sets/account_keyring.cpp
         ayu/features/profile_sets/account_keyring.h
+        ayu/features/profile_sets/account_gate_table.cpp
+        ayu/features/profile_sets/account_gate_table.h
         ayu/features/profile_sets/profile_vault.cpp
         ayu/features/profile_sets/profile_vault.h
         ayu/features/profile_sets/profile_vault_password.cpp
@@ -304,6 +306,17 @@ set(ayugram_files
         ayu/features/profile_sets/profile_account_storage.h
         ayu/features/profile_sets/profile_generation.cpp
         ayu/features/profile_sets/profile_generation.h
+        ayu/features/profile_sets/profile_revocable_generation.cpp
+        ayu/features/profile_sets/profile_revocable_vault.cpp
+        ayu/features/profile_sets/profile_revocable_vault.h
+        ayu/features/profile_sets/profile_revocable_emergency_admission.cpp
+        ayu/features/profile_sets/profile_revocable_emergency_admission.h
+        ayu/features/profile_sets/profile_revocable_emergency_bundle.cpp
+        ayu/features/profile_sets/profile_revocable_emergency_bundle.h
+        ayu/features/profile_sets/profile_revocable_emergency_capability.cpp
+        ayu/features/profile_sets/profile_revocable_emergency_capability.h
+        ayu/features/profile_sets/profile_revocable_emergency_rebind.cpp
+        ayu/features/profile_sets/profile_revocable_emergency_rebind.h
         ayu/features/profile_sets/profile_enrollment.cpp
         ayu/features/profile_sets/profile_enrollment.h
         ayu/features/profile_sets/profile_emergency_bundle.cpp

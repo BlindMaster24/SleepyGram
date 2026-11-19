@@ -16,6 +16,12 @@ enum class ProfileSetupResult : uchar {
 	StorageFailed,
 	VerificationFailed,
 	RetirementPending,
+	RevocablePromotionDeferred,
+};
+
+enum class ProfileSetupLayout : uchar {
+	LegacyKeys,
+	RevocableGates,
 };
 
 struct ProfileSetupRequest final {
@@ -27,6 +33,7 @@ struct ProfileSetupRequest final {
 	QString firstSetPasscode;
 	bool preserveLegacyWebviewStorage = false;
 	QString legacyWalletPasscode;
+	ProfileSetupLayout layout = ProfileSetupLayout::LegacyKeys;
 };
 
 void SetupProfileFromLegacy(

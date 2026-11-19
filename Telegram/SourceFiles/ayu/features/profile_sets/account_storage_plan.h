@@ -58,6 +58,18 @@ private:
 		ProfileVaultAccess&&,
 		std::vector<AccountStorageBinding>,
 		AccountStoragePlanError*);
+	friend std::optional<AccountStoragePlan> BuildScopedAccountStoragePlan(
+		QString,
+		std::vector<AccountKey>,
+		const std::vector<AccountVaultLocator>&,
+		AccountStoragePlanError*);
+
+	static std::optional<AccountStoragePlan> BuildBound(
+		QString rootPath,
+		std::vector<AccountKey> keys,
+		const std::vector<AccountStorageBinding> &bindings,
+		bool scoped,
+		AccountStoragePlanError *error);
 
 	std::vector<AccountStorageTarget> _targets;
 	std::vector<AccountKey> _keys;
@@ -69,6 +81,11 @@ private:
 	QString rootPath,
 	ProfileVaultAccess &&access,
 	std::vector<AccountStorageBinding> bindings,
+	AccountStoragePlanError *error = nullptr);
+[[nodiscard]] std::optional<AccountStoragePlan> BuildScopedAccountStoragePlan(
+	QString rootPath,
+	std::vector<AccountKey> keys,
+	const std::vector<AccountVaultLocator> &locators,
 	AccountStoragePlanError *error = nullptr);
 
 } // namespace Ayu::ProfileSets

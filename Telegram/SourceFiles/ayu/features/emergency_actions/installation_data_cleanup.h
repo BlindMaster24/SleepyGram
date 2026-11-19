@@ -67,4 +67,8 @@ enum class InstallationDataCleanupResult : uint8_t {
 	const InstallationDataCleanupPlan &plan,
 	InstallationDataCleanupPhase phase);
 
+[[nodiscard]] bool RecordInstallationRemovalRefusal(
+	const InstallationDataCleanupPlan &authenticatedPlan,
+	const OperationId &operation);
+
 } // namespace Ayu::EmergencyActions

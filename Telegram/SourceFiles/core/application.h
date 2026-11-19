@@ -399,7 +399,9 @@ private:
 	void finishProvisionalEnrollment(
 		Ayu::ProfileSets::MigrationController sidecar,
 		QByteArray transactionId,
+		QByteArray manifestDigest,
 		Ayu::ProfileSets::SetId setId,
+		QByteArray enrollmentOperation,
 		Main::ProvisionalAccountAuthorization authorization);
 	void runDesktop(
 		const Ayu::ProfileSets::MigrationController *sidecar,

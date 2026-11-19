@@ -27,11 +27,28 @@ enum class MigrationArtifact : quint32 {
 	LegacyRetirement = 3,
 	EmergencyRules = 4,
 	EmergencyRecovery = 5,
+	AccountGateTable = 6,
+	RevocableEmergencyRules = 7,
+	RevocableEmergencyRecovery = 8,
 };
 
 struct MigrationInput final {
 	MigrationArtifact artifact = MigrationArtifact::ProfileVault;
 	QByteArray encryptedBytes;
+};
+
+enum class MigrationGenerationLayout : uchar {
+	LegacyKeys,
+	RevocableGates,
+};
+
+struct MigrationGenerationProof final {
+	QByteArray transactionId;
+	QByteArray manifestDigest;
+
+	friend bool operator==(
+		const MigrationGenerationProof&,
+		const MigrationGenerationProof&) = default;
 };
 
 struct CommittedMigration final {
@@ -41,6 +58,17 @@ struct CommittedMigration final {
 	QByteArray legacyRetirement;
 	QByteArray emergencyRules;
 	QByteArray emergencyRecovery;
+	MigrationGenerationLayout layout = MigrationGenerationLayout::LegacyKeys;
+	QByteArray installationId;
+	QByteArray accountGateTable;
+	QByteArray revocableEmergencyRules;
+	QByteArray revocableEmergencyRecovery;
+	QByteArray manifestDigest;
+	bool retirementPending = false;
+
+	[[nodiscard]] MigrationGenerationProof proof() const {
+		return { transactionId, manifestDigest };
+	}
 };
 
 enum class MigrationState : uchar {
@@ -76,6 +104,8 @@ enum class MigrationError : uchar {
 	PublicationUncertain, // Reopen the committed generation before retrying.
 	RetirementFailed,
 	CallbackFailed,
+	RevocableRetirementRequired,
+	RevocableRecoveryRequired,
 };
 
 class MigrationController final {
@@ -121,9 +151,19 @@ public:
 		const Verifier &verify,
 		MigrationError *error = nullptr,
 		QByteArray transactionId = {}) const;
+	[[nodiscard]] std::optional<CommittedMigration> ReplaceRevocableCommitted(
+		const MigrationGenerationProof &expected,
+		const QByteArray &installationId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error = nullptr,
+		QByteArray transactionId = {}) const;
 	// Retire only after readers of the previous generation have stopped.
 	[[nodiscard]] bool RetireInactiveGenerations(
 		const QByteArray &expectedTransactionId,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool RetireRevocableGenerations(
+		const MigrationGenerationProof &expected,
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] MigrationState Recover(
 		MigrationError *error = nullptr) const;
@@ -139,6 +179,14 @@ public:
 		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool WithCurrentRevocableGeneration(
+		const MigrationGenerationProof &expected,
+		const Verifier &callback,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] bool WithCurrentRevocableRecovery(
+		const MigrationGenerationProof &expected,
+		const Verifier &callback,
+		MigrationError *error = nullptr) const;
 	[[nodiscard]] bool WithPreparingWorkspace(
 		const std::function<bool()> &callback,
 		MigrationError *error = nullptr) const;
@@ -148,6 +196,10 @@ public:
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<QString> PrepareScopedSettingsDirectory(
 		const QByteArray &expectedTransactionId,
+		SetId setId,
+		MigrationError *error = nullptr) const;
+	[[nodiscard]] std::optional<QString> PrepareRevocableScopedSettingsDirectory(
+		const MigrationGenerationProof &expected,
 		SetId setId,
 		MigrationError *error = nullptr) const;
 	[[nodiscard]] std::optional<QString> PrepareInitialSettingsDirectory(
@@ -161,6 +213,12 @@ public:
 	[[nodiscard]] bool isIsolatedFixture() const;
 
 private:
+	enum class LeaseKind : uchar {
+		Legacy,
+		Revocable,
+		RevocableRecovery,
+	};
+
 	explicit MigrationController(QString root, QString profileDataDirectory = {});
 	[[nodiscard]] bool validateWorkspace() const;
 	[[nodiscard]] std::optional<QString> ensureScopedSettingsDirectory(SetId setId) const;
@@ -169,6 +227,22 @@ private:
 		MigrationError *error) const;
 	[[nodiscard]] std::optional<CommittedMigration> commit(
 		const Verifier &verify,
+		MigrationError *error) const;
+	[[nodiscard]] std::optional<CommittedMigration> replaceCommitted(
+		const MigrationGenerationProof &expected,
+		const QByteArray &installationId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error,
+		QByteArray transactionId) const;
+	[[nodiscard]] bool retireInactiveGenerations(
+		const MigrationGenerationProof &expected,
+		bool revocable,
+		MigrationError *error) const;
+	[[nodiscard]] bool withCurrentGeneration(
+		const MigrationGenerationProof &expected,
+		LeaseKind kind,
+		const Verifier &callback,
 		MigrationError *error) const;
 
 	QString _root;

@@ -255,8 +255,8 @@ bool Domain::startPreparedScopedProfile(
 		return launchScopedAccounts(sidecar.accountStorageRoot(), settingsKey, error);
 	};
 	auto migrationError = ProfileSets::MigrationError::None;
-	if (!sidecar.WithCurrentGeneration(
-		_scopedProfile->generation.transactionId(),
+	if (!_scopedProfile->generation.WithCurrent(
+		sidecar,
 		launch,
 		&migrationError)) {
 		return (migrationError == ProfileSets::MigrationError::CallbackFailed)
@@ -371,8 +371,7 @@ bool Domain::startPreparedScopedEnrollment(
 		|| !Local::matchesScopedSettings(preparedScopedSettingsKey())) {
 		return false;
 	}
-	const auto started = sidecar.WithCurrentGeneration(
-		_scopedProfile->generation.transactionId(), [&] {
+	const auto started = _scopedProfile->generation.WithCurrent(sidecar, [&] {
 			auto account = Account::CreateProvisionalScopedLogin(this,
 				std::make_unique<MTP::Config>(MTP::Environment::Production), std::move(done));
 			if (!account) {
@@ -420,6 +419,11 @@ auto Domain::preparedScopedAdminAccountIds() const
 
 QByteArray Domain::preparedScopedProfileTransactionId() const {
 	return _scopedProfile ? _scopedProfile->generation.transactionId() : QByteArray();
+}
+
+auto Domain::preparedScopedProfileProof() const
+-> const ProfileSets::MigrationGenerationProof* {
+	return _scopedProfile ? _scopedProfile->generation.revocableProof() : nullptr;
 }
 
 std::shared_ptr<MTP::AuthKey> Domain::preparedScopedSettingsKey() const {

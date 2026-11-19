@@ -18,6 +18,8 @@ struct ScopedEnrollmentRequest final {
 	MTP::Environment environment = {};
 	QByteArray authorization;
 	QByteArray configuration;
+	std::optional<MigrationGenerationProof> expectedRevocableProof;
+	QByteArray enrollmentOperation;
 };
 
 enum class ScopedEnrollmentResult : uchar {

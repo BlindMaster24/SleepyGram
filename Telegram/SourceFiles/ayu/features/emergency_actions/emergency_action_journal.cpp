@@ -28,7 +28,8 @@ namespace Ayu::EmergencyActions {
 namespace {
 
 constexpr auto kMagic = std::array<uint8_t, 4>{ 'A', 'E', 'J', '1' };
-constexpr auto kVersion = uint16_t(4);
+constexpr auto kCurrentLogoutVersion = uint16_t(4);
+constexpr auto kRemovalRefusalVersion = uint16_t(5);
 constexpr auto kMaxIdBytes = size_t(128);
 constexpr auto kMaxAccounts = size_t(64);
 constexpr auto kMaxSessionsPerAccount = size_t(128);
@@ -52,7 +53,7 @@ bool HasDuplicates(const std::vector<Value> &values) {
 	return std::ranges::adjacent_find(sorted) != sorted.end();
 }
 
-bool ValidState(const JournalEffectState &value, bool network) {
+bool ValidState(const JournalEffectState &value, bool network, bool allowRefusal = false) {
 	switch (value.state) {
 	case EffectState::NotRequested:
 	case EffectState::Pending:
@@ -72,6 +73,8 @@ bool ValidState(const JournalEffectState &value, bool network) {
 			: NetworkOutcome::NotAttempted);
 	case EffectState::Skipped:
 		return network && value.networkOutcome == NetworkOutcome::NotAttempted;
+	case EffectState::Refused:
+		return allowRefusal && value.networkOutcome == NetworkOutcome::NotAttempted;
 	}
 	return false;
 }
@@ -91,6 +94,12 @@ bool RemoteInProgress(const JournalAccount &account) {
 bool RevokeOutstanding(const JournalAccount &account) {
 	return account.remoteSessionRevoke.state == EffectState::Pending
 		|| account.remoteSessionRevoke.state == EffectState::InProgress;
+}
+
+bool RemovalCleanupConfirmed(const EmergencyActionJournal &journal) {
+	return std::ranges::all_of(journal.accounts, [](const JournalAccount &account) {
+		return account.localDataClear.state == EffectState::Succeeded;
+	});
 }
 
 bool ValidJournal(const EmergencyActionJournal &journal) {
@@ -149,7 +158,7 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 	if (std::ranges::adjacent_find(ids) != ids.end()) {
 		return false;
 	}
-	if (!ValidState(journal.installationRemoval, false)
+	if (!ValidState(journal.installationRemoval, false, true)
 		|| !ValidState(journal.safeDestinationActivation, false)) {
 		return false;
 	}
@@ -159,6 +168,10 @@ bool ValidJournal(const EmergencyActionJournal &journal) {
 	}
 	if ((journal.safeDestination == SafeDestinationKind::None)
 		!= (journal.safeDestinationActivation.state == EffectState::NotRequested)) {
+		return false;
+	}
+	if (journal.installationRemoval.state == EffectState::Refused
+		&& !RemovalCleanupConfirmed(journal)) {
 		return false;
 	}
 	const auto activation = journal.safeDestinationActivation.state;
@@ -311,7 +324,9 @@ bool ReadState(
 		uint16_t version) {
 	const auto maxState = (version < 3)
 		? EffectState::Unconfirmed
-		: EffectState::Skipped;
+		: (version < kRemovalRefusalVersion)
+		? EffectState::Skipped
+		: EffectState::Refused;
 	uint8_t value = 0;
 	if (!reader.byte(&value) || value > uint8_t(maxState)) {
 		return false;
@@ -650,7 +665,8 @@ JournalStatus Status(const EmergencyActionJournal &journal) {
 	if (std::ranges::any_of(states, [](EffectState state) {
 		return state == EffectState::Unconfirmed
 			|| state == EffectState::FailedRetryable
-			|| state == EffectState::Skipped;
+			|| state == EffectState::Skipped
+			|| state == EffectState::Refused;
 	})) {
 		return JournalStatus::NeedsAttention;
 	}
@@ -750,6 +766,24 @@ bool LocalCleanupComplete(const EmergencyActionJournal &journal) {
 	});
 }
 
+TransitionResult MarkInstallationRemovalRefused(EmergencyActionJournal &journal) {
+	if (!ValidJournal(journal)
+		|| journal.action != EmergencyAction::RemoveInstallation
+		|| !RemovalCleanupConfirmed(journal)) {
+		return TransitionResult::Rejected;
+	}
+	auto &state = journal.installationRemoval.state;
+	if (state == EffectState::Refused) {
+		return TransitionResult::AlreadyApplied;
+	}
+	if (state != EffectState::Pending && state != EffectState::InProgress
+		&& state != EffectState::FailedRetryable) {
+		return TransitionResult::Rejected;
+	}
+	state = EffectState::Refused;
+	return TransitionResult::Applied;
+}
+
 TransitionResult BeginEffect(
 		EmergencyActionJournal &journal,
 		JournalEffect effect,
@@ -842,7 +876,9 @@ std::vector<std::byte> EncodeJournal(const EmergencyActionJournal &journal) {
 	}
 	auto writer = Writer();
 	for (const auto ch : kMagic) writer.byte(ch);
-	writer.u16(kVersion);
+	writer.u16((journal.installationRemoval.state == EffectState::Refused)
+		? kRemovalRefusalVersion
+		: kCurrentLogoutVersion);
 	writer.string(journal.operationId.value);
 	writer.string(journal.ruleId.value);
 	writer.string(journal.installationId.value);
@@ -882,7 +918,7 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		}
 	}
 	uint16_t version = 0;
-	if (!reader.u16(&version) || version < 1 || version > kVersion) {
+	if (!reader.u16(&version) || version < 1 || version > kRemovalRefusalVersion) {
 		return std::nullopt;
 	}
 	auto result = EmergencyActionJournal();
@@ -926,7 +962,7 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 		}
 		if (!ReadState(reader, &account.localDataClear, version)
 			|| !ReadState(reader, &account.remoteSessionRevoke, version)
-			|| (version >= 4
+			|| (version >= kCurrentLogoutVersion
 				&& !ReadState(reader, &account.currentSessionLogout, version))) {
 			return std::nullopt;
 		}
@@ -953,6 +989,8 @@ std::optional<EmergencyActionJournal> DecodeJournal(
 	}
 	if (!ReadState(reader, &result.installationRemoval, version)
 		|| !ReadState(reader, &result.safeDestinationActivation, version)
+		|| ((version == kRemovalRefusalVersion)
+			!= (result.installationRemoval.state == EffectState::Refused))
 		|| !reader.done()
 		|| !ValidJournal(result)) {
 		return std::nullopt;
@@ -1010,8 +1048,9 @@ std::optional<EmergencyActionJournal> FileJournalStore::latestReset(const Instal
 			const auto written = i->last_write_time(error);
 			if (!error && written >= newest) {
 				auto journal = DecodeJournal(ReadBytes(path, kMaxJournalBytes));
-				if (journal && journal->installationId == installation
-					&& journal->action == EmergencyAction::ResetAccountData && LocalCleanupComplete(*journal)
+				if (journal && journal->installationId == installation && LocalCleanupComplete(*journal)
+					&& (journal->action == EmergencyAction::ResetAccountData
+						|| journal->installationRemoval.state == EffectState::Refused)
 					&& path.filename() == JournalFilename(journal->operationId)
 					&& (!result || written > newest || journal->operationId > result->operationId)) {
 					newest = written;

@@ -1,5 +1,6 @@
 #include "ayu/features/emergency_actions/installation_removal.h"
 #include "ayu/features/emergency_actions/emergency_action_journal.h"
+#include "ayu/features/emergency_actions/installation_data_cleanup.h"
 
 #include <cstdio>
 #include <string_view>
@@ -208,6 +209,28 @@ bool ReadHandoffReport(
 }
 
 #ifndef _WIN32
+auto CaptureFixtureRecovery(const Path &data, const EmergencyActionJournal &journal) {
+	const auto workspace = data / "profile-sets";
+	if (!std::filesystem::create_directories(workspace / "stage")
+		|| !Write(data / "config", "synthetic settings")
+		|| !Write(workspace / "stage/revocable-emergency-recovery.bin", "synthetic committed recovery")) {
+		return std::optional<InstallationDataCleanupPlan>();
+	}
+	auto store = FileJournalStore(workspace / "emergency-journal");
+	{
+		const auto lease = store.tryAcquireExecution();
+		if (!lease || store.createAtomically(journal.operationId, EncodeJournal(journal))
+				!= JournalCreateResult::Created) {
+			return std::optional<InstallationDataCleanupPlan>();
+		}
+	}
+	return CaptureInstallationDataCleanupPlan({
+		.installationId = journal.installationId,
+		.dataDirectory = data,
+		.journalIds = { journal.operationId },
+	});
+}
+
 int ActAsInstallation(const Path &root, const Path &report, std::string_view scenario) {
 	auto receipt = ReadFixtureReceipt(root);
 	if (!receipt) {
@@ -239,6 +262,14 @@ int ActAsInstallation(const Path &root, const Path &report, std::string_view sce
 	if (!cleanup) {
 		return 4;
 	}
+	auto data = std::optional<InstallationDataCleanupPlan>();
+	if (scenario.starts_with("recovery-")) {
+		data = CaptureFixtureRecovery(report.parent_path() / "tdata", *cleanup);
+		if (!data) {
+			return 4;
+		}
+		receipt->dataCleanup = EncodeInstallationDataCleanupPlan(*data);
+	}
 	auto ticket = MakeInstallationRemovalTicket(*receipt, *cleanup, secret);
 	if (scenario == "incomplete-cleanup") {
 		return ticket ? 4 : 0;
@@ -246,7 +277,7 @@ int ActAsInstallation(const Path &root, const Path &report, std::string_view sce
 	if (!ticket || InspectInstallationRemoval(*receipt) != InstallationRemovalCapability::Automatic) {
 		return 5;
 	}
-	if (scenario == "bad-ticket") {
+	if (scenario == "bad-ticket" || scenario == "recovery-bad-ticket") {
 		ticket->authentication.back() ^= 1;
 	}
 	if (scenario == "wrong-parent") {
@@ -268,8 +299,22 @@ int ActAsInstallation(const Path &root, const Path &report, std::string_view sce
 			return write(pipeEnds[1], &ready, 1) == 1;
 		};
 		const auto timeout = (scenario == "still-running") ? 50ms : 2s;
+		auto effects = InstallationRemovalDataEffects();
+		if (data) {
+			const auto apply = [&](InstallationDataCleanupPhase phase) {
+				return ClearInstallationDataFiles(receipt->installationId, data->dataDirectory, *data, phase)
+					== InstallationDataCleanupResult::Complete;
+			};
+			effects.clear = [=] {
+				return scenario != "recovery-clear-failed" && apply(InstallationDataCleanupPhase::AfterExit);
+			};
+			effects.finalize = [=] {
+				return scenario != "recovery-finalize-failed" && apply(InstallationDataCleanupPhase::FinalizeRecovery);
+			};
+			effects.refuse = [&] { return RecordInstallationRemovalRefusal(*data, ticket->operationId); };
+		}
 		const auto result = receiver.RemoveAfterParentExit(
-			receipt->installationId, *receipt, *ticket, secret, timeout, acknowledge);
+			receipt->installationId, *receipt, *ticket, secret, timeout, acknowledge, {}, effects);
 		const auto replay = receiver.RemoveAfterParentExit(
 			receipt->installationId, *receipt, *ticket, secret, timeout, acknowledge);
 		close(pipeEnds[1]);
@@ -281,7 +326,7 @@ int ActAsInstallation(const Path &root, const Path &report, std::string_view sce
 	auto ready = char(0);
 	const auto received = read(pipeEnds[0], &ready, 1);
 	close(pipeEnds[0]);
-	if (scenario == "bad-ticket" || scenario == "wrong-parent") {
+	if (scenario == "bad-ticket" || scenario == "wrong-parent" || scenario == "recovery-bad-ticket") {
 		return received == 0 ? Wait(helper) : 9;
 	}
 	if (received != 1 || ready != 'R' || !std::filesystem::exists(root / kExecutable)) {
@@ -290,7 +335,7 @@ int ActAsInstallation(const Path &root, const Path &report, std::string_view sce
 	if (scenario == "still-running") {
 		return Wait(helper);
 	}
-	if (scenario == "changed-after-admission") {
+	if (scenario == "changed-after-admission" || scenario == "recovery-changed") {
 		const auto installed = root / kManifest;
 		std::filesystem::remove(installed);
 		std::filesystem::create_symlink(root.parent_path() / "neighbor", installed);
@@ -312,7 +357,8 @@ bool RunFixture(const Path &runner, std::string_view scenario) {
 	std::filesystem::create_directories((bundle / kManifest).parent_path());
 	std::filesystem::copy_file(runner, binary);
 	auto preserved = bundle / "downloads";
-	if (kKind == InstallationPackageKind::MacBundle && scenario != "partial") {
+	if (kKind == InstallationPackageKind::MacBundle
+		&& scenario != "partial" && scenario != "recovery-partial") {
 		preserved = directory.path / "downloads";
 	}
 	if (!Write(bundle / kManifest, "temporary manifest")
@@ -337,6 +383,25 @@ bool RunFixture(const Path &runner, std::string_view scenario) {
 	}
 	if (child < 0 || Wait(child) != 0 || !std::filesystem::is_regular_file(neighbor)) {
 		return false;
+	}
+	if (scenario.starts_with("recovery-")) {
+		const auto data = directory.path / "tdata";
+		const auto refused = scenario == "recovery-changed" || scenario == "recovery-partial";
+		const auto expected = (scenario == "recovery-changed")
+			? InstallationRemovalResult::InstallationChanged
+			: (scenario == "recovery-bad-ticket")
+			? InstallationRemovalResult::TicketRejected
+			: InstallationRemovalResult::Partial;
+		if (!ReadHandoffReport(report, expected)) {
+			return false;
+		}
+		auto store = FileJournalStore(data / "profile-sets/emergency-journal");
+		const auto journal = LoadJournal(store, CompletedCleanup(true)->operationId);
+		const auto packageRemains = scenario != "recovery-finalize-failed" && scenario != "recovery-partial";
+		return journal && journal->installationRemoval.state == (refused
+			? EffectState::Refused : EffectState::InProgress)
+			&& std::filesystem::exists(data / "profile-sets/stage/revocable-emergency-recovery.bin")
+			&& std::filesystem::exists(binary) == packageRemains && std::filesystem::exists(preserved);
 	}
 	if (scenario == "complete") {
 		return ReadHandoffReport(report, InstallationRemovalResult::Removed)
@@ -797,6 +862,13 @@ int main(int argc, char **argv) {
 	Check("pending-local-cleanup-cannot-issue-handoff", RunFixture(runner, "incomplete-cleanup"));
 	Check("replacement-symlink-after-parent-acknowledgment-fails-closed",
 		RunFixture(runner, "changed-after-admission"));
+	Check("authenticated-package-change-records-terminal-refusal-and-keeps-recovery",
+		RunFixture(runner, "recovery-changed"));
+	Check("partial-bundle-removal-records-terminal-refusal-and-keeps-recovery",
+		kKind != InstallationPackageKind::MacBundle || RunFixture(runner, "recovery-partial"));
+	Check("failed-data-cleanup-and-finalization-keep-removal-retriable",
+		RunFixture(runner, "recovery-clear-failed") && RunFixture(runner, "recovery-finalize-failed"));
+	Check("forged-handoff-cannot-record-terminal-refusal", RunFixture(runner, "recovery-bad-ticket"));
 	Check("preexisting-symlinks-are-rejected", RunFixture(runner, "symlink"));
 	Check("hardlinked-artifacts-are-rejected", RunFixture(runner, "hardlink"));
 	Check("paths-outside-trusted-package-are-rejected", RunFixture(runner, "foreign-artifact"));

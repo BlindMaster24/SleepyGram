@@ -431,13 +431,16 @@ void Application::run() {
 	}
 	if (_profileStartupMode == ProfileStartupMode::Committed && workspace) {
 		const auto committed = workspace->LoadCommitted();
-		const auto emergency = committed && !committed->emergencyRecovery.isEmpty();
+		const auto emergency = committed && (!committed->emergencyRecovery.isEmpty()
+			|| !committed->revocableEmergencyRecovery.isEmpty());
 		if (committed) {
 			using Recovery = Ayu::ProfileSets::ProfileEmergencyRecoveryResult;
+			const auto revocable = (committed->layout == Ayu::ProfileSets::MigrationGenerationLayout::RevocableGates)
+				? std::optional(committed->proof()) : std::nullopt;
 			_blockedProfileWindow = std::make_unique<ProfileRecoveryWindow>(
 				u"Checking local data…"_q);
 			_blockedProfileWindow->show();
-			crl::async([dataDirectory, emergency, done = crl::guard(this, [this](Recovery result) {
+			crl::async([dataDirectory, emergency, revocable, done = crl::guard(this, [this](Recovery result) {
 				if (!Quitting()) {
 					_blockedProfileWindow.reset();
 					if (result == Recovery::InstallationRemovalReady) {
@@ -450,9 +453,17 @@ void Application::run() {
 					}
 				}
 			})] {
-				const auto result = emergency
-					? Ayu::ProfileSets::FinishProfileEmergencyRecovery(dataDirectory)
-					: Ayu::ProfileSets::FinishProfileRetirement(dataDirectory) ? Recovery::Ready : Recovery::Failed;
+				const auto result = [&] {
+					if (emergency) {
+						return Ayu::ProfileSets::FinishProfileEmergencyRecovery(dataDirectory);
+					} else if (revocable) {
+						const auto scope = MigrationController::OpenProfileWorkspace(dataDirectory);
+						return (scope && scope->RetireRevocableGenerations(*revocable))
+							? Recovery::Ready : Recovery::Failed;
+					}
+					return Ayu::ProfileSets::FinishProfileRetirement(dataDirectory)
+						? Recovery::Ready : Recovery::Failed;
+				}();
 				crl::on_main([done, result] { done(result); });
 			});
 			return;
@@ -481,6 +492,7 @@ void Application::showScopedProfileLock() {
 
 bool Application::startScopedDesktop(const MigrationController &sidecar) {
 	const auto access = _domain->preparedScopedProfileAccess();
+	const auto proof = _domain->preparedScopedProfileProof();
 	if (!access || !access->setId || _desktopInitialized || Quitting()) {
 		return false;
 	}
@@ -488,9 +500,10 @@ bool Application::startScopedDesktop(const MigrationController &sidecar) {
 	if (!key) {
 		return false;
 	}
-	auto directory = sidecar.PrepareScopedSettingsDirectory(
-		_domain->preparedScopedProfileTransactionId(),
-		*access->setId);
+	auto directory = proof
+		? sidecar.PrepareRevocableScopedSettingsDirectory(*proof, *access->setId)
+		: sidecar.PrepareScopedSettingsDirectory(
+			_domain->preparedScopedProfileTransactionId(), *access->setId);
 	if (!directory) {
 		return false;
 	}
@@ -502,7 +515,9 @@ bool Application::startScopedDesktop(const MigrationController &sidecar) {
 void Application::finishProvisionalEnrollment(
 		MigrationController sidecar,
 		QByteArray transactionId,
+		QByteArray manifestDigest,
 		Ayu::ProfileSets::SetId setId,
+		QByteArray enrollmentOperation,
 		Main::ProvisionalAccountAuthorization authorization) {
 	if (Quitting() || !_domain->provisionalEnrollmentActive() || !_lastActivePrimaryWindow) {
 		return;
@@ -516,7 +531,8 @@ void Application::finishProvisionalEnrollment(
 		const auto first = box->addRow(object_ptr<Ui::PasswordInput>(
 			box, st::settingLocalPasscodeInputField, rpl::single(u"Master passcode"_q)));
 		const auto second = box->addRow(object_ptr<Ui::PasswordInput>(
-			box, st::settingLocalPasscodeInputField, rpl::single(u"Set passcode"_q)));
+			box, st::settingLocalPasscodeInputField, rpl::single(enrollmentOperation.isEmpty()
+				? u"Set passcode"_q : u"New set passcode"_q)));
 		const auto error = box->addRow(object_ptr<Ui::FlatLabel>(box, QString(), st::boxLabel));
 		error->hide();
 		const auto submit = [=, this] {
@@ -537,6 +553,9 @@ void Application::finishProvisionalEnrollment(
 				.environment = auth->environment(),
 				.authorization = auth->authorization(),
 				.configuration = auth->config(),
+				.expectedRevocableProof = manifestDigest.isEmpty() ? std::nullopt
+					: std::optional(Ayu::ProfileSets::MigrationGenerationProof{ transactionId, manifestDigest }),
+				.enrollmentOperation = enrollmentOperation,
 			};
 			first->setText(QString());
 			second->setText(QString());
@@ -729,15 +748,20 @@ void Application::runDesktop(
 	DEBUG_LOG(("Application Info: window created..."));
 
 	if (sidecar) {
+		const auto access = _domain->preparedScopedProfileAccess();
+		const auto proof = _domain->preparedScopedProfileProof();
+		const auto landing = access->enrollment;
 		const auto started = _domain->preparedScopedAccountCount()
 			? _domain->startPreparedScopedProfile(*sidecar)
 			: _domain->startPreparedScopedEnrollment(*sidecar, [
 					this,
 					sidecar = *sidecar,
 					transaction = _domain->preparedScopedProfileTransactionId(),
-					set = *_domain->preparedScopedProfileAccess()->setId](
+					manifest = proof ? proof->manifestDigest : QByteArray(),
+					set = landing ? landing->futureSetId : *access->setId,
+					operation = landing ? landing->operationTag : QByteArray()](
 						Main::ProvisionalAccountAuthorization authorization) {
-				finishProvisionalEnrollment(sidecar, transaction, set, std::move(authorization));
+				finishProvisionalEnrollment(sidecar, transaction, manifest, set, operation, std::move(authorization));
 			});
 		if (!started) {
 			Quit();

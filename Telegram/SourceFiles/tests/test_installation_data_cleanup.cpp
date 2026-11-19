@@ -246,6 +246,79 @@ void ChangedOrUnsafeInputsCannotBeginRemoval() {
 #endif
 }
 
+void RefusalReplacesOnlyItsCapturedJournalAndKeepsRecovery() {
+	const auto fixture = FixtureDirectory();
+	if (fixture.path.empty()) {
+		Check("isolated-removal-refusal-fixture", false);
+		return;
+	}
+	const auto root = fixture.path / "tdata";
+	const auto journals = root / "profile-sets/emergency-journal";
+	const auto recovery = root / "profile-sets/generations" / kKnownGeneration / "revocable-emergency-recovery.bin";
+	const auto scope = InstallationDataCleanupScope{
+		.installationId = kInstallation,
+		.dataDirectory = root,
+		.generationIds = { kKnownGeneration },
+		.journalIds = { kRecoveryOperation },
+	};
+	const auto plan = Write(recovery, "committed synthetic recovery")
+		&& Write(root / "settingss", "verified settings")
+		&& CreateJournal(journals)
+		? CaptureInstallationDataCleanupPlan(scope)
+		: std::nullopt;
+	if (!plan) {
+		Check("captured-removal-refusal-fixture", false);
+		return;
+	}
+	auto store = FileJournalStore(journals);
+	const auto active = LoadJournal(store, kRecoveryOperation);
+	const auto isPending = [&] {
+		const auto journal = LoadJournal(store, kRecoveryOperation);
+		return journal && journal->installationRemoval.state == EffectState::Pending;
+	};
+	auto unlisted = scope;
+	unlisted.journalIds.clear();
+	const auto missing = CaptureInstallationDataCleanupPlan(unlisted);
+	Check("refusal-requires-the-ticket-operation-in-the-authenticated-plan",
+		active && !store.latestReset(kInstallation) && missing && isPending()
+		&& !RecordInstallationRemovalRefusal(*missing, kRecoveryOperation)
+		&& !RecordInstallationRemovalRefusal(*plan, OperationId("foreign-operation")));
+	{
+		const auto lease = store.tryAcquireExecution();
+		Check("refusal-cannot-write-while-account-recovery-holds-the-journal-lease",
+			lease && !RecordInstallationRemovalRefusal(*plan, kRecoveryOperation)
+			&& isPending());
+	}
+	auto changed = *plan;
+	const auto journalFile = std::ranges::find_if(changed.files, [](const auto &file) {
+		return file.relativePath.ends_with(".journal");
+	});
+	if (journalFile == changed.files.end()) {
+		Check("captured-refusal-journal-leaf", false);
+		return;
+	}
+	++journalFile->digest.front();
+	Check("refusal-requires-the-exact-captured-journal-digest",
+		!RecordInstallationRemovalRefusal(changed, kRecoveryOperation) && isPending());
+	Check("refusal-persists-after-data-cleanup-and-is-visible-to-master-history",
+		ClearInstallationDataFiles(kInstallation, root, *plan, Phase::AfterExit) == Result::Complete
+		&& RecordInstallationRemovalRefusal(*plan, kRecoveryOperation)
+		&& !RecordInstallationRemovalRefusal(*plan, kRecoveryOperation));
+	const auto refused = store.latestReset(kInstallation);
+	Check("terminal-refusal-prevents-old-cleanup-plan-from-finalizing-recovery",
+		refused && refused->operationId == kRecoveryOperation
+		&& refused->installationRemoval.state == EffectState::Refused
+		&& !store.latestReset(InstallationId("foreign-installation"))
+		&& ClearInstallationDataFiles(kInstallation, root, *plan, Phase::FinalizeRecovery)
+			== Result::UnexpectedFile
+		&& std::filesystem::exists(recovery));
+	const auto operationPath = root / journalFile->relativePath;
+	Check("refusal-never-creates-a-missing-operation-journal",
+		std::filesystem::remove(operationPath)
+		&& !RecordInstallationRemovalRefusal(*plan, kRecoveryOperation)
+		&& !std::filesystem::exists(operationPath));
+}
+
 void PlanFramingAndSparseSetScale() {
 	const auto fixture = FixtureDirectory();
 	if (fixture.path.empty()) {
@@ -294,6 +367,7 @@ void PlanFramingAndSparseSetScale() {
 int main() {
 	OnlyAuthorizedFilesAndCorrectPhaseAreRemoved();
 	ChangedOrUnsafeInputsCannotBeginRemoval();
+	RefusalReplacesOnlyItsCapturedJournalAndKeepsRecovery();
 	PlanFramingAndSparseSetScale();
 	return failures ? 1 : 0;
 }

@@ -38,6 +38,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -46,6 +47,7 @@ namespace {
 
 constexpr auto kStageManifestVersion = 1;
 constexpr auto kGenerationManifestVersion = 2;
+constexpr auto kRevocableManifestVersion = 3;
 constexpr auto kWorkspaceMarkerName = ".migration-workspace";
 constexpr auto kWorkspaceMarker = "sleepygram-isolated-migration-workspace-v1\n";
 constexpr auto kWorkspacePrefix = "sleepygram-migration-fixture-";
@@ -70,10 +72,27 @@ constexpr auto kCutoverPhaseFileName = "phase";
 constexpr auto kCutoverActiveFileName = "active";
 constexpr auto kGenerationsDirectoryName = "generations";
 constexpr auto kTemporaryManifestPrefix = ".manifest-";
+constexpr auto kRevocableHeadName = ".revocable-head";
+constexpr auto kRevocableHeadTemporaryName = ".revocable-head-tmp";
+constexpr auto kRevocableHeadMagic = QByteArrayView("SGRH1");
+constexpr auto kRevocableFloorName = ".revocable-floor";
+constexpr auto kRevocableFloorMagic = QByteArrayView("SGRF1");
+constexpr auto kRevocableVaultMagic = QByteArrayView("SPGV\0\0\0\3", 8);
+constexpr auto kAccountGateTableMagic = QByteArrayView("SGGT1");
+constexpr auto kRevocableRulesMagic = QByteArrayView("SGEB3");
+constexpr auto kRevocableRecoveryMagic = QByteArrayView("SGER3");
 constexpr auto kMaximumManifestSize = 4096;
 constexpr auto kMaximumArtifactSize = 80 * 1024 * 1024;
+constexpr auto kMaximumRevocableEmergencyArtifactSize = 4 * 1024 * 1024;
+constexpr auto kMaximumRevocableJournalBytes = 1024 * 1024;
 constexpr auto kMaximumSidecarSize = 88 * 1024 * 1024;
 constexpr auto kTransactionIdSize = 16;
+constexpr auto kInstallationIdSize = 16;
+constexpr auto kManifestDigestSize = 32;
+constexpr auto kGenerationProofSize = kTransactionIdSize + kManifestDigestSize;
+constexpr auto kMaximumHeadSize = kRevocableHeadMagic.size() + 1
+	+ kInstallationIdSize + 2 * kGenerationProofSize;
+constexpr auto kRevocableFloorSize = kRevocableFloorMagic.size() + kInstallationIdSize;
 
 struct Entry final {
 	MigrationArtifact artifact = MigrationArtifact::ProfileVault;
@@ -84,7 +103,21 @@ struct Entry final {
 struct Manifest final {
 	int version = kStageManifestVersion;
 	QByteArray transactionId;
+	QByteArray installationId;
 	std::vector<Entry> entries;
+};
+
+enum class RevocableHeadState : char {
+	Pending = 'P',
+	Retiring = 'R',
+	Retired = 'C',
+};
+
+struct RevocableHead final {
+	RevocableHeadState state = RevocableHeadState::Pending;
+	QByteArray installationId;
+	MigrationGenerationProof current;
+	MigrationGenerationProof candidate;
 };
 
 enum class ProfilePhase : uchar {
@@ -120,6 +153,12 @@ QString ArtifactName(MigrationArtifact artifact) {
 		return u"emergency-rules"_q;
 	case MigrationArtifact::EmergencyRecovery:
 		return u"emergency-recovery"_q;
+	case MigrationArtifact::AccountGateTable:
+		return u"account-gate-table"_q;
+	case MigrationArtifact::RevocableEmergencyRules:
+		return u"revocable-emergency-rules"_q;
+	case MigrationArtifact::RevocableEmergencyRecovery:
+		return u"revocable-emergency-recovery"_q;
 	}
 	return QString();
 }
@@ -140,6 +179,12 @@ std::optional<MigrationArtifact> ParseArtifactName(const QString &name) {
 		return MigrationArtifact::EmergencyRules;
 	} else if (name == u"emergency-recovery") {
 		return MigrationArtifact::EmergencyRecovery;
+	} else if (name == u"account-gate-table") {
+		return MigrationArtifact::AccountGateTable;
+	} else if (name == u"revocable-emergency-rules") {
+		return MigrationArtifact::RevocableEmergencyRules;
+	} else if (name == u"revocable-emergency-recovery") {
+		return MigrationArtifact::RevocableEmergencyRecovery;
 	}
 	return std::nullopt;
 }
@@ -171,6 +216,11 @@ bool PathPresent(const QString &path) {
 	return info.exists() || info.isSymLink() || info.isJunction();
 }
 
+bool HasRevocableState(const QString &root) {
+	return PathPresent(ManifestPath(root, kRevocableHeadName))
+		|| PathPresent(ManifestPath(root, kRevocableFloorName));
+}
+
 QString Hex(const QByteArray &bytes) {
 	return QString::fromLatin1(bytes.toHex());
 }
@@ -199,6 +249,92 @@ QByteArray Digest(const QByteArray &bytes) {
 	return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256);
 }
 
+bool ValidInstallationId(QByteArrayView id) {
+	return id.size() == kInstallationIdSize && std::ranges::any_of(id, [](char ch) {
+		return ch != 0;
+	});
+}
+
+bool ValidProof(const MigrationGenerationProof &proof) {
+	return proof.transactionId.size() == kTransactionIdSize
+		&& proof.manifestDigest.size() == kManifestDigestSize;
+}
+
+bool ValidArtifactLayout(int version, const std::set<MigrationArtifact> &artifacts) {
+	using Artifact = MigrationArtifact;
+	const auto revocable = (version == kRevocableManifestVersion);
+	const auto hasRules = artifacts.contains(Artifact::RevocableEmergencyRules);
+	const auto hasRecovery = artifacts.contains(Artifact::RevocableEmergencyRecovery);
+	if (!artifacts.contains(Artifact::ProfileVault)) {
+		return false;
+	}
+	if (!revocable) {
+		return artifacts.contains(Artifact::AccountKeyring)
+			&& !artifacts.contains(Artifact::AccountGateTable) && !hasRules && !hasRecovery;
+	}
+	return artifacts.contains(Artifact::AccountGateTable)
+		&& (!hasRecovery || hasRules)
+		&& artifacts.size() == size_t(2 + int(hasRules) + int(hasRecovery));
+}
+
+int MaximumArtifactSize(MigrationArtifact artifact) {
+	return (artifact == MigrationArtifact::RevocableEmergencyRules
+		|| artifact == MigrationArtifact::RevocableEmergencyRecovery)
+		? kMaximumRevocableEmergencyArtifactSize
+		: kMaximumArtifactSize;
+}
+
+const Entry *FindEntry(const Manifest &manifest, MigrationArtifact artifact) {
+	const auto found = std::ranges::find(manifest.entries, artifact, &Entry::artifact);
+	return (found == end(manifest.entries)) ? nullptr : &*found;
+}
+
+bool MatchesEntry(
+		const Manifest &a,
+		const Manifest &b,
+		MigrationArtifact artifact) {
+	const auto left = FindEntry(a, artifact);
+	const auto right = FindEntry(b, artifact);
+	return left && right && left->size == right->size && left->digest == right->digest;
+}
+
+bool ValidRevocableArtifact(
+		const Manifest &manifest,
+		MigrationArtifact artifact,
+		QByteArrayView bytes) {
+	if (artifact == MigrationArtifact::RevocableEmergencyRules) {
+		const auto prefix = kRevocableRulesMagic.size();
+		return bytes.size() >= prefix + kInstallationIdSize + 2 * qsizetype(sizeof(quint32))
+			&& bytes.startsWith(kRevocableRulesMagic)
+			&& ValidInstallationId(bytes.sliced(prefix, kInstallationIdSize));
+	} else if (artifact != MigrationArtifact::RevocableEmergencyRecovery) {
+		return true;
+	}
+	const auto prefix = kRevocableRecoveryMagic.size();
+	const auto transaction = prefix + kInstallationIdSize;
+	const auto gateDigest = transaction + kTransactionIdSize;
+	const auto rulesDigest = gateDigest + kManifestDigestSize;
+	const auto packageMarker = rulesDigest + kManifestDigestSize;
+	const auto gates = FindEntry(manifest, MigrationArtifact::AccountGateTable);
+	const auto rules = FindEntry(manifest, MigrationArtifact::RevocableEmergencyRules);
+	if (!gates || !rules || bytes.size() <= packageMarker
+		|| !bytes.startsWith(kRevocableRecoveryMagic)
+		|| bytes.sliced(prefix, kInstallationIdSize) != manifest.installationId
+		|| bytes.sliced(transaction, kTransactionIdSize) != manifest.transactionId
+		|| bytes.sliced(gateDigest, kManifestDigestSize) != gates->digest
+		|| bytes.sliced(rulesDigest, kManifestDigestSize) != rules->digest
+		|| uchar(bytes[packageMarker]) > 1) {
+		return false;
+	}
+	const auto length = packageMarker + 1 + (bytes[packageMarker] ? kManifestDigestSize : 0);
+	const auto journal = length + qsizetype(sizeof(quint32));
+	if (bytes.size() <= journal) {
+		return false;
+	}
+	const auto size = qFromBigEndian<quint32>(bytes.data() + length);
+	return size > 0 && size <= kMaximumRevocableJournalBytes && size <= bytes.size() - journal;
+}
+
 QJsonObject ManifestEntry(const Entry &entry) {
 	return QJsonObject{
 		{ u"name"_q, ArtifactName(entry.artifact) },
@@ -212,12 +348,16 @@ QByteArray SerializeManifest(const Manifest &manifest) {
 	for (const auto &entry : manifest.entries) {
 		entries.push_back(ManifestEntry(entry));
 	}
-	return QJsonDocument(QJsonObject{
+	auto object = QJsonObject{
 		{ u"format"_q, u"sleepygram-profile-migration"_q },
 		{ u"version"_q, manifest.version },
 		{ u"transaction_id"_q, Hex(manifest.transactionId) },
 		{ u"entries"_q, entries },
-	}).toJson(QJsonDocument::Compact);
+	};
+	if (manifest.version == kRevocableManifestVersion) {
+		object.insert(u"installation_id"_q, Hex(manifest.installationId));
+	}
+	return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
 bool HasExactKeys(const QJsonObject &object, std::set<QString> expected) {
@@ -243,21 +383,26 @@ bool ParseManifest(
 		return false;
 	}
 	const auto object = document.object();
-	if (!HasExactKeys(object, {
-			u"format"_q,
-			u"version"_q,
-			u"transaction_id"_q,
-			u"entries"_q,
-		})
-		|| object.value(u"format"_q).toString()
+	if (object.value(u"format"_q).toString()
 			!= u"sleepygram-profile-migration"_q
 		|| !object.value(u"version"_q).isDouble()) {
 		return false;
 	}
 	const auto version = object.value(u"version"_q).toDouble();
 	if (version != kStageManifestVersion
-		&& version != kGenerationManifestVersion) {
+		&& version != kGenerationManifestVersion
+		&& version != kRevocableManifestVersion) {
 		SetError(error, MigrationError::UnsupportedVersion);
+		return false;
+	}
+	auto keys = std::set<QString>{
+		u"format"_q, u"version"_q, u"transaction_id"_q, u"entries"_q,
+	};
+	const auto revocable = (version == kRevocableManifestVersion);
+	if (revocable) {
+		keys.emplace(u"installation_id"_q);
+	}
+	if (!HasExactKeys(object, std::move(keys))) {
 		return false;
 	}
 	const auto idText = object.value(u"transaction_id"_q).toString().toLatin1();
@@ -270,6 +415,13 @@ bool ParseManifest(
 		return false;
 	}
 	auto parsed = Manifest{ .version = int(version), .transactionId = id };
+	if (revocable) {
+		const auto text = object.value(u"installation_id"_q).toString().toLatin1();
+		parsed.installationId = QByteArray::fromHex(text);
+		if (!ValidInstallationId(parsed.installationId) || parsed.installationId.toHex() != text) {
+			return false;
+		}
+	}
 	auto seen = std::set<MigrationArtifact>();
 	auto totalSize = quint64(0);
 	for (const auto &value : array) {
@@ -289,7 +441,7 @@ bool ParseManifest(
 		const auto digest = QByteArray::fromHex(digestText);
 		if (!artifact || !seen.insert(*artifact).second
 			|| sizeNumber < 1
-			|| sizeNumber > kMaximumArtifactSize
+			|| sizeNumber > MaximumArtifactSize(*artifact)
 			|| sizeNumber != double(quint64(sizeNumber))
 			|| digest.size() != 32
 			|| digest.toHex() != digestText) {
@@ -302,8 +454,7 @@ bool ParseManifest(
 		});
 		totalSize += quint64(sizeNumber);
 	}
-	if (!seen.contains(MigrationArtifact::ProfileVault)
-		|| !seen.contains(MigrationArtifact::AccountKeyring)) {
+	if (!ValidArtifactLayout(parsed.version, seen)) {
 		return false;
 	} else if (totalSize > kMaximumSidecarSize) {
 		SetError(error, MigrationError::TooLarge);
@@ -314,6 +465,9 @@ bool ParseManifest(
 			const Entry &b) {
 		return a.artifact < b.artifact;
 	});
+	if (revocable && SerializeManifest(parsed) != bytes) {
+		return false;
+	}
 	*manifest = std::move(parsed);
 	SetError(error, MigrationError::None);
 	return true;
@@ -375,15 +529,38 @@ bool PublishManifest(const QString &source, const QString &target) {
 #endif
 }
 
+bool SingleRegularLink(const QFile &file) {
+#ifdef Q_OS_WIN
+	const auto handle = reinterpret_cast<HANDLE>(_get_osfhandle(file.handle()));
+	auto info = BY_HANDLE_FILE_INFORMATION();
+	return handle != INVALID_HANDLE_VALUE && GetFileInformationByHandle(handle, &info)
+		&& !(info.dwFileAttributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))
+		&& info.nNumberOfLinks == 1;
+#else
+	struct stat info = {};
+	return fstat(file.handle(), &info) == 0 && S_ISREG(info.st_mode) && info.st_nlink == 1;
+#endif
+}
+
+bool SingleRegularLink(const QString &path) {
+	const auto info = QFileInfo(path);
+	if (!info.isFile() || info.isSymLink() || info.isJunction()) {
+		return false;
+	}
+	auto file = QFile(path);
+	return file.open(QIODevice::ReadOnly) && SingleRegularLink(file);
+}
+
 std::optional<QByteArray> ReadBounded(
 		const QString &path,
-		qsizetype maximum) {
+		qsizetype maximum,
+		bool singleLink = false) {
 	const auto info = QFileInfo(path);
 	if (!info.exists() || !info.isFile() || info.isSymLink() || info.isJunction()) {
 		return std::nullopt;
 	}
 	auto file = QFile(path);
-	if (!file.open(QIODevice::ReadOnly)) {
+	if (!file.open(QIODevice::ReadOnly) || (singleLink && !SingleRegularLink(file))) {
 		return std::nullopt;
 	}
 	const auto size = file.size();
@@ -393,9 +570,123 @@ std::optional<QByteArray> ReadBounded(
 	const auto bytes = file.read(maximum + 1);
 	return (file.error() == QFileDevice::NoError
 			&& file.atEnd()
-			&& bytes.size() == size)
+		&& bytes.size() == size && (!singleLink || SingleRegularLink(file)))
 		? std::optional<QByteArray>(bytes)
 		: std::nullopt;
+}
+
+std::optional<RevocableHead> ReadRevocableHead(const QString &root) {
+	const auto bytes = ReadBounded(ManifestPath(root, kRevocableHeadName), kMaximumHeadSize);
+	const auto firstProof = kRevocableHeadMagic.size() + 1 + kInstallationIdSize;
+	if (!bytes || bytes->size() < firstProof + kGenerationProofSize
+		|| !bytes->startsWith(kRevocableHeadMagic)) {
+		return std::nullopt;
+	}
+	const auto state = RevocableHeadState(bytes->at(kRevocableHeadMagic.size()));
+	const auto pending = (state == RevocableHeadState::Pending);
+	if ((!pending && state != RevocableHeadState::Retiring && state != RevocableHeadState::Retired)
+		|| bytes->size() != firstProof + (pending ? 2 : 1) * kGenerationProofSize) {
+		return std::nullopt;
+	}
+	auto result = RevocableHead{
+		.state = state,
+		.installationId = bytes->mid(firstProof - kInstallationIdSize, kInstallationIdSize),
+		.current = {
+			bytes->mid(firstProof, kTransactionIdSize),
+			bytes->mid(firstProof + kTransactionIdSize, kManifestDigestSize),
+		},
+	};
+	if (pending) {
+		const auto next = firstProof + kGenerationProofSize;
+		result.candidate = {
+			bytes->mid(next, kTransactionIdSize),
+			bytes->mid(next + kTransactionIdSize, kManifestDigestSize),
+		};
+	}
+	return ValidInstallationId(result.installationId)
+		&& (!pending || result.current.transactionId != result.candidate.transactionId)
+		? std::optional(std::move(result))
+		: std::nullopt;
+}
+
+bool PublishRevocableStateFile(const QString &root, const char *name, const QByteArray &bytes) {
+	const auto temporary = ManifestPath(root, kRevocableHeadTemporaryName);
+	const auto target = ManifestPath(root, name);
+	const auto previous = QFileInfo(temporary);
+	if (PathPresent(temporary) && (!previous.isFile() || previous.isSymLink()
+		|| previous.isJunction() || !QFile::remove(temporary))) {
+		return false;
+	}
+	return WriteNewFile(temporary, bytes)
+		&& PublishManifest(temporary, target)
+		&& SyncDirectory(root);
+}
+
+bool PublishRevocableHead(const QString &root, const RevocableHead &head) {
+	auto bytes = kRevocableHeadMagic.toByteArray();
+	bytes.append(char(head.state));
+	bytes.append(head.installationId);
+	bytes.append(head.current.transactionId);
+	bytes.append(head.current.manifestDigest);
+	if (head.state == RevocableHeadState::Pending) {
+		bytes.append(head.candidate.transactionId);
+		bytes.append(head.candidate.manifestDigest);
+	}
+	return PublishRevocableStateFile(root, kRevocableHeadName, bytes);
+}
+
+bool EnsureRevocableFloor(const QString &root, const QByteArray &installationId) {
+	const auto path = ManifestPath(root, kRevocableFloorName);
+	const auto bytes = kRevocableFloorMagic.toByteArray() + installationId;
+	return PathPresent(path)
+		? ReadBounded(path, kRevocableFloorSize) == bytes && SyncDirectory(root)
+		: PublishRevocableStateFile(root, kRevocableFloorName, bytes);
+}
+
+bool AnchorRevocableGeneration(const QString &root, const RevocableHead &head) {
+	return EnsureRevocableFloor(root, head.installationId) && PublishRevocableHead(root, head);
+}
+
+bool RetiredArtifactInventory(const QString &root, const Manifest &active) {
+	const auto directory = ManifestPath(root, kGenerationsDirectoryName);
+	const auto entries = QDir(directory).entryList(
+		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+	return entries == QStringList{ Hex(active.transactionId) }
+		&& !PathPresent(ManifestPath(root, kStageDirectoryName))
+		&& !PathPresent(ManifestPath(root, kPendingManifestName))
+		&& !PathPresent(ManifestPath(root, kSetupDraftName));
+}
+
+bool CheckRevocableHead(
+		const QString &root,
+		const Manifest &manifest,
+		const MigrationGenerationProof &proof,
+		bool &retirementPending) {
+	retirementPending = false;
+	const auto typed = (manifest.version == kRevocableManifestVersion);
+	const auto floorPath = ManifestPath(root, kRevocableFloorName);
+	const auto hasFloor = PathPresent(floorPath);
+	if (hasFloor && (!typed || ReadBounded(floorPath, kRevocableFloorSize)
+		!= kRevocableFloorMagic.toByteArray() + manifest.installationId)) {
+		return false;
+	}
+	if (!PathPresent(ManifestPath(root, kRevocableHeadName))) {
+		return !typed && !hasFloor;
+	}
+	const auto head = ReadRevocableHead(root);
+	if (!head || (typed && manifest.installationId != head->installationId)) {
+		return false;
+	}
+	if (head->state == RevocableHeadState::Pending) {
+		retirementPending = (proof == head->candidate);
+		return (proof == head->current && (!typed || hasFloor)) || (typed && retirementPending);
+	}
+	if (!typed || !hasFloor || proof != head->current) {
+		return false;
+	}
+	retirementPending = (head->state == RevocableHeadState::Retiring)
+		|| !RetiredArtifactInventory(root, manifest);
+	return true;
 }
 
 std::optional<ProfilePhaseRecord> ReadProfilePhase(const QString &root) {
@@ -427,7 +718,7 @@ bool ActiveMatchesProfilePhase(const QString &root, const Manifest &manifest) {
 	const auto phase = ReadProfilePhase(root);
 	return phase && (phase->phase == ProfilePhase::LegacyFormat
 		|| (phase->phase == ProfilePhase::CutoverStarted
-			&& (manifest.version == kGenerationManifestVersion
+			&& (manifest.version != kStageManifestVersion
 				|| manifest.transactionId == phase->initialTransactionId)));
 }
 
@@ -492,6 +783,9 @@ bool ValidateRootEntries(const QString &root, bool profile) {
 		QString::fromLatin1(kCommittedManifestName),
 		QString::fromLatin1(kWorkspaceLockName),
 		QString::fromLatin1(kGenerationsDirectoryName),
+		QString::fromLatin1(kRevocableHeadName),
+		QString::fromLatin1(kRevocableHeadTemporaryName),
+		QString::fromLatin1(kRevocableFloorName),
 	};
 	const auto generations = ManifestPath(root, kGenerationsDirectoryName);
 	if (PathPresent(generations)
@@ -559,19 +853,21 @@ std::optional<Manifest> PrepareManifest(
 		const std::vector<MigrationInput> &inputs,
 		int version,
 		QByteArray transactionId,
-		MigrationError *error) {
+		MigrationError *error,
+		const QByteArray &installationId = {}) {
 	SetError(error, MigrationError::InvalidInput);
 	if (inputs.size() < 2 || inputs.size() > 5
-		|| (!transactionId.isEmpty() && transactionId.size() != kTransactionIdSize)) {
+		|| (!transactionId.isEmpty() && transactionId.size() != kTransactionIdSize)
+		|| ((version == kRevocableManifestVersion) != ValidInstallationId(installationId))) {
 		return std::nullopt;
 	}
-	auto manifest = Manifest{ .version = version };
+	auto manifest = Manifest{ .version = version, .installationId = installationId };
 	auto artifacts = std::set<MigrationArtifact>();
 	auto total = qsizetype(0);
 	for (const auto &input : inputs) {
 		const auto size = input.encryptedBytes.size();
 		if (ArtifactName(input.artifact).isEmpty()
-			|| size < 1 || size > kMaximumArtifactSize
+			|| size < 1 || size > MaximumArtifactSize(input.artifact)
 			|| !artifacts.insert(input.artifact).second) {
 			return std::nullopt;
 		}
@@ -582,8 +878,7 @@ std::optional<Manifest> PrepareManifest(
 			.digest = Digest(input.encryptedBytes),
 		});
 	}
-	if (!artifacts.contains(MigrationArtifact::ProfileVault)
-		|| !artifacts.contains(MigrationArtifact::AccountKeyring)
+	if (!ValidArtifactLayout(version, artifacts)
 		|| total > kMaximumSidecarSize) {
 		return std::nullopt;
 	}
@@ -598,6 +893,11 @@ std::optional<Manifest> PrepareManifest(
 	if (manifest.transactionId.isEmpty()) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return std::nullopt;
+	}
+	for (const auto &input : inputs) {
+		if (!ValidRevocableArtifact(manifest, input.artifact, input.encryptedBytes)) {
+			return std::nullopt;
+		}
 	}
 	return manifest;
 }
@@ -630,13 +930,19 @@ std::optional<CommittedMigration> ReadArtifacts(
 	}
 	auto result = CommittedMigration{
 		.transactionId = manifest.transactionId,
+		.layout = (manifest.version == kRevocableManifestVersion)
+			? MigrationGenerationLayout::RevocableGates
+			: MigrationGenerationLayout::LegacyKeys,
+		.installationId = manifest.installationId,
 	};
 	for (const auto &entry : manifest.entries) {
 		auto bytes = ReadBounded(
 			ArtifactPath(directory, entry.artifact),
-			kMaximumArtifactSize);
+			MaximumArtifactSize(entry.artifact),
+			true);
 		if (!bytes || quint64(bytes->size()) != entry.size
-			|| Digest(*bytes) != entry.digest) {
+			|| Digest(*bytes) != entry.digest
+			|| !ValidRevocableArtifact(manifest, entry.artifact, *bytes)) {
 			SetError(error, MigrationError::ReadbackFailed);
 			return std::nullopt;
 		}
@@ -650,12 +956,29 @@ std::optional<CommittedMigration> ReadArtifacts(
 			result.emergencyRules = std::move(*bytes);
 		} else if (entry.artifact == MigrationArtifact::EmergencyRecovery) {
 			result.emergencyRecovery = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::AccountGateTable) {
+			result.accountGateTable = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::RevocableEmergencyRules) {
+			result.revocableEmergencyRules = std::move(*bytes);
+		} else if (entry.artifact == MigrationArtifact::RevocableEmergencyRecovery) {
+			result.revocableEmergencyRecovery = std::move(*bytes);
 		} else {
 			SetError(error, MigrationError::InvalidManifest);
 			return std::nullopt;
 		}
 	}
-	if (result.profileVault.isEmpty() || result.accountKeyring.isEmpty()) {
+	const auto vault = QByteArrayView(result.profileVault);
+	const auto gates = QByteArrayView(result.accountGateTable);
+	const auto typed = (result.layout == MigrationGenerationLayout::RevocableGates);
+	const auto bound = [&](QByteArrayView bytes, QByteArrayView prefix) {
+		return bytes.startsWith(prefix)
+			&& bytes.size() >= prefix.size() + kInstallationIdSize
+			&& bytes.sliced(prefix.size(), kInstallationIdSize) == result.installationId;
+	};
+	if (typed
+			? (!bound(vault, kRevocableVaultMagic) || !bound(gates, kAccountGateTableMagic))
+			: (vault.isEmpty() || result.accountKeyring.isEmpty()
+				|| vault.startsWith(kRevocableVaultMagic))) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -684,16 +1007,32 @@ std::optional<CommittedMigration> ReadAndVerify(
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
-	return manifest ? ReadArtifacts(root, *manifest, error) : std::nullopt;
+	if (!manifest) {
+		return std::nullopt;
+	}
+	auto result = ReadArtifacts(root, *manifest, error);
+	if (!result) {
+		return std::nullopt;
+	}
+	result->manifestDigest = Digest(*manifestBytes);
+	if (committed && !CheckRevocableHead(
+			root, *manifest, result->proof(), result->retirementPending)) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
+	}
+	return result;
 }
 
 std::optional<Manifest> ReadExpectedGeneration(
 		const QString &root,
 		const QByteArray &manifestBytes,
-		const QByteArray &expectedId,
+		const MigrationGenerationProof &expected,
 		bool profile,
-		MigrationError *error) {
-	if (expectedId.size() != kTransactionIdSize) {
+		MigrationError *error,
+		bool *retirementPending = nullptr) {
+	if (expected.transactionId.size() != kTransactionIdSize
+		|| (!expected.manifestDigest.isEmpty()
+			&& expected.manifestDigest.size() != kManifestDigestSize)) {
 		SetError(error, MigrationError::InvalidInput);
 		return std::nullopt;
 	}
@@ -703,9 +1042,19 @@ std::optional<Manifest> ReadExpectedGeneration(
 	} else if (profile && !ActiveMatchesProfilePhase(root, *manifest)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
-	} else if (manifest->transactionId != expectedId) {
+	}
+	const auto proof = MigrationGenerationProof{ manifest->transactionId, Digest(manifestBytes) };
+	auto retiring = false;
+	if (!CheckRevocableHead(root, *manifest, proof, retiring)) {
+		SetError(error, MigrationError::InvalidManifest);
+		return std::nullopt;
+	} else if (proof.transactionId != expected.transactionId
+		|| (!expected.manifestDigest.isEmpty() && proof.manifestDigest != expected.manifestDigest)) {
 		SetError(error, MigrationError::StaleGeneration);
 		return std::nullopt;
+	}
+	if (retirementPending) {
+		*retirementPending = retiring;
 	}
 	return ReadArtifacts(root, *manifest, error) ? std::move(manifest) : std::nullopt;
 }
@@ -724,16 +1073,73 @@ bool RemoveGenerationDirectory(const QString &directory) {
 			? ParseArtifactName(name.chopped(4))
 			: std::nullopt;
 		if (entry.isSymLink() || entry.isJunction() || !entry.isFile()
-			|| !artifact || name != ArtifactFileName(*artifact)) {
+			|| !artifact || name != ArtifactFileName(*artifact)
+			|| !SingleRegularLink(entry.absoluteFilePath())) {
 			return false;
 		}
 	}
 	for (const auto &entry : entries) {
-		if (!QFile::remove(entry.absoluteFilePath())) {
+		if (!SingleRegularLink(entry.absoluteFilePath()) || !QFile::remove(entry.absoluteFilePath())) {
 			return false;
 		}
 	}
 	return QDir().rmdir(directory);
+}
+
+bool RollbackUnpublishedRevocable(
+		const QString &root,
+		const Manifest &active,
+		const QByteArray &activeBytes) {
+	const auto head = ReadRevocableHead(root);
+	const auto parent = ManifestPath(root, kGenerationsDirectoryName);
+	if (active.version == kRevocableManifestVersion
+		|| PathPresent(ManifestPath(root, kRevocableFloorName))
+		|| !head || head->state != RevocableHeadState::Pending
+		|| head->current != MigrationGenerationProof{ active.transactionId, Digest(activeBytes) }
+		|| CanonicalDirectory(parent) != parent) {
+		return false;
+	}
+	const auto directory = QDir(parent).filePath(Hex(head->candidate.transactionId));
+	const auto temporary = TemporaryManifestPath(root, head->candidate.transactionId);
+	const auto hasTemporary = PathPresent(temporary);
+	if (hasTemporary) {
+		const auto bytes = ReadBounded(temporary, kMaximumManifestSize, true);
+		const auto manifest = bytes && Digest(*bytes) == head->candidate.manifestDigest
+			? ReadManifest(*bytes, true, nullptr) : std::nullopt;
+		if (!manifest || manifest->version != kRevocableManifestVersion
+			|| manifest->transactionId != head->candidate.transactionId
+			|| manifest->installationId != head->installationId) {
+			return false;
+		}
+		if (PathPresent(directory)) {
+			if (CanonicalDirectory(directory) != directory) {
+				return false;
+			}
+			const auto entries = QDir(directory).entryInfoList(
+				QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
+			for (const auto &entry : entries) {
+				const auto name = entry.fileName();
+				const auto artifact = name.endsWith(u".bin"_q)
+					? ParseArtifactName(name.chopped(4)) : std::nullopt;
+				const auto expected = artifact ? FindEntry(*manifest, *artifact) : nullptr;
+				const auto contents = expected
+					? ReadBounded(entry.absoluteFilePath(), MaximumArtifactSize(*artifact), true)
+					: std::nullopt;
+				if (!contents || quint64(contents->size()) != expected->size
+					|| Digest(*contents) != expected->digest) {
+					return false;
+				}
+			}
+		}
+	} else if (PathPresent(directory)) {
+		return false;
+	}
+	return RemoveGenerationDirectory(directory)
+		&& (!hasTemporary || QFile::remove(temporary))
+		&& SyncDirectory(parent)
+		&& ReadBounded(ManifestPath(root, kCommittedManifestName), kMaximumManifestSize) == activeBytes
+		&& QFile::remove(ManifestPath(root, kRevocableHeadName))
+		&& SyncDirectory(root);
 }
 
 bool RemoveInactiveGenerations(const QString &root, const Manifest &active) {
@@ -749,7 +1155,7 @@ bool RemoveInactiveGenerations(const QString &root, const Manifest &active) {
 		QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System);
 	for (const auto &entry : entries) {
 		const auto name = entry.fileName();
-		if (active.version == kGenerationManifestVersion && name == activeName) {
+		if (active.version != kStageManifestVersion && name == activeName) {
 			continue;
 		}
 		if (entry.isSymLink() || entry.isJunction()) {
@@ -966,7 +1372,8 @@ bool MigrationController::Stage(
 	if (!validateWorkspace()) {
 		return false;
 	}
-	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+	if ((PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+		|| HasRevocableState(_root))
 		&& !PathPresent(ManifestPath(_root, kCommittedManifestName))) {
 		SetError(error, MigrationError::InvalidManifest);
 		return false;
@@ -1053,6 +1460,32 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		const Verifier &verify,
 		MigrationError *error,
 		QByteArray transactionId) const {
+	return replaceCommitted({ expectedTransactionId, {} }, {},
+		inputs, verify, error, std::move(transactionId));
+}
+
+std::optional<CommittedMigration> MigrationController::ReplaceRevocableCommitted(
+		const MigrationGenerationProof &expected,
+		const QByteArray &installationId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error,
+		QByteArray transactionId) const {
+	if (!ValidProof(expected) || !ValidInstallationId(installationId)) {
+		SetError(error, MigrationError::InvalidInput);
+		return std::nullopt;
+	}
+	return replaceCommitted(expected, installationId, inputs, verify, error,
+		std::move(transactionId));
+}
+
+std::optional<CommittedMigration> MigrationController::replaceCommitted(
+		const MigrationGenerationProof &expected,
+		const QByteArray &installationId,
+		const std::vector<MigrationInput> &inputs,
+		const Verifier &verify,
+		MigrationError *error,
+		QByteArray transactionId) const {
 	if (!verify) {
 		SetError(error, MigrationError::VerificationRequired);
 		return std::nullopt;
@@ -1074,39 +1507,87 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		return std::nullopt;
 	}
 	const auto existing = ReadBounded(activePath, kMaximumManifestSize);
-	if (!ReadExpectedGeneration(
-			_root,
-			existing.value_or(QByteArray()),
-			expectedTransactionId,
-			!isIsolatedFixture(),
-			error)) {
+	const auto typed = !installationId.isEmpty();
+	const auto headPath = ManifestPath(_root, kRevocableHeadName);
+	const auto existingHead = ReadBounded(headPath, kMaximumHeadSize);
+	auto retiring = false;
+	const auto active = ReadExpectedGeneration(
+		_root,
+		existing.value_or(QByteArray()),
+		expected,
+		!isIsolatedFixture(),
+		error,
+		&retiring);
+	if (!active) {
+		return std::nullopt;
+	}
+	const auto head = ReadRevocableHead(_root);
+	if (retiring) {
+		SetError(error, MigrationError::RevocableRetirementRequired);
+		return std::nullopt;
+	}
+	if ((typed && head && head->installationId != installationId)
+		|| (!typed && HasRevocableState(_root))) {
+		SetError(error, MigrationError::InvalidInput);
+		return std::nullopt;
+	}
+	if (typed && active->version != kRevocableManifestVersion
+		&& std::ranges::any_of(active->entries, [](const Entry &entry) {
+			return entry.artifact == MigrationArtifact::EmergencyRules
+				|| entry.artifact == MigrationArtifact::EmergencyRecovery
+				|| entry.artifact == MigrationArtifact::LegacyRetirement;
+		})) {
+		SetError(error, MigrationError::InvalidInput);
 		return std::nullopt;
 	}
 	const auto manifest = PrepareManifest(
 		inputs,
-		kGenerationManifestVersion,
+		typed ? kRevocableManifestVersion : kGenerationManifestVersion,
 		std::move(transactionId),
-		error);
+		error,
+		installationId);
 	if (!manifest) {
 		return std::nullopt;
 	}
-	const auto parent = ManifestPath(_root, kGenerationsDirectoryName);
-	const auto directory = ArtifactsDirectory(_root, *manifest);
-	SetError(error, MigrationError::WorkspaceIo);
-	if (manifest->transactionId == expectedTransactionId
-		|| (!PathPresent(parent)
-			&& !QDir(_root).mkdir(QString::fromLatin1(kGenerationsDirectoryName)))
-		|| CanonicalDirectory(parent) != parent
-		|| !QDir(parent).mkdir(Hex(manifest->transactionId))) {
+	if (FindEntry(*active, MigrationArtifact::RevocableEmergencyRecovery)
+		&& (FindEntry(*manifest, MigrationArtifact::RevocableEmergencyRecovery)
+			|| !MatchesEntry(*active, *manifest, MigrationArtifact::ProfileVault)
+			|| !MatchesEntry(*active, *manifest, MigrationArtifact::AccountGateTable)
+			|| !MatchesEntry(*active, *manifest, MigrationArtifact::RevocableEmergencyRules))) {
+		SetError(error, MigrationError::RevocableRecoveryRequired);
 		return std::nullopt;
 	}
+	const auto next = SerializeManifest(*manifest);
+	const auto nextProof = MigrationGenerationProof{ manifest->transactionId, Digest(next) };
+	const auto parent = ManifestPath(_root, kGenerationsDirectoryName);
+	const auto directory = ArtifactsDirectory(_root, *manifest);
 	const auto temporary = TemporaryManifestPath(_root, manifest->transactionId);
+	SetError(error, MigrationError::WorkspaceIo);
+	if (manifest->transactionId == expected.transactionId
+		|| (!PathPresent(parent)
+			&& !QDir(_root).mkdir(QString::fromLatin1(kGenerationsDirectoryName)))
+		|| CanonicalDirectory(parent) != parent) {
+		return std::nullopt;
+	}
+	const auto retry = typed && head && head->state == RevocableHeadState::Pending
+		&& head->current == expected && head->candidate == nextProof;
+	if (retry) {
+		const auto tempInfo = QFileInfo(temporary);
+		if (!RemoveGenerationDirectory(directory)
+			|| (PathPresent(temporary) && (!tempInfo.isFile() || tempInfo.isSymLink()
+				|| tempInfo.isJunction() || !QFile::remove(temporary)))) {
+			return std::nullopt;
+		}
+	}
+	if (!QDir(parent).mkdir(Hex(manifest->transactionId))) {
+		return std::nullopt;
+	}
 	auto published = false;
 	const auto cleanup = gsl::finally([&] {
 		if (!published && CanonicalDirectory(parent) == parent
-			&& ReadBounded(activePath, kMaximumManifestSize) == existing) {
+			&& ReadBounded(activePath, kMaximumManifestSize) == existing
+			&& RemoveGenerationDirectory(directory)) {
 			QFile::remove(temporary);
-			RemoveGenerationDirectory(directory);
 		}
 	});
 	for (const auto &input : inputs) {
@@ -1117,10 +1598,13 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		}
 	}
 	{
-		const auto staged = ReadArtifacts(_root, *manifest, error);
+		auto staged = ReadArtifacts(_root, *manifest, error);
 		if (!staged) {
 			return std::nullopt;
-		} else if (!verify(*staged)) {
+		}
+		staged->manifestDigest = nextProof.manifestDigest;
+		staged->retirementPending = typed;
+		if (!verify(*staged)) {
 			SetError(error, MigrationError::VerificationFailed);
 			return std::nullopt;
 		}
@@ -1131,16 +1615,28 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		return std::nullopt;
 	}
 	const auto stillActive = ReadBounded(activePath, kMaximumManifestSize);
-	if (existing != stillActive) {
+	if (existing != stillActive || ReadBounded(headPath, kMaximumHeadSize) != existingHead) {
 		SetError(error, MigrationError::StaleGeneration);
 		return std::nullopt;
 	}
-	const auto next = SerializeManifest(*manifest);
+	if (typed && !ReadExpectedGeneration(
+			_root, *existing, expected, !isIsolatedFixture(), error)) {
+		return std::nullopt;
+	}
 	if (next.isEmpty() || next.size() > kMaximumManifestSize
 		|| !WriteNewFile(temporary, next)
 		|| !SyncDirectory(directory)
 		|| !SyncDirectory(parent)
 		|| !SyncDirectory(_root)) {
+		SetError(error, MigrationError::WorkspaceIo);
+		return std::nullopt;
+	}
+	if (typed && !PublishRevocableHead(_root, {
+			.state = RevocableHeadState::Pending,
+			.installationId = installationId,
+			.current = expected,
+			.candidate = nextProof,
+		})) {
 		SetError(error, MigrationError::WorkspaceIo);
 		return std::nullopt;
 	}
@@ -1151,16 +1647,40 @@ std::optional<CommittedMigration> MigrationController::ReplaceCommitted(
 		return std::nullopt;
 	}
 	published = true;
-	if (!SyncDirectory(_root)) {
+	if (!SyncDirectory(_root)
+		|| (typed && !AnchorRevocableGeneration(_root, {
+			.state = RevocableHeadState::Retiring,
+			.installationId = installationId,
+			.current = nextProof,
+		}))) {
 		SetError(error, MigrationError::PublicationUncertain);
 		return std::nullopt;
 	}
+	checked->manifestDigest = nextProof.manifestDigest;
+	checked->retirementPending = typed;
 	SetError(error, MigrationError::None);
 	return checked;
 }
 
 bool MigrationController::RetireInactiveGenerations(
 		const QByteArray &expectedTransactionId,
+		MigrationError *error) const {
+	return retireInactiveGenerations({ expectedTransactionId, {} }, false, error);
+}
+
+bool MigrationController::RetireRevocableGenerations(
+		const MigrationGenerationProof &expected,
+		MigrationError *error) const {
+	if (!ValidProof(expected)) {
+		SetError(error, MigrationError::InvalidInput);
+		return false;
+	}
+	return retireInactiveGenerations(expected, true, error);
+}
+
+bool MigrationController::retireInactiveGenerations(
+		const MigrationGenerationProof &expected,
+		bool revocable,
 		MigrationError *error) const {
 	SetError(error, MigrationError::UnsafeWorkspace);
 	if (!validateWorkspace()) {
@@ -1182,24 +1702,60 @@ bool MigrationController::RetireInactiveGenerations(
 	const auto active = ReadExpectedGeneration(
 		_root,
 		activeBytes.value_or(QByteArray()),
-		expectedTransactionId,
+		expected,
 		!isIsolatedFixture(),
 		error);
 	if (!active) {
+		return false;
+	}
+	const auto typed = (active->version == kRevocableManifestVersion);
+	if (typed != revocable) {
+		SetError(error, MigrationError::InvalidInput);
+		return false;
+	}
+	if (!typed && HasRevocableState(_root)) {
+		const auto restored = RollbackUnpublishedRevocable(_root, *active, *activeBytes);
+		SetError(error, restored ? MigrationError::None : MigrationError::RetirementFailed);
+		return restored;
+	}
+	auto head = RevocableHead{
+		.state = RevocableHeadState::Retiring,
+		.installationId = active->installationId,
+		.current = expected,
+	};
+	if (typed && !AnchorRevocableGeneration(_root, head)) {
+		SetError(error, MigrationError::RetirementFailed);
 		return false;
 	}
 	if (!SyncDirectory(_root) || !RemoveInactiveGenerations(_root, *active)) {
 		SetError(error, MigrationError::RetirementFailed);
 		return false;
 	}
-	if (active->version == kGenerationManifestVersion) {
+	if (active->version != kStageManifestVersion) {
 		const auto stage = ManifestPath(_root, kStageDirectoryName);
 		const auto pending = ManifestPath(_root, kPendingManifestName);
 		const auto draft = ManifestPath(_root, kSetupDraftName);
 		if (!RemoveGenerationDirectory(stage)
 			|| (PathPresent(pending) && !QFile::remove(pending))
-			|| (!isIsolatedFixture() && PathPresent(draft) && !QFile::remove(draft))
+			|| (!isIsolatedFixture() && PathPresent(draft)
+				&& (!SingleRegularLink(draft) || !QFile::remove(draft)))
 			|| !SyncDirectory(_root)) {
+			SetError(error, MigrationError::RetirementFailed);
+			return false;
+		}
+		if (typed) {
+			if (!RetiredArtifactInventory(_root, *active)
+				|| ReadBounded(activePath, kMaximumManifestSize) != activeBytes
+				|| !ReadExpectedGeneration(
+					_root, *activeBytes, expected, !isIsolatedFixture(), error)) {
+				SetError(error, MigrationError::RetirementFailed);
+				return false;
+			}
+		}
+	}
+	if (typed) {
+		head.state = RevocableHeadState::Retired;
+		if (!PublishRevocableHead(_root, head)) {
 			SetError(error, MigrationError::RetirementFailed);
 			return false;
 		}
@@ -1224,7 +1780,8 @@ std::optional<CommittedMigration> MigrationController::commit(
 	if (PathPresent(activePath)) {
 		return LoadCommitted(error);
 	}
-	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))) {
+	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+		|| HasRevocableState(_root)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -1310,7 +1867,8 @@ MigrationState MigrationController::Recover(MigrationError *error) const {
 			return MigrationState::Invalid;
 		}
 	}
-	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))) {
+	if (PathPresent(ManifestPath(_root, kGenerationsDirectoryName))
+		|| HasRevocableState(_root)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return MigrationState::Invalid;
 	}
@@ -1335,6 +1893,7 @@ std::optional<CommittedMigration> MigrationController::LoadCommitted(
 		const auto unavailable = PathPresent(ManifestPath(
 			_root,
 			kGenerationsDirectoryName))
+			|| HasRevocableState(_root)
 			|| (profile && (!phase || phase->phase != ProfilePhase::Preparing
 				|| PathPresent(ManifestPath(_root, kCutoverDirectoryName))));
 		SetError(error, unavailable
@@ -1348,7 +1907,8 @@ std::optional<CommittedMigration> MigrationController::LoadCommitted(
 std::optional<CommittedMigration> MigrationController::LoadStaged(
 		MigrationError *error) const {
 	if (isIsolatedFixture() || !validateWorkspace()
-		|| PathPresent(ManifestPath(_root, kCommittedManifestName))) {
+		|| PathPresent(ManifestPath(_root, kCommittedManifestName))
+		|| HasRevocableState(_root)) {
 		SetError(error, MigrationError::InvalidManifest);
 		return std::nullopt;
 	}
@@ -1367,6 +1927,9 @@ bool MigrationController::StoreSetupDraft(const CommittedMigration &draft) const
 	const auto vaultSize = draft.profileVault.size();
 	const auto keyringSize = draft.accountKeyring.size();
 	if (draft.transactionId.size() != kTransactionIdSize
+		|| draft.layout != MigrationGenerationLayout::LegacyKeys
+		|| !draft.installationId.isEmpty() || !draft.accountGateTable.isEmpty()
+		|| !draft.revocableEmergencyRules.isEmpty() || !draft.revocableEmergencyRecovery.isEmpty()
 		|| vaultSize <= 0 || vaultSize > kMaximumArtifactSize
 		|| keyringSize <= 0 || keyringSize > kMaximumArtifactSize
 		|| vaultSize + keyringSize > kMaximumSidecarSize
@@ -1390,14 +1953,15 @@ bool MigrationController::StoreSetupDraft(const CommittedMigration &draft) const
 
 std::optional<CommittedMigration> MigrationController::LoadSetupDraft() const {
 	if (isIsolatedFixture() || !validateWorkspace()
-		|| PathPresent(ManifestPath(_root, kCommittedManifestName))) {
+		|| PathPresent(ManifestPath(_root, kCommittedManifestName))
+		|| HasRevocableState(_root)) {
 		return std::nullopt;
 	}
 	const auto magic = QByteArrayView(kSetupDraftMagic);
 	const auto boundary = magic.size() + kTransactionIdSize;
 	const auto payload = boundary + qsizetype(sizeof(quint32));
 	const auto data = ReadBounded(
-		ManifestPath(_root, kSetupDraftName), kMaximumSidecarSize + payload);
+		ManifestPath(_root, kSetupDraftName), kMaximumSidecarSize + payload, true);
 	if (!data || data->size() <= payload || !data->startsWith(magic)) {
 		return std::nullopt;
 	}
@@ -1425,7 +1989,36 @@ bool MigrationController::WithCurrentGeneration(
 		const QByteArray &expectedTransactionId,
 		const std::function<bool()> &callback,
 		MigrationError *error) const {
-	if (expectedTransactionId.size() != kTransactionIdSize || !callback) {
+	if (!callback) {
+		SetError(error, MigrationError::InvalidInput);
+		return false;
+	}
+	return withCurrentGeneration({ expectedTransactionId, {} }, LeaseKind::Legacy,
+		[&](const CommittedMigration &) { return callback(); }, error);
+}
+
+bool MigrationController::WithCurrentRevocableGeneration(
+		const MigrationGenerationProof &expected,
+		const Verifier &callback,
+		MigrationError *error) const {
+	return withCurrentGeneration(expected, LeaseKind::Revocable, callback, error);
+}
+
+bool MigrationController::WithCurrentRevocableRecovery(
+		const MigrationGenerationProof &expected,
+		const Verifier &callback,
+		MigrationError *error) const {
+	return withCurrentGeneration(expected, LeaseKind::RevocableRecovery, callback, error);
+}
+
+bool MigrationController::withCurrentGeneration(
+		const MigrationGenerationProof &expected,
+		LeaseKind kind,
+		const Verifier &callback,
+		MigrationError *error) const {
+	const auto revocable = (kind != LeaseKind::Legacy);
+	if (expected.transactionId.size() != kTransactionIdSize
+		|| (revocable && !ValidProof(expected)) || !callback) {
 		SetError(error, MigrationError::InvalidInput);
 		return false;
 	} else if (!validateWorkspace()) {
@@ -1437,16 +2030,28 @@ bool MigrationController::WithCurrentGeneration(
 		SetError(error, MigrationError::WorkspaceBusy);
 		return false;
 	}
-	{
-		const auto committed = LoadCommitted(error);
-		if (!committed) {
-			return false;
-		} else if (committed->transactionId != expectedTransactionId) {
-			SetError(error, MigrationError::StaleGeneration);
-			return false;
-		}
+	const auto committed = LoadCommitted(error);
+	if (!committed) {
+		return false;
+	} else if (committed->transactionId != expected.transactionId
+		|| (revocable && committed->manifestDigest != expected.manifestDigest)) {
+		SetError(error, MigrationError::StaleGeneration);
+		return false;
+	} else if ((committed->layout == MigrationGenerationLayout::RevocableGates) != revocable) {
+		SetError(error, MigrationError::InvalidInput);
+		return false;
+	} else if (!committed->revocableEmergencyRecovery.isEmpty()
+		&& kind != LeaseKind::RevocableRecovery) {
+		SetError(error, MigrationError::RevocableRecoveryRequired);
+		return false;
+	} else if (kind == LeaseKind::RevocableRecovery && committed->revocableEmergencyRecovery.isEmpty()) {
+		SetError(error, MigrationError::InvalidInput);
+		return false;
+	} else if (committed->retirementPending) {
+		SetError(error, MigrationError::RevocableRetirementRequired);
+		return false;
 	}
-	const auto result = callback();
+	const auto result = callback(*committed);
 	SetError(error, result ? MigrationError::None : MigrationError::CallbackFailed);
 	return result;
 }
@@ -1509,6 +2114,21 @@ std::optional<QString> MigrationController::PrepareScopedSettingsDirectory(
 		settings = ensureScopedSettingsDirectory(setId);
 		return settings.has_value();
 	}, error) ? settings : std::nullopt;
+}
+
+std::optional<QString> MigrationController::PrepareRevocableScopedSettingsDirectory(
+		const MigrationGenerationProof &expected,
+		SetId setId,
+		MigrationError *error) const {
+	if (isIsolatedFixture() || !setId) {
+		SetError(error, MigrationError::InvalidInput);
+		return std::nullopt;
+	}
+	auto settings = std::optional<QString>();
+	return WithCurrentRevocableGeneration(expected, [&](const CommittedMigration &) {
+		settings = ensureScopedSettingsDirectory(setId);
+		return settings.has_value();
+	}, error) ? std::move(settings) : std::nullopt;
 }
 
 std::optional<QString> MigrationController::PrepareInitialSettingsDirectory(

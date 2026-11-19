@@ -664,6 +664,7 @@ InstallationRemovalResult RunInstallationRemovalHandoff(
 		};
 		effects.clear = [apply] { return apply(InstallationDataCleanupPhase::AfterExit); };
 		effects.finalize = [apply] { return apply(InstallationDataCleanupPhase::FinalizeRecovery); };
+		effects.refuse = [&] { return RecordInstallationRemovalRefusal(*data, handoff->ticket().operationId); };
 	}
 	auto receiver = InstallationRemovalReceiver();
 	return receiver.RemoveAfterParentExit(

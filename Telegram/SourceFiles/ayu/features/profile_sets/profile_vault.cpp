@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/profile_sets/profile_vault.h"
 
+#include "ayu/features/profile_sets/profile_revocable_vault.h"
+
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
@@ -516,9 +518,15 @@ QByteArray AdminAad(const ProfileVault &vault) {
 		vault.adminVerifier);
 }
 
-ProfileVaultError ValidateVault(const ProfileVault &vault) {
-	if (vault.version != kProfileVaultVersion
-		&& vault.version != kLegacyProfileVaultVersion) {
+bool SupportedVersion(quint32 version, quint32 currentVersion) {
+	return version == currentVersion
+		|| (currentVersion == kProfileVaultVersion && version == kLegacyProfileVaultVersion);
+}
+
+ProfileVaultError ValidateVault(
+		const ProfileVault &vault,
+		quint32 currentVersion = kProfileVaultVersion) {
+	if (!SupportedVersion(vault.version, currentVersion)) {
 		return ProfileVaultError::UnsupportedVersion;
 	} else if (vault.id.size() != kProfileVaultIdSize || AllZero(vault.id)) {
 		return ProfileVaultError::InvalidVaultId;
@@ -781,6 +789,17 @@ std::optional<AdminVaultAccess> OpenAdminVault(
 	};
 }
 
+QByteArray ScopedSettingsKey(
+		const ProfileVault &vault,
+		SetId id,
+		const DerivedCredential &admin) {
+	auto label = QByteArray("SleepyGram scoped settings v1");
+	label.append(vault.id);
+	AppendUint64(label, id.high);
+	AppendUint64(label, id.low);
+	return HmacSha256(admin.key, label);
+}
+
 std::optional<SealedSetGrant> SealSetGrant(
 		const ProfileVault &vault,
 		const AccountSet &set,
@@ -803,11 +822,7 @@ std::optional<SealedSetGrant> SealSetGrant(
 	if (keyring.isEmpty()) {
 		return std::nullopt;
 	}
-	auto label = QByteArray("SleepyGram scoped settings v1");
-	label.append(vault.id);
-	AppendUint64(label, set.id.high);
-	AppendUint64(label, set.id.low);
-	auto settingsKey = HmacSha256(admin.key, label);
+	auto settingsKey = ScopedSettingsKey(vault, set.id, admin);
 	const auto wipeSettingsKey = gsl::finally([&] {
 		OPENSSL_cleanse(settingsKey.data(), settingsKey.size());
 	});
@@ -1360,10 +1375,13 @@ ProfileVaultAccess OpenProfileVault(
 	};
 }
 
-QByteArray SerializeProfileVault(
+namespace {
+
+QByteArray SerializeVaultEnvelope(
 		const ProfileVault &vault,
+		quint32 currentVersion,
 		ProfileVaultError *error) {
-	const auto validation = ValidateVault(vault);
+	const auto validation = ValidateVault(vault, currentVersion);
 	SetError(error, validation);
 	if (validation != ProfileVaultError::None) {
 		return {};
@@ -1400,8 +1418,9 @@ QByteArray SerializeProfileVault(
 	return result;
 }
 
-std::optional<ProfileVault> ParseProfileVault(
+std::optional<ProfileVault> ParseVaultEnvelope(
 		const QByteArray &serialized,
+		quint32 currentVersion,
 		ProfileVaultError *error) {
 	SetError(error, ProfileVaultError::Malformed);
 	if (serialized.size() < 8 + kProfileVaultIdSize + 4 + 16 + 32 + 12 + 4 + 16 + 4
@@ -1415,8 +1434,7 @@ std::optional<ProfileVault> ParseProfileVault(
 	}
 	auto vault = ProfileVault();
 	vault.version = ReadUint32(data + 4);
-	if (vault.version != kProfileVaultVersion
-		&& vault.version != kLegacyProfileVaultVersion) {
+	if (!SupportedVersion(vault.version, currentVersion)) {
 		SetError(error, ProfileVaultError::UnsupportedVersion);
 		return std::nullopt;
 	}
@@ -1477,13 +1495,98 @@ std::optional<ProfileVault> ParseProfileVault(
 	if (offset != serialized.size()) {
 		return std::nullopt;
 	}
-	const auto validation = ValidateVault(vault);
+	const auto validation = ValidateVault(vault, currentVersion);
 	if (validation != ProfileVaultError::None) {
 		SetError(error, validation);
 		return std::nullopt;
 	}
 	SetError(error, ProfileVaultError::None);
 	return vault;
+}
+
+} // namespace
+
+QByteArray SerializeProfileVault(const ProfileVault &vault, ProfileVaultError *error) {
+	return SerializeVaultEnvelope(vault, kProfileVaultVersion, error);
+}
+
+std::optional<ProfileVault> ParseProfileVault(
+		const QByteArray &serialized,
+		ProfileVaultError *error) {
+	return ParseVaultEnvelope(serialized, kProfileVaultVersion, error);
+}
+
+QByteArray details::SerializeRevocableProfileEnvelope(
+		const ProfileVault &envelope,
+		ProfileVaultError *error) {
+	return SerializeVaultEnvelope(envelope, kRevocableProfileVaultVersion, error);
+}
+
+ProfileVaultError details::ValidateRevocableProfileEnvelope(const ProfileVault &envelope) {
+	return ValidateVault(envelope, kRevocableProfileVaultVersion);
+}
+
+std::optional<ProfileVault> details::ParseRevocableProfileEnvelope(
+		const QByteArray &serialized,
+		ProfileVaultError *error) {
+	return ParseVaultEnvelope(serialized, kRevocableProfileVaultVersion, error);
+}
+
+bool details::ValidRevocableProfileCredential(const DerivedCredential &credential) {
+	return ValidCredential(credential);
+}
+
+QByteArray details::RevocableProfileEnvelopeKey(
+		const ProfileVault &envelope,
+		SetId id,
+		const DerivedCredential &credential) {
+	auto base = GrantKey(credential, envelope, id ? kSetPayloadContext : kAdminPayloadContext, id);
+	const auto wipe = gsl::finally([&] { OPENSSL_cleanse(base.data(), base.size()); });
+	return (base.size() == kProfileVaultKeySize && !AllZero(base))
+		? HmacSha256(base, QByteArray("SleepyGram profile-vault revocable grant key v3"))
+		: QByteArray();
+}
+
+QByteArray details::RevocableProfileGrantManifest(const ProfileVault &envelope) {
+	return GrantManifest(envelope.grants);
+}
+
+QByteArray details::RevocableProfileSettingsKey(
+		const ProfileVault &envelope,
+		SetId id,
+		const DerivedCredential &admin) {
+	return ScopedSettingsKey(envelope, id, admin);
+}
+
+std::optional<SealedSetGrant> details::SealRevocableProfileGrant(
+		const ProfileVault &envelope,
+		SetId id,
+		const QByteArray &verifier,
+		const QByteArray &key,
+		const QByteArray &plaintext) {
+	const auto aad = AssociatedData(
+		envelope,
+		id ? kSetPayloadContext : kAdminPayloadContext,
+		id,
+		verifier);
+	auto blob = SealedBlob();
+	if (!Seal(key, aad, plaintext, &blob)) {
+		return std::nullopt;
+	}
+	return SealedSetGrant{
+		.id = id,
+		.verifier = verifier,
+		.nonce = std::move(blob.nonce),
+		.ciphertext = std::move(blob.ciphertext),
+	};
+}
+
+QByteArray details::OpenRevocableProfileGrant(
+		const ProfileVault &envelope,
+		const SealedSetGrant &grant,
+		const QByteArray &key) {
+	const auto aad = grant.id ? SetAad(envelope, grant) : AdminAad(envelope);
+	return OpenAesGcm(key, grant.nonce, aad, grant.ciphertext);
 }
 
 } // namespace Ayu::ProfileSets
