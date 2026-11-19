@@ -4406,9 +4406,12 @@ void HistoryWidget::updateAccountMarker() {
 	if (!_accountMarker) {
 		return;
 	}
-	const auto show = Core::App().settings().readPref<bool>(
-		Core::kShowCurrentAccountInComposeKey,
-		true)
+	const auto show = _history
+		&& !_showAnimation
+		&& (!_field->isHidden() || !_richDraftPreview->isHidden())
+		&& Core::App().settings().readPref<bool>(
+			Core::kShowCurrentAccountInComposeKey,
+			true)
 		&& session().domain().accountsAuthedCount() >= 2;
 	_accountMarker->setVisible(show);
 	if (!show) {
