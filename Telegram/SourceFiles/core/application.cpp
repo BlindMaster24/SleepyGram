@@ -92,6 +92,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "storage/storage_folder_archive.h"
 #include "storage/localstorage.h"
 #include "payments/payments_checkout_process.h"
+#include "settings/cloud_password/settings_cloud_password_common.h"
 #include "tgw/tgw_runtime.h"
 #include "export/export_manager.h"
 #include "wallet/wallet_panel.h"
@@ -114,6 +115,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/layers/generic_box.h"
 #include "ui/widgets/fields/password_input.h"
 #include "ui/widgets/labels.h"
+#include "styles/style_layers.h"
 #include "core/cached_webview_availability.h"
 #include "test/test_agent.h"
 
@@ -528,11 +530,16 @@ void Application::finishProvisionalEnrollment(
 		box->setTitle(rpl::single(u"Add account to this set"_q));
 		box->setCloseByEscape(false);
 		box->setCloseByOutsideClick(false);
-		const auto first = box->addRow(object_ptr<Ui::PasswordInput>(
-			box, st::settingLocalPasscodeInputField, rpl::single(u"Master passcode"_q)));
-		const auto second = box->addRow(object_ptr<Ui::PasswordInput>(
-			box, st::settingLocalPasscodeInputField, rpl::single(enrollmentOperation.isEmpty()
-				? u"Set passcode"_q : u"New set passcode"_q)));
+		const auto content = box->verticalLayout();
+		const auto first = ::Settings::CloudPassword::AddPasswordField(
+			content,
+			rpl::single(u"Master passcode"_q),
+			QString());
+		const auto second = ::Settings::CloudPassword::AddPasswordField(
+			content,
+			rpl::single(enrollmentOperation.isEmpty()
+				? u"Set passcode"_q : u"New set passcode"_q),
+			QString());
 		const auto error = box->addRow(object_ptr<Ui::FlatLabel>(box, QString(), st::boxLabel));
 		error->hide();
 		const auto submit = [=, this] {
