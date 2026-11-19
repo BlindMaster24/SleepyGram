@@ -911,19 +911,37 @@ jobs:
           }
           ninja --version
           if ($LASTEXITCODE -ne 0) { throw 'Ninja is unavailable on this runner' }
-          python .github/ci/build_diagnostics.py `
-            --log-file "$env:RUNNER_TEMP\windows-x64-configure.log" -- `
-            cmake -S . -B out -G 'Ninja Multi-Config' `
-            -Werror=dev -Werror=deprecated --warn-uninitialized `
-            -DCMAKE_CONFIGURATION_TYPES=Release `
-            "-DCMAKE_C_COMPILER=$compiler" "-DCMAKE_CXX_COMPILER=$compiler" `
-            "-DTDESKTOP_API_ID=$env:TDESKTOP_API_ID" "-DTDESKTOP_API_HASH=$env:TDESKTOP_API_HASH" `
-            -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF `
-            -DSLEEPYGRAM_ENABLE_RELEASE_UPDATE=ON `
-            -DTDESKTOP_BUILD_UPDATE_TESTS=ON `
-            "-DSLEEPYGRAM_UPDATE_KEYS_DIR=$updateKeys" `
-            -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON `
-            -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=
+          function Configure-WindowsBuild([string]$directory, [string]$keys, [string]$log) {
+            python .github/ci/build_diagnostics.py `
+              --log-file "$env:RUNNER_TEMP\$log" -- `
+              cmake -S . -B $directory -G 'Ninja Multi-Config' `
+              -Werror=dev -Werror=deprecated --warn-uninitialized `
+              -DCMAKE_CONFIGURATION_TYPES=Release `
+              "-DCMAKE_C_COMPILER=$compiler" "-DCMAKE_CXX_COMPILER=$compiler" `
+              "-DTDESKTOP_API_ID=$env:TDESKTOP_API_ID" "-DTDESKTOP_API_HASH=$env:TDESKTOP_API_HASH" `
+              -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF `
+              -DSLEEPYGRAM_ENABLE_RELEASE_UPDATE=ON `
+              -DTDESKTOP_BUILD_UPDATE_TESTS=ON `
+              "-DSLEEPYGRAM_UPDATE_KEYS_DIR=$keys" `
+              -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON `
+              -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=
+            if ($LASTEXITCODE -ne 0) { throw "Windows configure failed for $directory" }
+          }
+          Configure-WindowsBuild 'out' $updateKeys 'windows-x64-configure.log'
+          if ($env:PRODUCTION_UPDATE -eq 'true') {
+            Configure-WindowsBuild 'out-update-test' '' 'windows-x64-update-test-configure.log'
+          }
+
+      - name: Verify signed update and rollback on Windows
+        working-directory: TBuild/tdesktop
+        env:
+          QT: ${{ env.CI_QT_VERSION }}
+          PRODUCTION_UPDATE: ${{ needs.preflight.outputs.production-update }}
+        run: |
+          $directory = if ($env:PRODUCTION_UPDATE -eq 'true') { 'out-update-test' } else { 'out' }
+          cmake --build $directory --config Release --parallel 2 --target Updater Packer
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tools/tests/test_sleepy_updater.py --helper "$directory/Release/Updater.exe" --packer "$directory/Release/Packer.exe" --cc cl
           exit $LASTEXITCODE
 
       - name: Build
@@ -941,6 +959,7 @@ jobs:
           name: diagnostics-windows-x64
           path: |
             ${{ runner.temp }}\windows-x64-configure.log
+            ${{ runner.temp }}\windows-x64-update-test-configure.log
             ${{ runner.temp }}\windows-x64-build.log
           if-no-files-found: ignore
 
@@ -955,13 +974,6 @@ jobs:
           cmake --build out --config Release --parallel 2 --target test_update_github
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           out/Release/test_update_github.exe
-          exit $LASTEXITCODE
-
-      - name: Verify signed update and rollback on Windows
-        if: needs.preflight.outputs.production-update != 'true'
-        working-directory: TBuild/tdesktop
-        run: |
-          python tools/tests/test_sleepy_updater.py --helper out/Release/Updater.exe --packer out/Release/Packer.exe --cc cl
           exit $LASTEXITCODE
 
       - name: Package, smoke, and verify

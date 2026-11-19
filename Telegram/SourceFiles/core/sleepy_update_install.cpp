@@ -1100,8 +1100,10 @@ HelperDirectoryCleanup::~HelperDirectoryCleanup() {
 		--i;
 		if (journal.directories & (quint32(1) << i)) {
 			const auto path = Join(location.root, kAppDirectories[i]);
+			const auto filters = QDir::AllEntries | QDir::NoDotAndDotDot
+				| QDir::Hidden | QDir::System;
 			if (PathKind(path) == Kind::Directory
-				&& QDir(path).isEmpty(QDir::AllEntries | QDir::Hidden | QDir::System)
+				&& QDir(path).isEmpty(filters)
 				&& (!QDir().rmdir(path) || !SyncDirectory(QFileInfo(path).absolutePath()))) {
 				return Fail(error, "Could not remove an empty app file directory.");
 			}

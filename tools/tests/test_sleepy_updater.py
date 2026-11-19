@@ -213,7 +213,7 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
             assert not (install / ".sleepy-update").exists()
             print("ordinary_restart: ok", flush=True)
 
-        for scenario, generation, expected, exitcode in (
+        scenarios = [
             ("commit", "new", b"new", 0),
             ("failed_probe", "bad", b"old", 1),
             ("wrong_target", "new", b"old", 1),
@@ -223,7 +223,10 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
             ("linked_destination", "new", b"old", 1),
             ("intent_recovery", "new", b"old", 0),
             ("crash_recovery", "paused", b"old", 0),
-        ):
+        ]
+        if windows:
+            scenarios.append(("restore_existing_module", "bad", b"old", 1))
+        for scenario, generation, expected, exitcode in scenarios:
             if windows and scenario == "linked_destination":
                 continue
             install = base / scenario
@@ -234,6 +237,11 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
             profile_file.write_bytes(b"profile")
             neighbor = install / "neighbor.txt"
             neighbor.write_bytes(b"neighbor")
+            module = install / "modules/x64/d3d/d3dcompiler_47.dll"
+            if scenario == "restore_existing_module":
+                module.parent.mkdir(parents=True)
+                module.write_bytes(b"previous module")
+                (module.parent / "custom.txt").write_bytes(b"custom")
             link = None
             if scenario == "linked_destination":
                 link = (install / "SleepyGram.app/Contents/Link" if mac
@@ -308,7 +316,13 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
             elif not mac:
                 assert (install / "LICENSE-SQLCipher.txt").read_bytes() == expected
             if windows:
-                assert (install / "modules").exists() == (scenario == "commit")
+                if scenario == "commit":
+                    assert module.read_bytes() == b"module"
+                elif scenario == "restore_existing_module":
+                    assert module.read_bytes() == b"previous module"
+                    assert (module.parent / "custom.txt").read_bytes() == b"custom"
+                else:
+                    assert not (install / "modules").exists(), scenario
             print(f"{scenario}: ok", flush=True)
 
 
