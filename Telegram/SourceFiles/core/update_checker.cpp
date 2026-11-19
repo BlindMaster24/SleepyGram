@@ -2473,7 +2473,9 @@ void UpdateApplication() {
 		const auto url = "https://github.com/slpkbt/SleepyGram/releases";
 		UrlClickHandler::Open(url);
 	} else {
+#ifndef SLEEPYGRAM_RELEASE_UPDATE
 		cSetAutoUpdate(true);
+#endif // !SLEEPYGRAM_RELEASE_UPDATE
 		const auto window = Core::IsAppLaunched()
 			? Core::App().activePrimaryWindow()
 			: nullptr;
@@ -2491,8 +2493,12 @@ void UpdateApplication() {
 			}
 			window->widget()->showFromTray();
 		}
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		Core::UpdateChecker().checkNow();
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		cSetLastUpdateCheck(0);
 		Core::UpdateChecker().start();
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	}
 }
 
