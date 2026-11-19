@@ -429,6 +429,13 @@ void EmergencyRulesPanel::showList() {
 		: _drafts.empty()
 		? (canAdd() ? u"No emergency rules yet."_q : ResultText(Result::Unavailable))
 		: u"Emergency rules"_q);
+	const auto removalConfigured = canEdit() && std::ranges::any_of(
+		_drafts, [](const DraftRule &draft) {
+			return draft.rule.targetScope == Scope::CurrentInstallation;
+		});
+	if (removalConfigured) {
+		AddText(layout, u"After installing an update, review and save your installation removal rule again."_q);
+	}
 	if (_snapshot && _snapshot->lastReset) {
 		const auto &last = *_snapshot->lastReset;
 		AddText(layout, u"Last reset cleared local data for %1 accounts."_q.arg(last.clearedAccounts));
@@ -452,7 +459,9 @@ void EmergencyRulesPanel::showList() {
 	const auto add = AddButton(actions, u"Add rule"_q);
 	const auto editRule = AddButton(actions, u"Edit"_q);
 	const auto remove = AddButton(actions, u"Remove"_q);
-	const auto review = AddButton(actions, u"Review changes"_q);
+	const auto review = AddButton(actions, (removalConfigured && !_changed)
+		? u"Review installation removal"_q
+		: u"Review changes"_q);
 	layout->addLayout(actions);
 	const auto selectionChanged = [=, this](int row) {
 		const auto selected = row >= 0 && size_t(row) < _drafts.size();
@@ -486,13 +495,13 @@ void EmergencyRulesPanel::showList() {
 			showList();
 		}
 	});
-	connect(review, &QPushButton::clicked, this, [this] {
-		if (canEdit() && _changed) {
+	connect(review, &QPushButton::clicked, this, [=, this] {
+		if (canEdit() && (_changed || removalConfigured)) {
 			showReview({});
 		}
 	});
 	add->setEnabled(canAdd());
-	review->setEnabled(canEdit() && _changed);
+	review->setEnabled(canEdit() && (_changed || removalConfigured));
 	list->setCurrentRow(_drafts.empty() ? -1 : 0);
 	selectionChanged(list->currentRow());
 }

@@ -24,6 +24,7 @@ class UpdateChecker {
 public:
 	enum class State {
 		None,
+		Available,
 		Download,
 		Ready,
 	};
@@ -36,14 +37,20 @@ public:
 	rpl::producer<Progress> progress() const;
 	rpl::producer<> failed() const;
 	rpl::producer<> ready() const;
+	rpl::producer<> available() const;
+	rpl::producer<> busy() const;
 
 	void start(bool forceWait = false);
 	void stop();
+	void checkNow();
+	void download();
 	void test();
 
 	void setMtproto(base::weak_ptr<Main::Session> session);
 
 	State state() const;
+	QString availableVersion() const;
+	bool hasPackage() const;
 	int already() const;
 	int size() const;
 	bool percent() const;

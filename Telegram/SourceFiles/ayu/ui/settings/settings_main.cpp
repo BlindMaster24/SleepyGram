@@ -171,7 +171,7 @@ void BuildLinks(SectionBuilder &builder) {
 const auto kMeta = BuildHelper({
 	.id = AyuMain::Id(),
 	.parentId = MainId(),
-	.title = &tr::ayu_AyuPreferences,
+	.title = &tr::lng_sleepy_preferences,
 	.icon = &st::menuIconSleepyGram,
 }, [](SectionBuilder &builder) {
 	BuildLogo(builder);

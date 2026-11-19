@@ -116,7 +116,7 @@ constexpr auto kPlayStatusLimit = 12;
 
 [[nodiscard]] rpl::producer<TextWithEntities> SetStatusLabel(
 		not_null<Main::Session*> session) {
-	return tr::ayu_AyuPreferences() | rpl::map([](const QString& text) {
+	return tr::lng_sleepy_preferences() | rpl::map([](const QString& text) {
 		return tr::link(text);
 	});
 }

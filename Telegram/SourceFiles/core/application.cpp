@@ -1573,6 +1573,25 @@ bool Application::downloadPreventsQuit() {
 	return false;
 }
 
+bool Application::canInstallReleaseUpdate() const {
+	if (_profileEnrollmentSaving
+		|| Window::ProfileSetupInProgress(_blockedProfileWindow.get())
+		|| (_calls && (_calls->currentCall() || _calls->currentGroupCall()))) {
+		return false;
+	}
+	if (_profileStartupMode == ProfileStartupMode::Legacy) {
+		return true;
+	} else if (_profileStartupMode != ProfileStartupMode::Committed) {
+		return false;
+	}
+	const auto workspace = MigrationController::OpenProfileWorkspace(
+		cWorkingDir() + u"tdata"_q);
+	const auto current = workspace ? workspace->LoadCommitted() : std::nullopt;
+	return current && current->emergencyRecovery.isEmpty()
+		&& current->revocableEmergencyRecovery.isEmpty()
+		&& !current->retirementPending;
+}
+
 bool Application::preventsQuit(QuitReason reason) {
 	if (exportPreventsQuit()
 		|| uploadPreventsQuit()
@@ -2729,6 +2748,10 @@ void SetLaunchState(LaunchState state) {
 }
 
 void Restart() {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+   cSetRestarting(true);
+   cSetRestartingToSettings(true);
+#else // SLEEPYGRAM_RELEASE_UPDATE
    const auto updateReady = !UpdaterDisabled()
 	   && (UpdateChecker().state() == UpdateChecker::State::Ready);
    if (updateReady) {
@@ -2737,6 +2760,7 @@ void Restart() {
 	   cSetRestarting(true);
 	   cSetRestartingToSettings(true);
    }
+#endif // SLEEPYGRAM_RELEASE_UPDATE
    Quit();
 }
 

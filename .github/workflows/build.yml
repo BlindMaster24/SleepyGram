@@ -24,23 +24,16 @@ on:
           - macos-26
           - xcode-27
       publish_release:
-        description: Publish a release after all three platforms pass
+        description: Publish the signed stable release from protected dev (platform all)
         required: false
         default: false
         type: boolean
-      release_tag:
-        description: Optional tag for manual publishing
-        required: false
-        default: manual
-        type: string
   pull_request:
     branches:
       - dev
   push:
     branches:
       - dev
-    tags:
-      - "v*"
 
 permissions:
   contents: read
@@ -55,9 +48,41 @@ jobs:
   preflight:
     name: source preflight
     runs-on: ubuntu-22.04
+    outputs:
+      production-update: ${{ steps.trust.outputs.production }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      - name: Check update trust and release request
+        id: trust
+        shell: bash
+        env:
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+          RELEASE_REQUESTED: ${{ inputs.publish_release }}
+          RELEASE_PLATFORM: ${{ inputs.platform }}
+          RELEASE_REF_PROTECTED: ${{ github.ref_protected }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$RELEASE_REQUESTED" == true ]]; then
+            if [[ "$GITHUB_EVENT_NAME" != workflow_dispatch || "$GITHUB_REPOSITORY" != slpkbt/SleepyGram \
+              || "$GITHUB_REF" != refs/heads/dev || "$RELEASE_REF_PROTECTED" != true || "$RELEASE_PLATFORM" != all ]]; then
+              echo "::error::Publishing requires a manual dispatch on protected dev with all platforms selected."
+              exit 1
+            fi
+            args+=(--require-production)
+          fi
+          keys="$RUNNER_TEMP/update-keys"
+          python3 .github/ci/update_package.py trust --output "$keys" "${args[@]}"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$keys/root-public.pem" \
+            -in "$keys/manifest.min.json" -sigfile "$keys/manifest.sig"
+          if [[ -n "$SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE" ]]; then
+            echo "production=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "production=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Test signed update release checks
+        run: python3 .github/ci/update_test.py
       - name: Test language key preflight
         run: python3 .github/ci/test_preflight_lang.py
       - name: Test build diagnostics
@@ -169,15 +194,26 @@ jobs:
             echo "CI_CONTAINER_CXX=$compiler_version"
           } >> "$GITHUB_ENV"
 
+      - name: Prepare public update trust
+        env:
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+        run: python3 .github/ci/update_package.py trust --output "$RUNNER_TEMP/update-keys"
+
       - name: Build
         id: build
         env:
+          PRODUCTION_UPDATE: ${{ needs.preflight.outputs.production-update }}
           KEEP_GOING: "1"
         run: |
+          update_keys=""
+          if [[ "$PRODUCTION_UPDATE" == true ]]; then
+            update_keys=/update-keys
+          fi
           python3 .github/ci/build_diagnostics.py \
             --log-file "$RUNNER_TEMP/linux-x64-build.log" -- docker run --rm \
             -u "$(id -u)" \
             -v "$PWD:/usr/src/tdesktop" \
+            -v "$RUNNER_TEMP/update-keys:/update-keys:ro" \
             -e CONFIG=Release \
             -e KEEP_GOING="$KEEP_GOING" \
             "$IMAGE_TAG" \
@@ -186,7 +222,10 @@ jobs:
               -D Python3_EXECUTABLE=/usr/bin/python3.11 \
               -D TDESKTOP_API_ID="$TDESKTOP_API_ID" \
               -D TDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
-              -D DESKTOP_APP_DISABLE_AUTOUPDATE=ON \
+              -D DESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
+              -D SLEEPYGRAM_ENABLE_RELEASE_UPDATE=ON \
+              -D TDESKTOP_BUILD_UPDATE_TESTS=ON \
+              -D SLEEPYGRAM_UPDATE_KEYS_DIR="$update_keys" \
               -D DESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
       - name: Upload failed build logs
@@ -200,8 +239,21 @@ jobs:
       - name: Verify protected profile storage
         run: |
           docker run --rm -u "$(id -u)" \
-            -v "$PWD:/usr/src/tdesktop" "$IMAGE_TAG" \
+            -v "$PWD:/usr/src/tdesktop" -v "$RUNNER_TEMP/update-keys:/update-keys:ro" "$IMAGE_TAG" \
             cmake --build /usr/src/tdesktop/out --config Release --parallel 2 --target check_revocable_profiles
+
+      - name: Verify release parser on Linux
+        run: |
+          docker run --rm -u "$(id -u)" -w /usr/src/tdesktop \
+            -v "$PWD:/usr/src/tdesktop" -v "$RUNNER_TEMP/update-keys:/update-keys:ro" "$IMAGE_TAG" \
+            bash -ec 'cmake --build out --config Release --parallel 2 --target test_update_github && out/Release/test_update_github'
+
+      - name: Verify signed update and rollback on Linux
+        if: needs.preflight.outputs.production-update != 'true'
+        run: |
+          docker run --rm --network none -u "$(id -u)" -w /usr/src/tdesktop \
+            -v "$PWD:/usr/src/tdesktop:ro" "$IMAGE_TAG" \
+            /usr/bin/python3.11 tools/tests/test_sleepy_updater.py --helper out/Release/Updater
 
       - name: Package and verify
         id: package
@@ -220,15 +272,9 @@ jobs:
           readelf -h out/Release/SleepyGramRemovalHelper | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'
           cp out/Release/SleepyGramRemovalHelper "$package/"
           cp Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$package/"
-          files=(SleepyGram SleepyGramRemovalHelper LICENSE-SQLCipher.txt)
-          if [ -f out/Release/Updater ]; then
-            readelf -h out/Release/Updater | grep -Eq 'Machine:.*Advanced Micro Devices X86-64' || {
-              echo "::error::Updater is not an x86_64 ELF executable"
-              exit 1
-            }
-            cp out/Release/Updater "$package/Updater"
-            files+=(Updater)
-          fi
+          readelf -h out/Release/Updater | grep -Eq 'Machine:.*Advanced Micro Devices X86-64'
+          cp out/Release/Updater "$package/"
+          files=(SleepyGram SleepyGramRemovalHelper Updater LICENSE-SQLCipher.txt)
           python3 .github/ci/build_artifact.py create \
             --platform linux-x64 \
             --repo-root . \
@@ -292,12 +338,25 @@ jobs:
             ${{ runner.temp }}/sleepygram-xvfb.log
           retention-days: 3
 
+      - name: Prepare unsigned Linux update
+        run: |
+          docker run --rm --network none -u "$(id -u)" -w /usr/src/tdesktop \
+            -v "$PWD:/usr/src/tdesktop:ro" -v "$RUNNER_TEMP:/package" "$IMAGE_TAG" \
+            /usr/bin/python3.11 .github/ci/update_package.py pack \
+              --platform linux-x64 --packer out/Release/Packer --keys /package/update-keys \
+              --stage /package/sleepygram-linux-x64 --output /package \
+              --archive /package/SleepyGram-linux-x64.tar.xz
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: package-linux-x64
-          path: ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
+          path: |
+            ${{ runner.temp }}/SleepyGram-linux-x64.tar.xz
+            ${{ runner.temp }}/SleepyGram-update-linux-x64.tdup.unsigned
+            ${{ runner.temp }}/SleepyGram-update-linux-x64.tdup.signing-input
           if-no-files-found: error
+          compression-level: 0
 
   macos-prepare:
     name: macos-prepare
@@ -511,14 +570,24 @@ jobs:
         run: |
           find Libraries '(' '(' ! '(' -name '*.a' -o -name '*.h' -o -name '*.hpp' -o -name '*.inc' -o -name '*.cmake' -o -name '*.pc' -o -path '*/include/*' -o -path 'Libraries/local/src/wallet_engine/wallet_engine.cpp' -o -path '*/objects-*' -o -path '*/cache_keys/*' -o -path '*/patches/*' -o -perm +111 ')' -type f ')' -o -empty ')' -delete
 
+      - name: Prepare public update trust
+        env:
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+        run: python3 tdesktop/.github/ci/update_package.py trust --output "$RUNNER_TEMP/update-keys" --repo-root tdesktop
+
       - name: Configure macOS app
         id: configure
         working-directory: tdesktop
         shell: bash
         env:
           QT: ${{ env.CI_QT_VERSION }}
+          PRODUCTION_UPDATE: ${{ needs.preflight.outputs.production-update }}
         run: |
           set -euo pipefail
+          update_keys=""
+          if [[ "$PRODUCTION_UPDATE" == true ]]; then
+            update_keys="$RUNNER_TEMP/update-keys"
+          fi
           clang="$(xcrun --sdk macosx --find clang)"
           clangxx="$(xcrun --sdk macosx --find clang++)"
           sdk="$(xcrun --sdk macosx --show-sdk-path)"
@@ -543,7 +612,10 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET="$CI_MACOS_MINIMUM" \
             -DTDESKTOP_API_ID="$TDESKTOP_API_ID" \
             -DTDESKTOP_API_HASH="$TDESKTOP_API_HASH" \
-            -DDESKTOP_APP_DISABLE_AUTOUPDATE=ON \
+            -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF \
+            -DSLEEPYGRAM_ENABLE_RELEASE_UPDATE=ON \
+            -DTDESKTOP_BUILD_UPDATE_TESTS=ON \
+            -DSLEEPYGRAM_UPDATE_KEYS_DIR="$update_keys" \
             -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON
 
       - name: Build
@@ -582,6 +654,20 @@ jobs:
         working-directory: tdesktop
         run: cmake --build out --config Release --parallel 2 --target check_revocable_profiles
 
+      - name: Verify release parser on macOS
+        working-directory: tdesktop
+        run: |
+          cmake --build out --config Release --parallel 2 --target test_update_github
+          out/Release/test_update_github
+
+      - name: Verify signed update and rollback on macOS
+        if: needs.preflight.outputs.production-update != 'true'
+        working-directory: tdesktop
+        run: |
+          brew install openssl@3
+          python3 tools/tests/test_sleepy_updater.py --helper out/Release/Updater \
+            --openssl "$(brew --prefix openssl@3)/bin/openssl"
+
       - name: Package, sign, and verify
         shell: bash
         run: |
@@ -613,6 +699,7 @@ jobs:
             exit 1
           fi
           cp tdesktop/Telegram/SourceFiles/ayu/libs/sqlite/LICENSE-SQLCipher.txt "$app/Contents/Resources/"
+          strip -S -x "$main"
           python3 tdesktop/.github/ci/build_artifact.py create \
             --platform macos-arm64 \
             --repo-root tdesktop \
@@ -641,6 +728,14 @@ jobs:
             tdesktop/out/Release/SleepyGram.app \
             "$RUNNER_TEMP/SleepyGram-macos-arm64.dmg" --smoke
 
+      - name: Prepare unsigned macOS update
+        working-directory: tdesktop
+        run: |
+          python3 .github/ci/update_package.py pack \
+            --platform macos-arm64 --packer out/Release/Packer --keys "$RUNNER_TEMP/update-keys" \
+            --stage out/Release/SleepyGram.app --output "$RUNNER_TEMP" \
+            --archive "$RUNNER_TEMP/SleepyGram-macos-arm64.zip"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -649,7 +744,10 @@ jobs:
             ${{ runner.temp }}/SleepyGram-macos-arm64.zip
             ${{ runner.temp }}/SleepyGram-macos-arm64.dmg
             ${{ runner.temp }}/SleepyGram-macos-arm64.dmg.sha256
+            ${{ runner.temp }}/SleepyGram-update-macos-arm64.tdup.unsigned
+            ${{ runner.temp }}/SleepyGram-update-macos-arm64.tdup.signing-input
           if-no-files-found: error
+          compression-level: 0
 
   windows-x64:
     name: windows-x64
@@ -785,12 +883,20 @@ jobs:
           path: TBuild\Libraries\win64
           key: windows-x64-libraries-v2-${{ env.TBUILD_VOLUME }}-${{ steps.cache-key.outputs.key }}
 
+      - name: Prepare public update trust
+        working-directory: TBuild/tdesktop
+        env:
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
+        run: python .github/ci/update_package.py trust --output "$env:RUNNER_TEMP\update-keys"
+
       - name: Configure
         id: configure
         working-directory: TBuild/tdesktop
         env:
           QT: ${{ env.CI_QT_VERSION }}
+          PRODUCTION_UPDATE: ${{ needs.preflight.outputs.production-update }}
         run: |
+          $updateKeys = if ($env:PRODUCTION_UPDATE -eq 'true') { "$env:RUNNER_TEMP\update-keys" } else { '' }
           $compiler = (Get-Command cl.exe -CommandType Application).Source
           if ($compiler -notmatch '\\Hostx64\\x64\\cl\.exe$') {
             throw "Expected the native x64 MSVC compiler: $compiler"
@@ -804,7 +910,10 @@ jobs:
             -DCMAKE_CONFIGURATION_TYPES=Release `
             "-DCMAKE_C_COMPILER=$compiler" "-DCMAKE_CXX_COMPILER=$compiler" `
             "-DTDESKTOP_API_ID=$env:TDESKTOP_API_ID" "-DTDESKTOP_API_HASH=$env:TDESKTOP_API_HASH" `
-            -DDESKTOP_APP_DISABLE_AUTOUPDATE=ON `
+            -DDESKTOP_APP_DISABLE_AUTOUPDATE=OFF `
+            -DSLEEPYGRAM_ENABLE_RELEASE_UPDATE=ON `
+            -DTDESKTOP_BUILD_UPDATE_TESTS=ON `
+            "-DSLEEPYGRAM_UPDATE_KEYS_DIR=$updateKeys" `
             -DDESKTOP_APP_DISABLE_CRASH_REPORTS=ON `
             -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=
           exit $LASTEXITCODE
@@ -832,6 +941,21 @@ jobs:
           cmake --build "$env:REPO_PATH\out" --config Release --parallel 2 --target check_revocable_profiles
           exit $LASTEXITCODE
 
+      - name: Verify release parser on Windows
+        working-directory: TBuild/tdesktop
+        run: |
+          cmake --build out --config Release --parallel 2 --target test_update_github
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          out/Release/test_update_github.exe
+          exit $LASTEXITCODE
+
+      - name: Verify signed update and rollback on Windows
+        if: needs.preflight.outputs.production-update != 'true'
+        working-directory: TBuild/tdesktop
+        run: |
+          python tools/tests/test_sleepy_updater.py --helper out/Release/Updater.exe --packer out/Release/Packer.exe --cc cl
+          exit $LASTEXITCODE
+
       - name: Package, smoke, and verify
         run: |
           $PSNativeCommandUseErrorActionPreference = $true
@@ -852,10 +976,8 @@ jobs:
           Copy-Item "$out\SleepyGram.exe" $package
           Copy-Item "$out\SleepyGramRemovalHelper.exe" $package
           Copy-Item "$env:REPO_PATH\Telegram\SourceFiles\ayu\libs\sqlite\LICENSE-SQLCipher.txt" $package
-          if (Test-Path "$out\Updater.exe") {
-            Assert-X64 "$out\Updater.exe"
-            Copy-Item "$out\Updater.exe" $package
-          }
+          Assert-X64 "$out\Updater.exe"
+          Copy-Item "$out\Updater.exe" $package
           if (Test-Path $module) {
             Assert-X64 $module
             New-Item -ItemType Directory -Force "$package\modules\x64\d3d" | Out-Null
@@ -876,119 +998,90 @@ jobs:
           python "$env:REPO_PATH\.github\ci\smoke.py" --platform windows-x64 --directory $extracted --qpa-platform windows --require-startup
           if ($LASTEXITCODE -ne 0) { throw "Windows startup smoke failed" }
 
+      - name: Prepare unsigned Windows update
+        working-directory: TBuild/tdesktop
+        run: |
+          python .github/ci/update_package.py pack `
+            --platform windows-x64 --packer out/Release/Packer.exe --keys "$env:RUNNER_TEMP\update-keys" `
+            --stage "$env:RUNNER_TEMP\sleepygram-windows-x64" --output "$env:RUNNER_TEMP" `
+            --archive "$env:RUNNER_TEMP\SleepyGram-windows-x64.zip"
+          exit $LASTEXITCODE
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: package-windows-x64
-          path: ${{ runner.temp }}\SleepyGram-windows-x64.zip
+          path: |
+            ${{ runner.temp }}\SleepyGram-windows-x64.zip
+            ${{ runner.temp }}\SleepyGram-update-windows-x64.tdup.unsigned
+            ${{ runner.temp }}\SleepyGram-update-windows-x64.tdup.signing-input
           if-no-files-found: error
+          compression-level: 0
 
   publish-release:
-    name: publish-release
-    runs-on: ubuntu-22.04
+    name: Sign and publish stable release
+    runs-on: ubuntu-24.04
     needs:
       - preflight
       - linux-x64
       - macos-arm64
       - windows-x64
-    if: ${{ always() && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.publish_release && inputs.platform == 'all'
+      && github.repository == 'slpkbt/SleepyGram' && github.ref == 'refs/heads/dev' && github.ref_protected
+      && needs.preflight.outputs.production-update == 'true'
     permissions:
       contents: write
+    environment: sleepygram-release
+    concurrency:
+      group: sleepygram-stable-release
+      cancel-in-progress: false
+    env:
+      TDESKTOP_API_ID: ""
+      TDESKTOP_API_HASH: ""
     steps:
-      - name: Check release authorization and builds
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PLATFORM_INPUT: ${{ inputs.platform }}
-          PUBLISH_INPUT: ${{ inputs.publish_release }}
-          LINUX_RESULT: ${{ needs.linux-x64.result }}
-          MACOS_RESULT: ${{ needs.macos-arm64.result }}
-          WINDOWS_RESULT: ${{ needs.windows-x64.result }}
-          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
-        run: |
-          set -euo pipefail
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$PUBLISH_INPUT" != "true" ]]; then
-            echo "::error::Manual publishing requires publish_release=true"
-            exit 1
-          fi
-          if [[ "$EVENT_NAME" == "workflow_dispatch" && "$PLATFORM_INPUT" != "all" ]]; then
-            echo "::error::Manual publishing requires platform=all"
-            exit 1
-          fi
-          if [[ "$PREFLIGHT_RESULT" != "success" ]]; then
-            echo "::error::Release requires source preflight to succeed"
-            exit 1
-          fi
-          for result in "$LINUX_RESULT" "$MACOS_RESULT" "$WINDOWS_RESULT"; do
-            if [[ "$result" != "success" ]]; then
-              echo "::error::Release requires all three build jobs to succeed"
-              exit 1
-            fi
-          done
-
-      - name: Checkout release commit
+      - name: Checkout exact release commit
         uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
+          persist-credentials: false
 
       - name: Download this run's artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: package-*
           path: release-assets
-          merge-multiple: true
 
-      - name: Verify artifact source and run
-        run: |
-          python3 .github/ci/build_artifact.py verify-release \
-            --directory release-assets \
-            --source-sha "$GITHUB_SHA" \
-            --run-id "$GITHUB_RUN_ID" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT"
-
-      - name: Publish GitHub Release
-        shell: bash
+      - name: Verify artifact source, version, and update bytes
         env:
-          GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_TAG_INPUT: ${{ inputs.release_tag }}
+          SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE: ${{ vars.SLEEPYGRAM_UPDATE_PUBLIC_BUNDLE }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == "push" ]]; then
-            tag="$GITHUB_REF_NAME"
-          else
-            tag="$RELEASE_TAG_INPUT"
-            if [[ -z "$tag" || "$tag" == "manual" ]]; then
-              tag="manual-${GITHUB_RUN_NUMBER}-${GITHUB_RUN_ATTEMPT}"
-            fi
-          fi
-          if [[ ! "$tag" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$ ]]; then
-            echo "::error::Invalid release tag"
-            exit 1
-          fi
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "::error::Release $tag already exists; refusing to overwrite it"
-            exit 1
-          fi
-          git fetch --tags origin
-          if git show-ref --verify --quiet "refs/tags/$tag"; then
-            existing_commit="$(git rev-parse "refs/tags/${tag}^{commit}")"
-            if [[ "$existing_commit" != "$GITHUB_SHA" ]]; then
-              echo "::error::Tag $tag points at a different commit"
-              exit 1
-            fi
-          fi
-          files=(
-            release-assets/SleepyGram-linux-x64.tar.xz
-            release-assets/SleepyGram-macos-arm64.dmg
-            release-assets/SleepyGram-macos-arm64.zip
-            release-assets/SleepyGram-windows-x64.zip
-          )
-          title="SleepyGram $tag"
-          release_args=(--title "$title" --notes "Automated SleepyGram build for ${GITHUB_SHA}." --target "$GITHUB_SHA")
-          if [[ "$tag" != v* ]]; then
-            release_args+=(--prerelease)
-          fi
-          gh release create "$tag" "${files[@]}" \
-            "${release_args[@]}"
+          keys="$RUNNER_TEMP/update-keys"
+          python3 .github/ci/update_package.py trust --output "$keys" --require-production
+          python3 .github/ci/build_artifact.py verify-release \
+            --directory release-assets --source-sha "$GITHUB_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          python3 .github/ci/update_package.py verify --directory release-assets --keys "$keys"
+
+      - name: Compile standalone Packer from the release commit
+        run: |
+          set -euo pipefail
+          sudo apt-get -o Acquire::Retries=3 update
+          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends qt6-base-dev liblzma-dev zlib1g-dev libssl-dev
+          c++ -std=c++20 -fPIC -O2 -DPACKER_DISABLE_PRIVATE -Wno-deprecated-declarations -I Telegram/SourceFiles \
+            Telegram/SourceFiles/_other/packer.cpp Telegram/SourceFiles/core/update_verify.cpp \
+            $(pkg-config --cflags --libs Qt6Core openssl liblzma zlib) -o "$RUNNER_TEMP/SleepyGramPacker"
+          python3 .github/ci/update_test.py --packer "$RUNNER_TEMP/SleepyGramPacker"
+
+      - name: Sign and verify with the client verifier
+        env:
+          SLEEPYGRAM_UPDATE_STABLE_KEY_PEM: ${{ secrets.SLEEPYGRAM_UPDATE_STABLE_KEY_PEM }}
+        run: |
+          python3 .github/ci/update_release.py sign --directory release-assets \
+            --keys "$RUNNER_TEMP/update-keys" --packer "$RUNNER_TEMP/SleepyGramPacker"
+
+      - name: Upload to draft, verify assets, and publish as latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/ci/update_release.py publish --directory release-assets

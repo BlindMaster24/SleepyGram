@@ -325,6 +325,7 @@ public:
 		const TextWithEntities &explanation);
 	[[nodiscard]] bool uploadPreventsQuit();
 	[[nodiscard]] bool downloadPreventsQuit();
+	[[nodiscard]] bool canInstallReleaseUpdate() const;
 	void checkLocalTime();
 	void lockByPasscode();
 	void beginProfileSetup();

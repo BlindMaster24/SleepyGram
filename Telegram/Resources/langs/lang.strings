@@ -9211,7 +9211,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram keys generated
 
-"ayu_AyuPreferences" = "SleepyGram Preferences";
+"lng_sleepy_preferences" = "SleepyGram Preferences";
 "ayu_DocsText" = "Documentation";
 "ayu_CategoryGeneral" = "General";
 "ayu_CategoryAppearance" = "Appearance";
@@ -9671,3 +9671,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "ayu_AccountTransferComplete" = "Both files are ready. Transfer them to the destination computer and sign in using a QR code. Import the settings JSON and encrypted archive in Settings > SleepyGram Preferences > General > Archive and Transfer.";
 
 "lng_ayu_chat_locked_preview" = "Protected chat";
+
+"lng_sleepy_update_available" = "A new version is available";
+"lng_sleepy_download_update" = "Download update";
+"lng_sleepy_update_to" = "Update to {version}";
+"lng_sleepy_update_busy" = "Finish the current call or account operation and try again";
+"lng_sleepy_update_manual" = "Download the update from SleepyGram Releases";

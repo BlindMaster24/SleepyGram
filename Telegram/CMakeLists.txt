@@ -65,10 +65,40 @@ if (WIN32)
 endif()
 
 include(cmake/generate_update_keys.cmake)
-generate_update_keys(Telegram ${res_loc}/update)
+option(SLEEPYGRAM_ENABLE_RELEASE_UPDATE "Build the SleepyGram release updater" OFF)
+set(SLEEPYGRAM_UPDATE_KEYS_DIR "" CACHE PATH "SleepyGram public release trust bundle")
+set(sleepygram_update_keys "${res_loc}/update")
+if (SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
+    if (DESKTOP_APP_DISABLE_AUTOUPDATE OR build_macstore OR build_winstore)
+        message(FATAL_ERROR "SleepyGram release updates require the standalone updater")
+    endif()
+    target_compile_definitions(Telegram PRIVATE SLEEPYGRAM_RELEASE_UPDATE)
+    if (SLEEPYGRAM_UPDATE_KEYS_DIR)
+        set(sleepygram_update_keys "${SLEEPYGRAM_UPDATE_KEYS_DIR}")
+        file(SHA256 "${sleepygram_update_keys}/root-public.pem" sleepygram_root_hash)
+        file(SHA256 "${res_loc}/update/root-public.pem" upstream_root_hash)
+        file(SHA256 "${res_loc}/update/sleepygram-test/root-public.pem" fixture_root_hash)
+        if (sleepygram_root_hash STREQUAL upstream_root_hash OR sleepygram_root_hash STREQUAL fixture_root_hash)
+            message(FATAL_ERROR "Production release updates require a dedicated SleepyGram root key")
+        endif()
+    else()
+        set(sleepygram_update_keys "${res_loc}/update/sleepygram-test")
+        target_compile_definitions(Telegram PRIVATE SLEEPYGRAM_UPDATE_TEST_TRUST)
+    endif()
+endif()
+generate_update_keys(Telegram "${sleepygram_update_keys}")
 
 if (DESKTOP_APP_TEST_APPS OR TDESKTOP_BUILD_UPDATE_TESTS)
     include(cmake/test_update_verify.cmake)
+    add_executable(test_update_github)
+    init_target(test_update_github "(tests)")
+    target_include_directories(test_update_github PRIVATE ${src_loc})
+    nice_target_sources(test_update_github ${src_loc} PRIVATE
+        core/update_github.cpp
+        tests/test_update_github.cpp
+    )
+    target_link_libraries(test_update_github PRIVATE desktop-app::external_qt)
+    set_target_properties(test_update_github PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
     if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE)
         include(cmake/test_update_unpack.cmake)
         if (WIN32 AND NOT build_winstore)
@@ -906,6 +936,8 @@ PRIVATE
     core/update_channel.h
     core/update_checker.cpp
     core/update_checker.h
+    core/update_github.cpp
+    core/update_github.h
     core/update_keys.cpp
     core/update_keys.h
     core/update_unpack.cpp
@@ -3274,24 +3306,60 @@ endif()
 add_dependencies(Telegram SleepyGramRemovalHelper)
 
 if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_winstore)
-    add_executable(Updater WIN32)
+    if (SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
+        add_executable(Updater)
+    else()
+        add_executable(Updater WIN32)
+    endif()
     init_non_host_target(Updater)
 
     add_dependencies(Telegram Updater)
 
-    nice_target_sources(Updater ${src_loc}
-    PRIVATE
-        _other/updater_win.cpp
-        _other/updater_linux.cpp
-        _other/updater_osx.m
-        _other/updater.h
-    )
+    if (SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
+        nice_target_sources(Telegram ${src_loc}
+        PRIVATE
+            core/sleepy_update.cpp
+            core/sleepy_update.h
+            core/sleepy_update_install.cpp
+            core/sleepy_update_install.h
+        )
+        nice_target_sources(Updater ${src_loc}
+        PRIVATE
+            _other/sleepy_updater.cpp
+            core/sleepy_update_install.cpp
+            core/sleepy_update_install.h
+            core/update_keys.cpp
+            core/update_unpack.cpp
+            core/update_verify.cpp
+        )
+        add_dependencies(Updater Telegram_update_keys)
+        target_include_directories(Updater PRIVATE ${src_loc} ${CMAKE_CURRENT_BINARY_DIR}/gen)
+        target_link_libraries(Updater PRIVATE
+            desktop-app::external_qt
+            desktop-app::external_auto_updates
+            desktop-app::external_openssl
+            desktop-app::lib_base
+        )
+        if (DESKTOP_APP_USE_PACKAGED)
+            target_compile_definitions(Updater PRIVATE TDESKTOP_USE_PACKAGED)
+        endif()
+        if (WIN32)
+            target_link_libraries(Updater PRIVATE advapi32)
+        endif()
+    else()
+        nice_target_sources(Updater ${src_loc} PRIVATE
+            _other/updater_win.cpp
+            _other/updater_linux.cpp
+            _other/updater_osx.m
+            _other/updater.h
+        )
+    endif()
 
     set_target_properties(Updater PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${output_folder}
     )
 
-    if (WIN32)
+    if (WIN32 AND NOT SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
         get_filename_component(lib_base_loc lib_base REALPATH)
         nice_target_sources(Updater ${lib_base_loc}
         PRIVATE
@@ -3328,7 +3396,7 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
         )
     endif()
 
-    if (DESKTOP_APP_SPECIAL_TARGET)
+    if (DESKTOP_APP_SPECIAL_TARGET OR SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
         add_executable(Packer)
         init_target(Packer)
 
@@ -3354,6 +3422,9 @@ if (NOT DESKTOP_APP_DISABLE_AUTOUPDATE AND NOT build_macstore AND NOT build_wins
 
         if (DESKTOP_APP_USE_PACKAGED)
             target_compile_definitions(Packer PRIVATE PACKER_USE_PACKAGED)
+        endif()
+        if (SLEEPYGRAM_ENABLE_RELEASE_UPDATE)
+            target_compile_definitions(Packer PRIVATE PACKER_DISABLE_PRIVATE)
         endif()
 
         if (WIN32 AND DESKTOP_APP_WIN7_BASELINE)

@@ -361,7 +361,7 @@ void BuildSectionButtons(SectionBuilder &builder) {
 	const auto showOther = builder.showOther();
 
 	builder.addSectionButton({
-		.title = tr::ayu_AyuPreferences(),
+		.title = tr::lng_sleepy_preferences(),
 		.targetSection = AyuMain::Id(),
 		.icon = { &st::menuIconSleepyGram },
 		.keywords = { u"sleepy"_q, u"sleepygram"_q },

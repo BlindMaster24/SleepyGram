@@ -13,8 +13,7 @@ compiler/toolchain versions. It contains no credentials or environment dump.
 The package check validates archive paths and required bundle files, then reads
 the executable headers to confirm Linux x64, Windows x64, or macOS arm64. The
 Windows archive retains the x64 `d3dcompiler_47.dll` module when the build
-produces it for the Windows 7 baseline; Updater binaries are also retained when
-present.
+produces it for the Windows 7 baseline. The packages include the platform update helper.
 
 The startup smoke launches the extracted package for at most eight seconds with
 `-workdir` pointed at a temporary profile and temporary home/config directories.
@@ -24,7 +23,7 @@ The platform jobs require the process to stay up for the full window before
 uploading a package. The startup check uses a disposable profile without
 signing in or exercising account features.
 
-Release publishing runs only for `v*` tag pushes or an explicitly requested
-manual run with all three platforms selected. It checks each artifact's source
-SHA and workflow run ID/attempt before publishing, and fails if a release already
-exists so public releases and assets are never overwritten.
+Each platform prepares an unsigned TDUP from the files in its manual archive.
+Release publishing requires a manual dispatch with all three platforms on
+protected `dev` and approval in the release environment. See the
+[stable release and key setup guide](../../docs/signed-updates.md).

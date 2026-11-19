@@ -24,6 +24,10 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <QtCore/QStandardPaths>
 #include <QtCore/QLibraryInfo>
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+#include "core/sleepy_update.h"
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+
 extern "C" {
 #include <libavutil/log.h>
 } // extern "C"
@@ -396,6 +400,23 @@ int Launcher::exec() {
 		return 0;
 	}
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	{
+		auto args = FilteredCommandLineArguments(_argc, _argv);
+		auto executable = base::Platform::CurrentExecutablePath(_argc, _argv);
+#ifdef Q_OS_MACOS
+		executable += u"/Contents/MacOS/SleepyGram"_q;
+#endif // Q_OS_MACOS
+		if (const auto recovery = CheckSleepyUpdateStartup(
+				executable,
+				_arguments,
+				args.count(),
+				args.values())) {
+			return *recovery;
+		}
+	}
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+
 	// Must be started before Platform is started.
 	Logs::start();
 	base::options::init(cWorkingDir() + "tdata/experimental_options.json");
@@ -428,12 +449,20 @@ int Launcher::exec() {
 
 	DEBUG_LOG(("Telegram finished, result: %1").arg(result));
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	if (const auto applied = LaunchRequestedSleepyUpdate(); applied && !*applied) {
+		LOG(("Update Error: could not start the SleepyGram updater."));
+		cSetRestarting(true);
+	}
+	if (cRestarting()) {
+#else // SLEEPYGRAM_RELEASE_UPDATE
 	if (!UpdaterDisabled() && cRestartingUpdate()) {
 		DEBUG_LOG(("Sandbox Info: executing updater to install update."));
 		if (!launchUpdater(UpdaterLaunch::PerformUpdate)) {
 			base::Platform::DeleteDirectory(cWorkingDir() + u"tupdates/temp"_q);
 		}
 	} else if (cRestarting()) {
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		DEBUG_LOG(("Sandbox Info: executing Telegram because of restart."));
 		launchUpdater(UpdaterLaunch::JustRelaunch);
 	}
@@ -608,6 +637,11 @@ void Launcher::processArguments() {
 		{ "-quit"           , KeyFormat::NoValues },
 		{ "-ghost"          , KeyFormat::NoValues },
 		{ "-workdir"        , KeyFormat::OneValue },
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		{ "-sleepy-update-probe", KeyFormat::OneValue },
+		{ "--sleepy-update-expected-version", KeyFormat::OneValue },
+		{ "-sleepy-update-cleanup", KeyFormat::OneValue },
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		{ "--"              , KeyFormat::AllLeftValues },
 		{ "-scale"          , KeyFormat::OneValue },
 	};

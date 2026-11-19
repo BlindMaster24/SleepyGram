@@ -17,6 +17,12 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <CoreFoundation/CFURL.h>
 #include <sys/sysctl.h>
 
+// AyuGram includes
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+#include "core/sleepy_update.h"
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+
+
 namespace Platform {
 
 Launcher::Launcher(int argc, char *argv[])
@@ -31,6 +37,30 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 	if (cExeName().isEmpty()) {
 		return false;
 	}
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	if (action != UpdaterLaunch::JustRelaunch) {
+		return false;
+	}
+	auto flags = QStringList();
+	if (cRestartingToSettings()) {
+		flags.push_back(u"-tosettings"_q);
+	}
+	if (cLaunchMode() == LaunchModeAutoStart) {
+		flags.push_back(u"-autostart"_q);
+	}
+	if (Logs::DebugEnabled()) {
+		flags.push_back(u"-debug"_q);
+	}
+	if (cStartInTray()) {
+		flags.push_back(u"-startintray"_q);
+	}
+	Logs::closeMain();
+	CrashReports::Finish();
+	return Core::RestartSleepyGram(
+		cExeDir() + cExeName() + u"/Contents/MacOS/SleepyGram"_q,
+		customWorkingDir() ? cWorkingDir() : QString(),
+		flags);
+#else // SLEEPYGRAM_RELEASE_UPDATE
 	@autoreleasepool {
 
 	if (action == UpdaterLaunch::JustRelaunch) {
@@ -88,6 +118,7 @@ bool Launcher::launchUpdater(UpdaterLaunch action) {
 
 	}
 	return true;
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 }
 
 } // namespace Platform

@@ -84,6 +84,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include <ksandbox.h>
 
+// AyuGram includes
+#include "core/click_handler_types.h"
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+#include "core/sleepy_update.h"
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+
+
 namespace Settings {
 namespace {
 
@@ -1051,6 +1058,18 @@ void ShowDownloadProgress(
 	downloading->fire(true);
 }
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+[[nodiscard]] rpl::producer<QString> SleepyUpdateButtonTitle() {
+	const auto checker = Core::UpdateChecker();
+	return rpl::single() | rpl::then(checker.available()) | rpl::map([=] {
+		const auto version = checker.availableVersion();
+		return version.isEmpty()
+			? tr::lng_sleepy_download_update(tr::now)
+			: tr::lng_sleepy_update_to(tr::now, lt_version, version);
+	});
+}
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+
 void SetDefaultStatus(
 		const Core::UpdateChecker &checker,
 		not_null<rpl::event_stream<QString>*> texts,
@@ -1060,6 +1079,16 @@ void SetDefaultStatus(
 	using State = Core::UpdateChecker::State;
 	const auto state = checker.state();
 	switch (state) {
+	case State::Available:
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		if (!checker.hasPackage() || !Core::CanInstallSleepyUpdate()) {
+			texts->fire(tr::lng_sleepy_update_manual(tr::now));
+			break;
+		}
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+		texts->fire(tr::lng_sleepy_update_available(tr::now));
+		update->show();
+		break;
 	case State::Download:
 		ShowDownloadProgress(
 			texts,
@@ -1084,12 +1113,27 @@ void SubscribeToUpdateChecker(
 		not_null<rpl::event_stream<QString>*> texts,
 		not_null<rpl::event_stream<bool>*> downloading,
 		not_null<Ui::SettingsButton*> update) {
+	checker.available() | rpl::on_next([=] {
+		options->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		if (!checker.hasPackage() || !Core::CanInstallSleepyUpdate()) {
+			texts->fire(tr::lng_sleepy_update_manual(tr::now));
+			downloading->fire(false);
+			return;
+		}
+#endif // SLEEPYGRAM_RELEASE_UPDATE
+		texts->fire(tr::lng_sleepy_update_available(tr::now));
+		update->show();
+		downloading->fire(false);
+	}, options->lifetime());
 	checker.checking() | rpl::on_next([=] {
+		update->hide();
 		options->setAttribute(Qt::WA_TransparentForMouseEvents);
 		texts->fire(tr::lng_settings_update_checking(tr::now));
 		downloading->fire(false);
 	}, options->lifetime());
 	checker.isLatest() | rpl::on_next([=] {
+		update->hide();
 		options->setAttribute(Qt::WA_TransparentForMouseEvents, false);
 		texts->fire(tr::lng_settings_latest_installed(tr::now));
 		downloading->fire(false);
@@ -1103,7 +1147,14 @@ void SubscribeToUpdateChecker(
 			progress.size,
 			progress.percent);
 	}, options->lifetime());
+	checker.busy() | rpl::on_next([=] {
+		update->hide();
+		options->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+		texts->fire(tr::lng_sleepy_update_busy(tr::now));
+		downloading->fire(false);
+	}, options->lifetime());
 	checker.failed() | rpl::on_next([=] {
+		update->hide();
 		options->setAttribute(Qt::WA_TransparentForMouseEvents, false);
 		texts->fire(tr::lng_settings_update_fail(tr::now));
 		downloading->fire(false);
@@ -1117,7 +1168,15 @@ void SubscribeToUpdateChecker(
 }
 
 void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
-	if (!HasUpdate()) {
+	if (Core::UpdaterDisabled()) {
+		builder.addButton({
+			.id = u"advanced/sleepy_releases"_q,
+			.title = tr::lng_sleepy_releases(),
+			.st = &st::settingsButtonNoIcon,
+			.onClick = [] {
+				UrlClickHandler::Open("https://github.com/slpkbt/SleepyGram/releases");
+			},
+		});
 		return;
 	}
 	const auto container = builder.container();
@@ -1176,14 +1235,21 @@ void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
 			toggle->toggledValue(),
 			downloading->events_starting_with(
 				checker.state() == Core::UpdateChecker::State::Download)
-		) | rpl::map([](bool check, bool downloading) {
+		) | rpl::map([]([[maybe_unused]] bool check, bool downloading) {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+			return !downloading;
+#else // SLEEPYGRAM_RELEASE_UPDATE
 			return check && !downloading;
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		});
 	}
 	auto options = (Ui::SlideWrap<Ui::VerticalLayout>*)nullptr;
 	auto install = (Ui::SettingsButton*)nullptr;
 	auto check = (Ui::SettingsButton*)nullptr;
 	builder.scope([&] {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		install = nullptr;
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		install = (cAlphaVersion()
 			|| Core::BuildIsCanary
 			|| KSandbox::isInside())
@@ -1196,14 +1262,19 @@ void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
 				.keywords = { u"beta"_q, u"update"_q, u"version"_q },
 			});
 
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		check = builder.addButton({
 			.id = u"advanced/check_update"_q,
 			.title = tr::lng_settings_check_now(),
 			.st = &st::settingsButtonNoIcon,
 			.onClick = [] {
 				Core::UpdateChecker checker;
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+				checker.checkNow();
+#else // SLEEPYGRAM_RELEASE_UPDATE
 				cSetLastUpdateCheck(0);
 				checker.start();
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 			},
 			.keywords = { u"check"_q, u"update"_q, u"version"_q },
 		});
@@ -1214,7 +1285,11 @@ void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
 	if (check && container) {
 		const auto update = Ui::CreateChild<Ui::SettingsButton>(
 			check,
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+			SleepyUpdateButtonTitle(),
+#else // SLEEPYGRAM_RELEASE_UPDATE
 			tr::lng_update_telegram(),
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 			st::settingsUpdate);
 		update->hide();
 		check->widthValue() | rpl::on_next([=](int width) {
@@ -1258,13 +1333,27 @@ void BuildUpdateSection(SectionBuilder &builder, bool atTop) {
 		SetDefaultStatus(checker, texts, downloading, update, version);
 
 		update->setClickedCallback([] {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+			Core::UpdateChecker().download();
+#else // SLEEPYGRAM_RELEASE_UPDATE
 			if (!Core::UpdaterDisabled()) {
 				Core::checkReadyUpdate();
 			}
 			Core::Restart();
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		});
 	}
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	builder.addButton({
+		.id = u"advanced/sleepy_releases"_q,
+		.title = tr::lng_sleepy_releases(),
+		.st = &st::settingsButtonNoIcon,
+		.onClick = [] {
+			UrlClickHandler::Open("https://github.com/slpkbt/SleepyGram/releases");
+		},
+	});
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	builder.addSkip();
 	if (atTop) {
 		builder.addDivider();
@@ -1435,11 +1524,18 @@ void SetupConnectionType(
 }
 
 bool HasUpdate() {
-	return !Core::UpdaterDisabled();
+	return true;
 }
 
 void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
-	if (!HasUpdate()) {
+	if (Core::UpdaterDisabled()) {
+		const auto releases = container->add(object_ptr<Button>(
+			container,
+			tr::lng_sleepy_releases(),
+			st::settingsButtonNoIcon));
+		releases->addClickHandler([] {
+			UrlClickHandler::Open("https://github.com/slpkbt/SleepyGram/releases");
+		});
 		return;
 	}
 
@@ -1465,6 +1561,9 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 			container,
 			object_ptr<Ui::VerticalLayout>(container)));
 	const auto inner = options->entity();
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	const auto install = (Button*)nullptr;
+#else // SLEEPYGRAM_RELEASE_UPDATE
 	const auto install = (cAlphaVersion()
 		|| Core::BuildIsCanary
 		|| KSandbox::isInside())
@@ -1474,13 +1573,18 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 			tr::lng_settings_install_beta(),
 			st::settingsButtonNoIcon));
 
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	const auto check = inner->add(object_ptr<Button>(
 		inner,
 		tr::lng_settings_check_now(),
 		st::settingsButtonNoIcon));
 	const auto update = Ui::CreateChild<Button>(
 		check,
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		SleepyUpdateButtonTitle(),
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		tr::lng_update_telegram(),
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 		st::settingsUpdate);
 	update->hide();
 	check->widthValue() | rpl::on_next([=](int width) {
@@ -1538,8 +1642,12 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 		toggle->toggledValue(),
 		downloading->events_starting_with(
 			checker.state() == Core::UpdateChecker::State::Download)
-	) | rpl::map([](bool check, bool downloading) {
+	) | rpl::map([]([[maybe_unused]] bool check, bool downloading) {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		return !downloading;
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		return check && !downloading;
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	}));
 
 	SubscribeToUpdateChecker(checker, options, texts, downloading, update);
@@ -1548,14 +1656,31 @@ void SetupUpdate(not_null<Ui::VerticalLayout*> container) {
 	check->addClickHandler([] {
 		Core::UpdateChecker checker;
 
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		checker.checkNow();
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		cSetLastUpdateCheck(0);
 		checker.start();
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	});
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+	const auto releases = inner->add(object_ptr<Button>(
+		inner,
+		tr::lng_sleepy_releases(),
+		st::settingsButtonNoIcon));
+	releases->addClickHandler([] {
+		UrlClickHandler::Open("https://github.com/slpkbt/SleepyGram/releases");
+	});
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	update->addClickHandler([] {
+#ifdef SLEEPYGRAM_RELEASE_UPDATE
+		Core::UpdateChecker().download();
+#else // SLEEPYGRAM_RELEASE_UPDATE
 		if (!Core::UpdaterDisabled()) {
 			Core::checkReadyUpdate();
 		}
 		Core::Restart();
+#endif // SLEEPYGRAM_RELEASE_UPDATE
 	});
 }
 
