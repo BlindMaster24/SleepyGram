@@ -429,7 +429,24 @@ using LocalBuffer = std::unique_ptr<void, LocalFreeDeleter>;
 #endif // !Q_OS_MACOS
 
 [[nodiscard]] bool ProcessAlive(qint64 pid) {
-	return kill(pid_t(pid), 0) == 0 || errno != ESRCH;
+	if (kill(pid_t(pid), 0) != 0) {
+		return errno != ESRCH;
+	}
+#ifndef Q_OS_MACOS
+	// An unreaped Linux zombie still answers kill(pid, 0).
+	auto process = QFile(QStringLiteral("/proc/%1/stat").arg(pid));
+	if (process.open(QIODevice::ReadOnly)) {
+		const auto info = process.read(4096);
+		const auto end = info.lastIndexOf(')');
+		if (end >= 0
+			&& end + 3 < info.size()
+			&& info[end + 1] == ' '
+			&& info[end + 3] == ' ') {
+			return info[end + 2] != 'Z' && info[end + 2] != 'X';
+		}
+	}
+#endif // !Q_OS_MACOS
+	return true;
 }
 
 #endif // Q_OS_WIN
@@ -1108,7 +1125,7 @@ HelperDirectoryCleanup::~HelperDirectoryCleanup() {
 	return true;
 }
 
-[[nodiscard]] bool WaitForProbeExit(const Location &location) {
+[[nodiscard]] bool WaitForProbeExit(const Location &location, QString &error) {
 	const auto path = Join(location.transaction, u"probe-pid");
 	if (PathKind(path) == Kind::Missing) {
 		return true;
@@ -1117,14 +1134,15 @@ HelperDirectoryCleanup::~HelperDirectoryCleanup() {
 	auto valid = false;
 	const auto pid = bytes ? bytes->toLongLong(&valid) : qint64(0);
 	if (!valid || pid <= 1 || pid > (std::numeric_limits<int>::max)()) {
-		return false;
+		return Fail(error, "The interrupted update probe has an invalid process ID.");
 	}
 	auto timer = QElapsedTimer();
 	timer.start();
 	while (ProcessAlive(pid) && timer.elapsed() < kReleaseTimeout) {
 		QThread::msleep(kPollInterval);
 	}
-	return !ProcessAlive(pid);
+	return !ProcessAlive(pid)
+		|| Fail(error, "The interrupted update probe did not exit.");
 }
 
 [[nodiscard]] bool Recover(
@@ -1147,14 +1165,16 @@ HelperDirectoryCleanup::~HelperDirectoryCleanup() {
 			if (!SyncFile(path) || !SyncDirectory(location.transaction)) {
 				return Fail(error, "Could not sync the committed update journal.");
 			}
-		} else if (journal->phase == Phase::Prepared
-			&& (!WriteState(Join(location.transaction, u"abort"), "abort")
-				|| !WaitForProbeExit(location)
-				|| !RollBack(location, *journal, error))) {
-			if (error.isEmpty()) {
-				error = QStringLiteral("Could not roll back the interrupted update.");
+		} else if (journal->phase == Phase::Prepared) {
+			if (!WriteState(Join(location.transaction, u"abort"), "abort")) {
+				return Fail(error, "Could not signal the interrupted update probe to stop.");
+			} else if (!WaitForProbeExit(location, error)
+				|| !RollBack(location, *journal, error)) {
+				if (error.isEmpty()) {
+					error = QStringLiteral("Could not roll back the interrupted update.");
+				}
+				return false;
 			}
-			return false;
 		}
 	}
 	return Retire(location, error);

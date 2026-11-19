@@ -2,6 +2,7 @@
 """Exercise the test-trust Updater with isolated native fixture installations."""
 
 import argparse
+import ctypes
 import hashlib
 import lzma
 import os
@@ -136,6 +137,14 @@ def wait_for(path: Path, timeout: int = 15) -> bytes:
     raise AssertionError(f"Timed out waiting for {path.name}")
 
 
+def set_linux_subreaper(enabled: bool) -> None:
+    pr_set_child_subreaper = 36
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(pr_set_child_subreaper, ctypes.c_ulong(enabled), 0, 0, 0) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
 def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) -> None:
     system = platform.system()
     mac = system == "Darwin"
@@ -253,9 +262,13 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
                 package.write_bytes(data)
             command = [str(helper), "--apply", str(package), str(executable), str(workdir),
                        str(running), str(requested), dead_pid, "-key", "profile-test"]
+            orphan_probe = None
+            keep_zombie = sys.platform == "linux" and scenario == "crash_recovery"
             if scenario in ("intent_recovery", "crash_recovery"):
                 parent = None
                 try:
+                    if keep_zombie:
+                        set_linux_subreaper(True)
                     if scenario == "intent_recovery":
                         parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
                         command[7] = str(parent.pid)
@@ -264,6 +277,8 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
                         wait_for(transaction / ("journal" if parent else "commit"))
                         if parent:
                             assert not (transaction / "stage").exists()
+                        elif keep_zombie:
+                            orphan_probe = int(wait_for(transaction / "probe-pid"))
                     finally:
                         process.kill()
                         process.wait(timeout=10)
@@ -275,7 +290,15 @@ def exercise(helper: Path, openssl: str, cc: str, packer: Path | None = None) ->
                 assert executable.is_file()
                 assert not (workdir / "relaunch").exists()
                 command = [str(helper), "--recover", str(executable), "", dead_pid]
-            result = subprocess.run(command, capture_output=True, timeout=45)
+            try:
+                result = subprocess.run(command, capture_output=True, timeout=45)
+                if orphan_probe is not None:
+                    # Keep the exited probe unreaped until recovery finishes.
+                    reaped, status = os.waitpid(orphan_probe, os.WNOHANG)
+                    assert reaped == orphan_probe and os.waitstatus_to_exitcode(status) == 4
+            finally:
+                if keep_zombie:
+                    set_linux_subreaper(False)
             assert result.returncode == exitcode, (scenario, result.stderr.decode())
             assert wait_for(workdir / "relaunch") == expected, scenario
             assert profile_file.read_bytes() == b"profile" and neighbor.read_bytes() == b"neighbor"
