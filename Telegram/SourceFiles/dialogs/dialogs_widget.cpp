@@ -23,6 +23,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "dialogs/dialogs_key.h"
 #include "history/history.h"
 #include "history/history_item.h"
+#include "history/history_unread_things.h"
 #include "history/view/history_view_contact_status.h"
 #include "history/view/history_view_group_call_bar.h"
 #include "history/view/history_view_requests_bar.h"
@@ -1061,7 +1062,7 @@ void Widget::chosenRow(const ChosenRow &row) {
 			if (const auto mentionId = history->unreadMentions().minLoaded()) {
 				showAtMsgId = mentionId;
 			} else if (history->unreadMentions().has()) {
-				session().api().unreadThings().preloadEnoughMentions(history);
+				session().api().unreadThings().preloadEnough(history);
 			}
 		}
 		auto params = Window::SectionShow(

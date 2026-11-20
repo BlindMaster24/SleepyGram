@@ -95,11 +95,11 @@ bool List::comesBefore(not_null<Row*> a, not_null<Row*> b) const {
 		}
 		return a->sortKey(_filterId) > b->sortKey(_filterId);
 	}
-	const auto aPin = ea->lookupPinnedIndex(_filterId);
-	const auto bPin = eb->lookupPinnedIndex(_filterId);
+	const auto aPin = ea->isPinnedDialog(_filterId);
+	const auto bPin = eb->isPinnedDialog(_filterId);
 	if (aPin || bPin) {
-		if (bool(aPin) != bool(bPin)) {
-			return bool(aPin);
+		if (aPin != bPin) {
+			return aPin;
 		}
 		return a->sortKey(_filterId) > b->sortKey(_filterId);
 	}

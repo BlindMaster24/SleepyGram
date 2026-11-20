@@ -84,7 +84,7 @@ void SaveEntries(
 			kPrefKey,
 			QJsonDocument(array).toJson(QJsonDocument::Compact));
 	}
-	ChangesStream().fire(session);
+	ChangesStream().fire_copy(session);
 }
 
 [[nodiscard]] QString MakePreview(not_null<HistoryItem*> item) {

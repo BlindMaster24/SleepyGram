@@ -1941,7 +1941,10 @@ SessionController::SessionController(
 		enoughSpaceForFiltersValue() | rpl::skip(1) | rpl::to_empty,
 		Core::App().settings().chatFiltersHorizontalChanges() | rpl::to_empty,
 		session->data().chatsFilters().changed(),
-		Ui::ChatFilterTabVisibilityChanges()
+		Ui::ChatFilterTabVisibilityChanges() | rpl::filter([=](
+				not_null<Main::Session*> changed) {
+			return changed == session;
+		}) | rpl::to_empty
 	) | rpl::on_next([=] {
 		if (!_filtersActivated) {
 			processFiltersMenu();

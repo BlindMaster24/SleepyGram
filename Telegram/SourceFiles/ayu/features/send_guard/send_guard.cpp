@@ -71,7 +71,7 @@ void SaveWorkPeers(
 			kWorkPeersPrefKey,
 			list.join(','));
 	}
-	ChangesStream().fire(session);
+	ChangesStream().fire_copy(session);
 }
 
 [[nodiscard]] QString TrimLabel(QString text, int maxLen = 14) {
@@ -146,7 +146,7 @@ void SetAccountBadge(
 			kColorPrefKey,
 			QColor(cleanHex).name(QColor::HexRgb));
 	}
-	ChangesStream().fire(session);
+	ChangesStream().fire_copy(session);
 }
 
 bool IsWorkChat(not_null<Main::Session*> session, PeerId peerId) {
