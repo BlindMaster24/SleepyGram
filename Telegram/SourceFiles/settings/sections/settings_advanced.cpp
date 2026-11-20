@@ -219,6 +219,44 @@ void BuildDataStorageSection(SectionBuilder &builder) {
 		}, askDownloadPath->lifetime());
 	}
 
+	const auto organizeByTopic = builder.addButton({
+		.id = u"advanced/download_by_topic"_q,
+		.title = tr::lng_download_organize_by_topic(),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::single(Core::App().settings().readPref<bool>(
+			Core::kDownloadOrganizeByTopicKey,
+			false)),
+		.keywords = { u"download"_q, u"topic"_q, u"folder"_q },
+	});
+	if (organizeByTopic) {
+		organizeByTopic->toggledValue(
+		) | rpl::on_next([](bool checked) {
+			Core::App().settings().writePref<bool>(
+				Core::kDownloadOrganizeByTopicKey,
+				checked);
+			Core::App().saveSettingsDelayed();
+		}, organizeByTopic->lifetime());
+	}
+
+	const auto organizeByType = builder.addButton({
+		.id = u"advanced/download_by_type"_q,
+		.title = tr::lng_download_organize_by_type(),
+		.st = &st::settingsButtonNoIcon,
+		.toggled = rpl::single(Core::App().settings().readPref<bool>(
+			Core::kDownloadOrganizeByTypeKey,
+			false)),
+		.keywords = { u"download"_q, u"type"_q, u"pdf"_q, u"folder"_q },
+	});
+	if (organizeByType) {
+		organizeByType->toggledValue(
+		) | rpl::on_next([](bool checked) {
+			Core::App().settings().writePref<bool>(
+				Core::kDownloadOrganizeByTypeKey,
+				checked);
+			Core::App().saveSettingsDelayed();
+		}, organizeByType->lifetime());
+	}
+
 	builder.addSkip(st::settingsCheckboxesSkip);
 }
 

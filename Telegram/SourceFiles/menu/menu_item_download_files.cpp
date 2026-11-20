@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "menu/menu_item_download_files.h"
 
+#include "ayu/features/downloads/download_layout.h"
 #include "base/flat_set.h"
 #include "base/unixtime.h"
 #include "core/application.h"
@@ -95,7 +96,7 @@ struct BulkSaveQueue {
 };
 
 [[nodiscard]] QString BulkTargetKey(const QString &path) {
-	return QFileInfo(path).fileName().normalized(
+	return QDir::cleanPath(QFileInfo(path).absoluteFilePath()).normalized(
 		QString::NormalizationForm_C).toCaseFolded();
 }
 
@@ -609,6 +610,7 @@ void AddAction(
 
 		auto views = std::vector<std::shared_ptr<Data::PhotoMedia>>();
 		auto dates = std::vector<TimeId>();
+		auto photoDirs = std::vector<QString>();
 		for (const auto &[photo, fullId] : photos) {
 			if (const auto view = photo->createMediaView()) {
 				view->wanted(Data::PhotoSize::Large, fullId);
@@ -618,6 +620,12 @@ void AddAction(
 				dates.push_back(photoDate
 					? photoDate
 					: (item ? item->date() : TimeId(0)));
+				photoDirs.push_back(Ayu::Downloads::ResolveDirectory(
+					path,
+					session,
+					item,
+					nullptr,
+					photo));
 			}
 		}
 
@@ -631,15 +639,17 @@ void AddAction(
 		};
 
 		const auto saveToFiles = [=] {
-			const auto fullPath = [&](int i) {
+			const auto fullPath = [&](int idx) {
+				const auto &targetDir = photoDirs[idx];
+				QDir().mkpath(targetDir);
 				return filedialogDefaultName(
-					u"photo_"_q + QString::number(i),
+					u"photo_"_q + QString::number(idx + 1),
 					u".jpg"_q,
-					path);
+					targetDir);
 			};
 			auto lastPath = QString();
 			for (auto i = 0; i < views.size(); i++) {
-				lastPath = fullPath(i + 1);
+				lastPath = fullPath(i);
 				if (views[i]->saveToFile(lastPath) && dates[i] > 0) {
 					auto f = QFile(lastPath);
 					if (f.open(QIODevice::ReadWrite)) {
@@ -677,7 +687,6 @@ void AddAction(
 			return;
 		}
 		const auto session = &strong->session();
-		const auto directory = QDir(folderPath);
 		auto savedDocuments = base::flat_set<not_null<DocumentData*>>();
 		auto queue = std::make_shared<BulkSaveQueue>();
 		queue->session = base::make_weak(session);
@@ -685,14 +694,21 @@ void AddAction(
 			if (!savedDocuments.emplace(document).second) {
 				continue;
 			}
+			const auto item = session->data().message(origin);
+			const auto targetDir = QDir(Ayu::Downloads::ResolveDirectory(
+				folderPath,
+				session,
+				item,
+				document,
+				nullptr));
 			const auto already = document->filepath(true);
 			if (!already.isEmpty()
-				&& QFileInfo(already).absoluteDir() == directory) {
+				&& QFileInfo(already).absoluteDir() == targetDir) {
 				continue;
 			}
 			const auto loading = document->loadingFilePath();
 			if (!loading.isEmpty()
-				&& QFileInfo(loading).absoluteDir() == directory) {
+				&& QFileInfo(loading).absoluteDir() == targetDir) {
 				if (BulkTargetReserved(loading)) {
 					continue;
 				}
@@ -709,7 +725,7 @@ void AddAction(
 				document,
 				false,
 				QString(),
-				directory);
+				targetDir);
 			if (path.isEmpty()) {
 				continue;
 			}

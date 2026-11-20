@@ -283,6 +283,8 @@ set(ayugram_files
         ayu/features/reply_later/reply_later.h
         ayu/features/send_guard/send_guard.cpp
         ayu/features/send_guard/send_guard.h
+        ayu/features/downloads/download_layout.cpp
+        ayu/features/downloads/download_layout.h
         ayu/features/emergency_actions/emergency_action_plan.cpp
         ayu/features/emergency_actions/emergency_action_plan.h
         ayu/features/emergency_actions/emergency_action_journal.cpp

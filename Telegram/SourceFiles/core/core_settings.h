@@ -55,6 +55,10 @@ inline constexpr std::string_view kConfirmForwardsToWorkChatsKey
 	= "confirm-forwards-to-work-chats";
 inline constexpr std::string_view kRememberForwardModeKey
 	= "remember-forward-mode";
+inline constexpr std::string_view kDownloadOrganizeByTopicKey
+	= "download-organize-by-topic";
+inline constexpr std::string_view kDownloadOrganizeByTypeKey
+	= "download-organize-by-type";
 
 struct WindowPosition {
 	int32 moncrc = 0;

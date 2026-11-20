@@ -9723,3 +9723,6 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_forward_preset_preserve" = "Show sender and captions";
 "lng_forward_preset_no_sender" = "Hide sender names";
 "lng_forward_preset_no_captions" = "Hide sender names and captions";
+
+"lng_download_organize_by_topic" = "Organize downloads into topic subfolders";
+"lng_download_organize_by_type" = "Organize downloads by file type (Images, PDF, etc.)";

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_file_click_handler.h"
 
+#include "ayu/features/downloads/download_layout.h"
 #include "core/click_handler_types.h"
 #include "core/file_utilities.h"
 #include "core/application.h"
@@ -102,8 +103,12 @@ void DocumentSaveClickHandler::Save(
 			&& !Core::App().settings().askDownloadPath()
 			&& itemId
 			&& File::HasDownloadPathForPeer(&data->session(), itemId.peer);
+		const auto organizeLayout = mode != Mode::ToNewFile
+			&& !Core::App().settings().askDownloadPath()
+			&& Ayu::Downloads::IsOrganizationEnabled();
 		if (mode != Mode::ToNewFile
 			&& !hasPeerFolder
+			&& !organizeLayout
 			&& data->saveFromData()) {
 			if (started) {
 				started();
@@ -118,12 +123,23 @@ void DocumentSaveClickHandler::Save(
 		const auto filename = filepath.isEmpty()
 			? QString()
 			: fileinfo.fileName();
+		const auto item = itemId
+			? data->owner().message(itemId)
+			: nullptr;
 		const auto saveTo = [=](const QDir &directory) {
+			const auto resolvedDir = organizeLayout && !directory.path().isEmpty()
+				? QDir(Ayu::Downloads::ResolveDirectory(
+					directory.absolutePath(),
+					&data->session(),
+					item,
+					data,
+					nullptr))
+				: directory;
 			const auto savename = DocumentFileNameForSave(
 				data,
 				(mode == Mode::ToNewFile),
 				filename,
-				directory);
+				resolvedDir);
 			if (!savename.isEmpty()) {
 				data->save(origin, savename);
 				if (started) {
@@ -155,6 +171,14 @@ void DocumentSaveClickHandler::Save(
 						saveTo(QDir(result));
 					}));
 			}
+		} else if (organizeLayout) {
+			const auto configured = Core::App().settings().downloadPath();
+			const auto baseDir = configured.isEmpty()
+				? File::DefaultDownloadPath(&data->session())
+				: (configured == FileDialog::Tmp())
+				? QString()
+				: configured;
+			saveTo(baseDir.isEmpty() ? filedir : QDir(baseDir));
 		} else {
 			saveTo(filedir);
 		}
