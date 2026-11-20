@@ -59,6 +59,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/features/notify_batch/notify_batch.h"
 #include "ayu/utils/telegram_helpers.h"
 
 
@@ -411,6 +412,7 @@ System::NotificationInHistoryKey::NotificationInHistoryKey(
 System::System()
 : _waitTimer([=] { showNext(); })
 , _waitForAllGroupedTimer([=] { showGrouped(); })
+, _batchFlushTimer([=] { flushBatches(); })
 , _manager(std::make_unique<DummyManager>(this)) {
 	settingsChanged(
 	) | rpl::on_next([=](ChangeType type) {
@@ -673,6 +675,29 @@ void System::schedule(Data::ItemNotification notification) {
 		thread->popNotification(notification);
 		return;
 	}
+	if (Ayu::NotifyBatch::IsEnabledForPeer(
+			&item->history()->session(),
+			item->history()->peer->id)
+		&& !Ayu::NotifyBatch::ShouldBypass(notification)) {
+		thread->popNotification(notification);
+		const auto now = crl::now();
+		const auto quietMs = Ayu::NotifyBatch::QuietWindowMs();
+		const auto maxWaitMs = Ayu::NotifyBatch::MaxWaitMs();
+		const auto batchKey = BatchKey{
+			.sessionId = item->history()->session().uniqueId(),
+			.peerId = item->history()->peer->id,
+			.topicRootId = item->topicRootId(),
+		};
+		auto &batch = _batches[batchKey];
+		if (!batch.firstAt) {
+			batch.firstAt = now;
+		}
+		batch.lastItemId = item->fullId();
+		++batch.count;
+		batch.flushAt = std::min(now + quietMs, batch.firstAt + maxWaitMs);
+		scheduleBatchFlush();
+		return;
+	}
 	const auto ready = (skip.value != SkipState::Unknown)
 		&& item->notificationReady();
 
@@ -743,6 +768,139 @@ void System::clearAll() {
 	_settingWaiters.clear();
 	_watchedTopics.clear();
 	_watchedSublists.clear();
+	_batches.clear();
+	_batchFlushTimer.cancel();
+}
+
+void System::scheduleBatchFlush() {
+	if (_batches.empty()) {
+		_batchFlushTimer.cancel();
+		return;
+	}
+	auto earliest = crl::time(0);
+	for (const auto &[key, batch] : _batches) {
+		if (!earliest || batch.flushAt < earliest) {
+			earliest = batch.flushAt;
+		}
+	}
+	const auto now = crl::now();
+	const auto delay = (earliest > now) ? (earliest - now) : crl::time(0);
+	_batchFlushTimer.callOnce(delay);
+}
+
+void System::clearBatchesForSession(uint64 sessionId) {
+	for (auto i = _batches.begin(); i != _batches.end();) {
+		if (i->first.sessionId == sessionId) {
+			i = _batches.erase(i);
+		} else {
+			++i;
+		}
+	}
+	scheduleBatchFlush();
+}
+
+void System::clearBatchesForPeer(uint64 sessionId, PeerId peerId) {
+	for (auto i = _batches.begin(); i != _batches.end();) {
+		if (i->first.sessionId == sessionId && i->first.peerId == peerId) {
+			i = _batches.erase(i);
+		} else {
+			++i;
+		}
+	}
+	scheduleBatchFlush();
+}
+
+void System::clearBatchesForTopic(
+		uint64 sessionId,
+		PeerId peerId,
+		MsgId topicRootId) {
+	_batches.remove(BatchKey{
+		.sessionId = sessionId,
+		.peerId = peerId,
+		.topicRootId = topicRootId,
+	});
+	scheduleBatchFlush();
+}
+
+void System::flushBatches() {
+	if (!_manager || _batches.empty()) {
+		return;
+	}
+	const auto now = crl::now();
+	auto due = std::vector<std::pair<BatchKey, PendingBatch>>();
+	for (auto i = _batches.begin(); i != _batches.end();) {
+		if (i->second.flushAt <= now) {
+			due.emplace_back(i->first, i->second);
+			i = _batches.erase(i);
+		} else {
+			++i;
+		}
+	}
+	scheduleBatchFlush();
+
+	const auto findSession = [](uint64 sessionId) -> Main::Session* {
+		for (const auto &[index, account] : Core::App().domain().accounts()) {
+			if (account->sessionExists()
+				&& account->session().uniqueId() == sessionId) {
+				return &account->session();
+			}
+		}
+		return nullptr;
+	};
+
+	const auto &settings = Core::App().settings();
+	for (const auto &[key, batch] : due) {
+		const auto session = findSession(key.sessionId);
+		if (!session || Core::App().passcodeLocked()) {
+			continue;
+		}
+		const auto item = session->data().message(batch.lastItemId);
+		if (!item || isMessageHidden(item)) {
+			continue;
+		}
+		if (Ayu::ChatLock::IsChatLocked(session, item->history()->peer->id)) {
+			continue;
+		}
+		const auto thread = item->notificationThread();
+		if (!item->unread(thread)) {
+			continue;
+		}
+		const auto notify = Data::ItemNotification{
+			.item = item,
+			.type = Data::ItemNotificationType::Message,
+		};
+		const auto skip = computeSkipState(notify);
+		if (skip.value == SkipState::Skip || QuietForItem(item)) {
+			continue;
+		}
+		const auto soundId = skip.silent
+			? std::nullopt
+			: MaybeSoundFor(thread, item->specialNotificationPeer(), false);
+		if (soundId && settings.soundNotify()) {
+			const auto owner = &thread->owner();
+			const auto id = owner->notifySettings().sound(thread).id;
+			auto volume = owner->session().settings().ringtoneVolume(
+				thread->peer()->id,
+				thread->topicRootId(),
+				thread->monoforumPeerId());
+			if (!volume) {
+				volume = owner->session().settings().ringtoneVolume(
+					Data::DefaultNotifyType(thread->peer()));
+			}
+			_manager->maybePlaySound(crl::guard(&owner->session(), [=] {
+				const auto track = lookupSound(owner, id);
+				track->playOnce(volume ? volume * 0.01 : 0);
+			}));
+		}
+		if (settings.desktopNotify() && !_manager->skipToast()) {
+			rememberShownIncoming(thread, item);
+			_manager->showNotification({
+				.item = item,
+				.batchCount = batch.count,
+				.soundId = soundId,
+			});
+		}
+	}
 }
 
 void System::clearFromTopic(not_null<Data::ForumTopic*> topic) {
@@ -758,6 +916,10 @@ void System::clearFromTopic(not_null<Data::ForumTopic*> topic) {
 	_settingWaiters.remove(topic);
 
 	_watchedTopics.remove(topic);
+	clearBatchesForTopic(
+		topic->session().uniqueId(),
+		topic->peer()->id,
+		topic->rootId());
 
 	_waitTimer.cancel();
 	showNext();
@@ -827,6 +989,7 @@ void System::clearFromHistory(not_null<History*> history) {
 	if (_manager) {
 		_manager->clearFromHistory(history);
 	}
+	clearBatchesForPeer(history->session().uniqueId(), history->peer->id);
 	clearForThreadIf([&](not_null<Data::Thread*> thread) {
 		return (thread->owningHistory() == history);
 	});
@@ -836,6 +999,7 @@ void System::clearFromSession(not_null<Main::Session*> session) {
 	if (_manager) {
 		_manager->clearFromSession(session);
 	}
+	clearBatchesForSession(session->uniqueId());
 	clearForThreadIf([&](not_null<Data::Thread*> thread) {
 		return (&thread->session() == session);
 	});
@@ -845,6 +1009,7 @@ void System::clearIncomingFromHistory(not_null<History*> history) {
 	if (_manager) {
 		_manager->clearFromHistory(history);
 	}
+	clearBatchesForPeer(history->session().uniqueId(), history->peer->id);
 	history->clearIncomingNotifications();
 	_whenAlerts.remove(history);
 	_shownIncoming.remove(history);
@@ -854,6 +1019,10 @@ void System::clearIncomingFromTopic(not_null<Data::ForumTopic*> topic) {
 	if (_manager) {
 		_manager->clearFromTopic(topic);
 	}
+	clearBatchesForTopic(
+		topic->session().uniqueId(),
+		topic->peer()->id,
+		topic->rootId());
 	topic->clearIncomingNotifications();
 	_whenAlerts.remove(topic);
 	_shownIncoming.remove(topic);
@@ -897,6 +1066,19 @@ void System::clearReadIncoming(
 	const auto covered = [&](HistoryItem *item) {
 		return item && !item->out() && read(item);
 	};
+	{
+		const auto batchKey = BatchKey{
+			.sessionId = thread->session().uniqueId(),
+			.peerId = peerId,
+			.topicRootId = thread->topicRootId(),
+		};
+		if (const auto bi = _batches.find(batchKey); bi != end(_batches)) {
+			if (covered(owner->message(bi->second.lastItemId))) {
+				_batches.erase(bi);
+				scheduleBatchFlush();
+			}
+		}
+	}
 	const auto i = _whenAlerts.find(thread);
 	if (i != end(_whenAlerts)) {
 		for (auto j = begin(i->second); j != end(i->second);) {
@@ -967,6 +1149,8 @@ void System::clearAllFast() {
 	_settingWaiters.clear();
 	_watchedTopics.clear();
 	_watchedSublists.clear();
+	_batches.clear();
+	_batchFlushTimer.cancel();
 }
 
 void System::checkDelayed() {
@@ -2005,6 +2189,8 @@ void NativeManager::doShowNotification(NotificationFields &&fields) {
 			options.hideMessageText))
 		: options.hideMessageText
 		? tr::lng_notification_preview(tr::now)
+		: (fields.batchCount > 1)
+		? tr::lng_notify_batch_messages(tr::now, lt_count, fields.batchCount)
 		: (fields.forwardedCount > 1)
 		? tr::lng_forward_messages(tr::now, lt_count, fields.forwardedCount)
 		: item->groupId()

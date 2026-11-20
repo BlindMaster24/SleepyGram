@@ -118,6 +118,7 @@ private:
 		QString author;
 		HistoryItem *item = nullptr;
 		int forwardedCount = 0;
+		int batchCount = 0;
 		bool fromScheduled = false;
 	};
 	std::deque<QueuedNotification> _queuedNotifications;
@@ -211,6 +212,7 @@ public:
 		HistoryItem *item,
 		const Data::ReactionId &reaction,
 		int forwardedCount,
+		int batchCount,
 		bool fromScheduled,
 		QPoint startPosition,
 		int shift,
@@ -298,6 +300,7 @@ private:
 	Data::ReactionId _reaction;
 	HistoryItem *_item = nullptr;
 	int _forwardedCount = 0;
+	int _batchCount = 0;
 	bool _fromScheduled = false;
 	object_ptr<Ui::IconButton> _close;
 	object_ptr<Ui::RoundButton> _reply;

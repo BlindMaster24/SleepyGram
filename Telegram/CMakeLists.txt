@@ -287,6 +287,8 @@ set(ayugram_files
         ayu/features/downloads/download_layout.h
         ayu/features/dialogs_multiselect/dialogs_multiselect.cpp
         ayu/features/dialogs_multiselect/dialogs_multiselect.h
+        ayu/features/notify_batch/notify_batch.cpp
+        ayu/features/notify_batch/notify_batch.h
         ayu/features/emergency_actions/emergency_action_plan.cpp
         ayu/features/emergency_actions/emergency_action_plan.h
         ayu/features/emergency_actions/emergency_action_journal.cpp

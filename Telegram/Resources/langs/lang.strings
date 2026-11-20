@@ -9764,3 +9764,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_dialogs_multiselect_locked_skipped#one" = "Skipped {count} locked chat";
 "lng_dialogs_multiselect_locked_skipped#other" = "Skipped {count} locked chats";
 "lng_dialogs_multiselect_clear" = "Clear selection";
+
+"lng_notify_batch_messages#one" = "{count} new message";
+"lng_notify_batch_messages#other" = "{count} new messages";
+"lng_notify_batch_enable" = "Group burst notifications";
+"lng_notify_batch_disable" = "Disable grouped notifications";
+"lng_notify_batch_settings_title" = "Burst notifications";
+"lng_notify_batch_window_label" = "Quiet window before alert";
+"lng_notify_batch_settings_about" = "When enabled per chat (via chat menu), rapid messages are grouped into one notification after the quiet window. Mentions, replies to you, keyword alerts, and calls always arrive immediately.";

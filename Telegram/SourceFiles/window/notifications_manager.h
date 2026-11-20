@@ -213,6 +213,30 @@ private:
 				< std::pair(b.itemId, b.sessionId);
 		}
 	};
+	struct BatchKey {
+		uint64 sessionId = 0;
+		PeerId peerId;
+		MsgId topicRootId = 0;
+
+		friend inline auto operator<=>(
+			const BatchKey&,
+			const BatchKey&) = default;
+	};
+	struct PendingBatch {
+		FullMsgId lastItemId;
+		int count = 0;
+		crl::time firstAt = 0;
+		crl::time flushAt = 0;
+	};
+
+	void flushBatches();
+	void scheduleBatchFlush();
+	void clearBatchesForSession(uint64 sessionId);
+	void clearBatchesForPeer(uint64 sessionId, PeerId peerId);
+	void clearBatchesForTopic(
+		uint64 sessionId,
+		PeerId peerId,
+		MsgId topicRootId);
 
 	void clearForThreadIf(Fn<bool(not_null<Data::Thread*>)> predicate);
 	void clearReadIncoming(
@@ -250,6 +274,8 @@ private:
 	base::flat_map<not_null<Data::Thread*>, Waiter> _settingWaiters;
 	base::Timer _waitTimer;
 	base::Timer _waitForAllGroupedTimer;
+	base::flat_map<BatchKey, PendingBatch> _batches;
+	base::Timer _batchFlushTimer;
 
 	base::flat_map<
 		not_null<Data::Thread*>,
@@ -314,6 +340,7 @@ public:
 	struct NotificationFields {
 		not_null<HistoryItem*> item;
 		int forwardedCount = 0;
+		int batchCount = 0;
 		PeerData *reactionFrom = nullptr;
 		Data::ReactionId reactionId;
 		QByteArray pollVoteOption;

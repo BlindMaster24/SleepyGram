@@ -123,6 +123,7 @@ Manager::QueuedNotification::QueuedNotification(NotificationFields &&fields)
 	: QString())
 , item((fields.forwardedCount < 2) ? fields.item.get() : nullptr)
 , forwardedCount(fields.forwardedCount)
+, batchCount(fields.batchCount)
 , fromScheduled(reaction.empty() && (fields.item->out() || peer->isSelf())
 	&& fields.item->isFromScheduled()) {
 }
@@ -274,6 +275,7 @@ void Manager::showNextFromQueue() {
 			queued.item,
 			queued.reaction,
 			queued.forwardedCount,
+			queued.batchCount,
 			queued.fromScheduled,
 			startPosition,
 			startShift,
@@ -689,6 +691,7 @@ Notification::Notification(
 	HistoryItem *item,
 	const Data::ReactionId &reaction,
 	int forwardedCount,
+	int batchCount,
 	bool fromScheduled,
 	QPoint startPosition,
 	int shift,
@@ -706,6 +709,7 @@ Notification::Notification(
 , _reaction(reaction)
 , _item(item)
 , _forwardedCount(forwardedCount)
+, _batchCount(batchCount)
 , _fromScheduled(fromScheduled)
 , _close(this, st::notifyClose)
 , _reply(this, tr::lng_notification_reply(), st::defaultBoxButton) {
@@ -1000,6 +1004,11 @@ void Notification::updateNotifyDisplay() {
 					_item,
 					_reaction,
 					options.hideMessageText))
+				: (_batchCount > 1)
+				? TextWithEntities{ tr::lng_notify_batch_messages(
+					tr::now,
+					lt_count,
+					_batchCount) }
 				: _item
 				? _item->toPreview({
 					.hideSender = reminder,

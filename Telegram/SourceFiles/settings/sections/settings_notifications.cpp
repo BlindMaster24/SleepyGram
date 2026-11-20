@@ -13,6 +13,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_reactions_notify_settings.h"
 #include "api/api_ringtones.h"
 #include "apiwrap.h"
+#include "ayu/features/notify_batch/notify_batch.h"
 #include "base/platform/base_platform_info.h"
 #include "boxes/ringtones_box.h"
 #include "core/application.h"
@@ -1433,6 +1434,43 @@ void BuildBadgeCounterSection(SectionBuilder &builder) {
 			changed(ChangeType::CountMessages);
 		}, count->lifetime());
 	}
+
+	builder.addSkip(st::settingsCheckboxesSkip);
+	builder.addDivider();
+	builder.addSkip(st::settingsCheckboxesSkip);
+	builder.addSubsectionTitle({
+		.id = u"notifications/batch"_q,
+		.title = tr::lng_notify_batch_settings_title(),
+		.keywords = { u"batch"_q, u"debounce"_q, u"burst"_q, u"group"_q },
+	});
+	builder.add([](const WidgetContext &ctx) {
+		const auto content = ctx.container;
+		const auto secondsVar = content->lifetime().make_state<
+			rpl::variable<int>>(Ayu::NotifyBatch::QuietSeconds());
+		const auto button = AddButtonWithLabel(
+			content,
+			tr::lng_notify_batch_window_label(),
+			secondsVar->value() | rpl::map([](int sec) {
+				return QString::number(sec) + u" s"_q;
+			}),
+			st::settingsButtonNoIcon);
+		button->addClickHandler([=] {
+			static constexpr int kSteps[] = { 15, 30, 60, 120 };
+			const auto cur = secondsVar->current();
+			auto next = kSteps[0];
+			for (auto i = 0; i < 4; ++i) {
+				if (kSteps[i] > cur) {
+					next = kSteps[i];
+					break;
+				}
+			}
+			Ayu::NotifyBatch::SetQuietSeconds(next);
+			*secondsVar = next;
+		});
+		Ui::AddSkip(content);
+		Ui::AddDividerText(content, tr::lng_notify_batch_settings_about());
+		return SectionBuilder::WidgetToAdd{};
+	});
 }
 
 void BuildSystemIntegrationAndAdvancedSection(SectionBuilder &builder) {

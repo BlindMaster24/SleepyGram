@@ -59,6 +59,10 @@ inline constexpr std::string_view kDownloadOrganizeByTopicKey
 	= "download-organize-by-topic";
 inline constexpr std::string_view kDownloadOrganizeByTypeKey
 	= "download-organize-by-type";
+inline constexpr std::string_view kNotifyBatchQuietSecKey
+	= "notify-batch-quiet-sec";
+inline constexpr std::string_view kNotifyBatchMaxWaitSecKey
+	= "notify-batch-max-wait-sec";
 
 struct WindowPosition {
 	int32 moncrc = 0;

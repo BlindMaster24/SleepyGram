@@ -18,6 +18,7 @@
 #include "ayu/features/forward/ayu_forward.h"
 #include "ayu/features/forward/ayu_forward_rich.h"
 #include "ayu/features/forward/forward_prefs.h"
+#include "ayu/features/notify_batch/notify_batch.h"
 #include "ayu/features/reply_later/reply_later.h"
 #include "ayu/features/send_guard/send_guard.h"
 #include "ayu/ui/context_menu/menu_item_subtext.h"
@@ -429,6 +430,20 @@ void AddAyuGramActions(PeerData *peerData,
 							});
 					},
 				});
+				const auto batchEnabled = Ayu::NotifyBatch::IsEnabledForPeer(
+					session,
+					peerData->id);
+				addAction(
+					batchEnabled
+						? tr::lng_notify_batch_disable(tr::now)
+						: tr::lng_notify_batch_enable(tr::now),
+					[=] {
+						Ayu::NotifyBatch::SetEnabledForPeer(
+							session,
+							peerData->id,
+							!batchEnabled);
+					},
+					&st::menuIconMute);
 			}
 			if (!archiveLocked) addAction(
 				tr::ayu_ViewEditedMessagesMenuText(tr::now),
