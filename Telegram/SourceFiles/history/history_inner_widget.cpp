@@ -3735,6 +3735,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 		}
 
 		AyuUi::AddReadUntilAction(_menu, item);
+		AyuUi::AddReplyLaterAction(_menu, _controller, item);
 		AyuUi::AddBurnAction(_menu, item);
 	};
 

@@ -279,6 +279,8 @@ set(ayugram_files
         ayu/features/streamer_mode/streamer_mode.h
         ayu/features/chat_lock/chat_lock.cpp
         ayu/features/chat_lock/chat_lock.h
+        ayu/features/reply_later/reply_later.cpp
+        ayu/features/reply_later/reply_later.h
         ayu/features/emergency_actions/emergency_action_plan.cpp
         ayu/features/emergency_actions/emergency_action_plan.h
         ayu/features/emergency_actions/emergency_action_journal.cpp

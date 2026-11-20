@@ -86,6 +86,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/reply_later/reply_later.h"
 #include "boxes/abstract_box.h"
 #include "styles/style_ayu_icons.h"
 #include "lang_auto.h"
@@ -752,6 +753,32 @@ void MainMenu::setupMenu() {
 		)->setClickedCallback([=] {
 			controller->showPeerHistory(controller->session().user());
 		});
+		const auto replyLaterBtn = addAction(
+			tr::lng_reply_later_title(),
+			{ &st::menuIconSchedule }
+		);
+		replyLaterBtn->setClickedCallback([=] {
+			controller->window().hideSettingsAndLayer();
+			Ayu::ReplyLater::ShowListBox(controller);
+		});
+		{
+			using namespace Settings;
+			const auto sessionPtr = &controller->session();
+			Badge::AddUnread(
+				replyLaterBtn,
+				rpl::single(rpl::empty) | rpl::then(
+					Ayu::ReplyLater::Changes(
+					) | rpl::filter([=](not_null<Main::Session*> changed) {
+						return changed == sessionPtr;
+					}) | rpl::to_empty
+				) | rpl::map([=] {
+					const auto due = Ayu::ReplyLater::CountDueEntries(
+						sessionPtr);
+					const auto all = Ayu::ReplyLater::CountAllEntries(
+						sessionPtr);
+					return Badge::UnreadBadge{ all, due == 0 };
+				}));
+		}
 		const auto session = &controller->session();
 		const auto wallet = _menu->add(
 			object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(

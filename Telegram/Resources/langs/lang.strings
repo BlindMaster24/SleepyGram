@@ -9683,3 +9683,23 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_sleepy_update_to" = "Update to {version}";
 "lng_sleepy_update_busy" = "Finish the current call or account operation and try again";
 "lng_sleepy_update_manual" = "Download the update from SleepyGram Releases";
+
+"lng_context_reply_later" = "Reply later";
+"lng_reply_later_title" = "Reply Later";
+"lng_reply_later_in_hour" = "In 1 hour";
+"lng_reply_later_evening" = "This evening (19:00)";
+"lng_reply_later_tomorrow" = "Tomorrow (09:00)";
+"lng_reply_later_choose_time" = "Pick date and time...";
+"lng_reply_later_set" = "Remind";
+"lng_reply_later_remove" = "Remove reminder";
+"lng_reply_later_saved" = "Reminder saved";
+"lng_reply_later_removed" = "Reminder removed";
+"lng_reply_later_empty" = "No messages scheduled to reply later.";
+"lng_reply_later_snooze_1h" = "Snooze +1h";
+"lng_reply_later_done" = "Done";
+"lng_reply_later_open" = "Open";
+"lng_reply_later_tomorrow_at" = "Tomorrow {time}";
+"lng_reply_later_overdue" = "Overdue ({time})";
+"lng_reply_later_due_one" = "{chat}: {text} {link}";
+"lng_reply_later_due_many#one" = "{count} message waiting for reply. {link}";
+"lng_reply_later_due_many#other" = "{count} messages waiting for reply. {link}";

@@ -10,6 +10,7 @@
 #include "ayu/ayu_ui_settings.h"
 #include "ayu/ayu_worker.h"
 #include "ayu/data/ayu_database.h"
+#include "ayu/features/reply_later/reply_later.h"
 #include "ayu/ui/ayu_logo.h"
 #include "features/translator/ayu_translator.h"
 #include "ui/chat/chat_style_radius.h"
@@ -36,6 +37,7 @@ void initDatabase() {
 
 void initWorker() {
 	AyuWorker::initialize();
+	Ayu::ReplyLater::Initialize();
 }
 
 void initTranslator() {

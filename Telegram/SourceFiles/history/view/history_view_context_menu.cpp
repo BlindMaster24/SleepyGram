@@ -1530,6 +1530,7 @@ void AddMessageActions(
 
 	if (request.item) {
 		AyuUi::AddReadUntilAction(menu, request.item);
+		AyuUi::AddReplyLaterAction(menu, list->controller(), request.item);
 		AyuUi::AddBurnAction(menu, request.item);
 	}
 }

@@ -17,6 +17,7 @@
 #include "ayu/features/filters/filters_controller.h"
 #include "ayu/features/forward/ayu_forward.h"
 #include "ayu/features/forward/ayu_forward_rich.h"
+#include "ayu/features/reply_later/reply_later.h"
 #include "ayu/ui/context_menu/menu_item_subtext.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/filters/edit_filter.h"
@@ -33,6 +34,7 @@
 #include "data/data_channel.h"
 #include "data/data_chat.h"
 #include "data/data_forum_topic.h"
+#include "data/data_groups.h"
 #include "data/data_search_controller.h"
 #include "data/data_session.h"
 #include "data/data_user.h"
@@ -1192,6 +1194,79 @@ void AddReadUntilAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {
 			}
 		},
 		&st::menuIconShowInChat);
+}
+
+void AddReplyLaterAction(
+		not_null<Ui::PopupMenu*> menu,
+		not_null<Window::SessionController*> controller,
+		HistoryItem *item) {
+	if (!item || !item->isRegular() || item->isLocal() || item->isScheduled()) {
+		return;
+	}
+	const auto target = [&]() -> not_null<HistoryItem*> {
+		if (const auto group = item->history()->owner().groups().find(item)) {
+			if (!group->items.empty()) {
+				return group->items.front();
+			}
+		}
+		return item;
+	}();
+	const auto session = &target->history()->session();
+	const auto peerId = target->history()->peer->id;
+	const auto msgId = target->id;
+	const auto hasExisting = Ayu::ReplyLater::HasEntry(session, peerId, msgId);
+	const auto addAction = Ui::Menu::CreateAddActionCallback(menu);
+	addAction({
+		.text = tr::lng_context_reply_later(tr::now),
+		.icon = &st::menuIconSchedule,
+		.fillSubmenu = [=](not_null<Ui::PopupMenu*> submenu) {
+			const auto schedulePreset = [=](Ayu::ReplyLater::Preset preset) {
+				if (const auto fresh = session->data().message(peerId, msgId)) {
+					Ayu::ReplyLater::ScheduleItem(
+						fresh,
+						Ayu::ReplyLater::ComputePresetTime(preset));
+					controller->showToast(tr::lng_reply_later_saved(tr::now));
+				}
+			};
+			if (hasExisting) {
+				submenu->addAction(
+					tr::lng_reply_later_remove(tr::now),
+					[=] {
+						Ayu::ReplyLater::RemoveEntry(
+							session,
+							peerId.value,
+							msgId.bare);
+						controller->showToast(
+							tr::lng_reply_later_removed(tr::now));
+					},
+					&st::menuIconClear);
+			}
+			submenu->addAction(
+				tr::lng_reply_later_in_hour(tr::now),
+				[=] { schedulePreset(Ayu::ReplyLater::Preset::InOneHour); },
+				&st::menuIconSchedule);
+			submenu->addAction(
+				tr::lng_reply_later_evening(tr::now),
+				[=] { schedulePreset(Ayu::ReplyLater::Preset::ThisEvening); },
+				&st::menuIconSchedule);
+			submenu->addAction(
+				tr::lng_reply_later_tomorrow(tr::now),
+				[=] {
+					schedulePreset(Ayu::ReplyLater::Preset::TomorrowMorning);
+				},
+				&st::menuIconSchedule);
+			submenu->addAction(
+				tr::lng_reply_later_choose_time(tr::now),
+				[=] {
+					if (const auto fresh = session->data().message(
+							peerId,
+							msgId)) {
+						Ayu::ReplyLater::ShowCustomTimeBox(controller, fresh);
+					}
+				},
+				&st::menuIconEdit);
+		},
+	});
 }
 
 void AddBurnAction(not_null<Ui::PopupMenu*> menu, HistoryItem *item) {
