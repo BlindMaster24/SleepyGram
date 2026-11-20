@@ -78,7 +78,42 @@ void ShowMenu(
 	const auto addAction = Ui::Menu::CreateAddActionCallback(
 		state->menu.get());
 
-	if (id) {
+	if (Data::IsLocalFilterId(id)) {
+		const auto includeMuted
+			= session->data().chatsFilters().mentionsFolderIncludeMuted();
+		addAction(
+			includeMuted
+				? tr::lng_filters_mentions_exclude_muted(tr::now)
+				: tr::lng_filters_mentions_include_muted(tr::now),
+			[=] {
+				session->data().chatsFilters().setMentionsFolderIncludeMuted(
+					!includeMuted);
+			},
+			includeMuted ? &st::menuIconMute : &st::menuIconShowInChat);
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			[=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			},
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
+		addAction(
+			tr::lng_filters_hide_folder(tr::now),
+			[=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					Ui::ChatFilterTabVisibility::Hidden);
+			},
+			&st::menuIconClear);
+	} else if (id) {
 		addAction(
 			tr::lng_filters_context_edit(tr::now),
 			[=] { EditExistingFilter(controller, id); },
@@ -436,15 +471,38 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		const auto &list = session->data().chatsFilters().list();
 		const auto ids = Ui::VisibleChatFilterTabIds(session);
 		Assert(index >= 0 && index < int(ids.size()));
+		if (Data::IsLocalFilterId(ids[index])) {
+			static const auto kMentionsFilter = Data::ChatFilter(
+				Data::kMentionsFilterId,
+				{},
+				{},
+				{},
+				{},
+				{},
+				{},
+				{});
+			return kMentionsFilter;
+		}
 		const auto i = ranges::find(list, ids[index], &Data::ChatFilter::id);
-		Assert(i != end(list));
+		if (i == end(list)) {
+			static const auto kAllChatsFilter = Data::ChatFilter(
+				FilterId(0),
+				{},
+				{},
+				{},
+				{},
+				{},
+				{},
+				{});
+			return kAllChatsFilter;
+		}
 		return *i;
 	};
 
 	const auto rebuild = [=] {
 		const auto &list = session->data().chatsFilters().list();
 		const auto visibleIds = Ui::VisibleChatFilterTabIds(session);
-		if ((list.size() <= 1 && !slider->width()) || state->ignoreRefresh) {
+		if ((visibleIds.size() <= 1 && !slider->width()) || state->ignoreRefresh) {
 			return;
 		}
 		const auto context = Core::TextContext({ .session = session });
@@ -465,10 +523,18 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			ranges::views::all(
 				visibleIds
 			) | ranges::views::transform([&](FilterId id) {
-				const auto &filter = *ranges::find(
-					list,
-					id,
-					&Data::ChatFilter::id);
+				if (id == Data::kMentionsFilterId) {
+					return TextWithEntities{
+						tr::lng_filters_mentions_name(tr::now),
+					};
+				}
+				const auto i = ranges::find(list, id, &Data::ChatFilter::id);
+				if (i == end(list)) {
+					return TextWithEntities{
+						tr::lng_filters_all_short(tr::now),
+					};
+				}
+				const auto &filter = *i;
 				auto title = filter.title();
 				return title.text.empty()
 					? TextWithEntities{ tr::lng_filters_all_short(tr::now) }
@@ -479,10 +545,14 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 		slider->setSectionIcons(ranges::views::all(
 			visibleIds
 		) | ranges::views::transform([&](FilterId id) {
-			const auto &filter = *ranges::find(
-				list,
-				id,
-				&Data::ChatFilter::id);
+			if (id == Data::kMentionsFilterId) {
+				return LookupFilterIcon(FilterIcon::Unread).tabs.get();
+			}
+			const auto i = ranges::find(list, id, &Data::ChatFilter::id);
+			if (i == end(list)) {
+				return LookupFilterIcon(FilterIcon::All).tabs.get();
+			}
+			const auto &filter = *i;
 			return LookupFilterIcon(filter.id()
 				? ComputeFilterIcon(filter)
 				: FilterIcon::All).tabs.get();
@@ -519,6 +589,16 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 			slider->lockedClicked() | rpl::on_next([=] {
 				controller->show(Box(FiltersLimitBox, session, std::nullopt));
 			}, state->rebuildLifetime);
+			if (trackActiveFilterAndUnreadAndReorder) {
+				slider->badgeClicked() | rpl::on_next([=](int index) {
+					const auto ids = Ui::VisibleChatFilterTabIds(session);
+					if (index < 0 || index >= int(ids.size())) {
+						return;
+					}
+					controller->setActiveChatsFilter(ids[index]);
+					Shortcuts::Launch(Shortcuts::Command::ChatNextUnread);
+				}, state->rebuildLifetime);
+			}
 			if (state->reorder) {
 				state->reorder->cancel();
 				state->reorder->clearPinnedIntervals();
@@ -530,6 +610,12 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					std::max(
 						1,
 						int(visibleBefore(int(list.size()) - maxLimit))));
+				if (!visibleIds.empty()
+					&& Data::IsLocalFilterId(visibleIds.back())) {
+					state->reorder->addPinnedInterval(
+						int(visibleIds.size()) - 1,
+						1);
+				}
 			}
 		}
 		if (trackActiveFilterAndUnreadAndReorder) {

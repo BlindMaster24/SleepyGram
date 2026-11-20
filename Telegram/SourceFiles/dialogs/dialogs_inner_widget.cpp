@@ -6206,10 +6206,12 @@ void InnerWidget::switchToFilter(FilterId filterId) {
 		return;
 	}
 	const auto &list = session().data().chatsFilters().list();
-	const auto filterIt = filterId
+	const auto isLocal = Data::IsLocalFilterId(filterId)
+		&& session().data().chatsFilters().mentionsFolderEnabled();
+	const auto filterIt = (filterId && !isLocal)
 		? ranges::find(list, filterId, &Data::ChatFilter::id)
 		: end(list);
-	const auto found = (filterIt != end(list));
+	const auto found = isLocal || (filterIt != end(list));
 	if (!found) {
 		filterId = 0;
 	}
@@ -6694,8 +6696,11 @@ RowDescriptor InnerWidget::chatListEntryNextUnread(
 		}
 		const auto row = *i++;
 		const auto key = row->key();
-		if (key.history() && key.entry()->chatListBadgesState().unread) {
-			return RowDescriptor(key, FullMsgId(PeerId(), ShowAtUnreadMsgId));
+		if (key.history()) {
+			const auto badges = key.entry()->chatListBadgesState();
+			if (badges.unread || badges.mention || badges.reaction) {
+				return RowDescriptor(key, FullMsgId(PeerId(), ShowAtUnreadMsgId));
+			}
 		}
 	}
 	return RowDescriptor();

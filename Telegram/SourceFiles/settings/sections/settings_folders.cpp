@@ -1247,6 +1247,50 @@ void BuildViewSection(SectionBuilder &builder) {
 			Core::App().saveSettingsDelayed();
 		});
 		Ui::AddSkip(content);
+		Ui::AddDivider(content);
+		Ui::AddSkip(content);
+
+		const auto session = &ctx.controller->session();
+		const auto &filters = session->data().chatsFilters();
+		const auto mentionsOn = filters.mentionsFolderEnabled()
+			&& !Ui::ChatFilterTabHidden(session, Data::kMentionsFilterId);
+		const auto mentionsButton = content->add(
+			object_ptr<Ui::SettingsButton>(
+				content,
+				tr::lng_filters_mentions_enable(),
+				st::settingsButtonNoIcon));
+		mentionsButton->toggleOn(rpl::single(mentionsOn));
+		const auto mutedWrap = content->add(
+			object_ptr<Ui::SlideWrap<Ui::SettingsButton>>(
+				content,
+				object_ptr<Ui::SettingsButton>(
+					content,
+					tr::lng_filters_mentions_include_muted(),
+					st::settingsButtonNoIcon)));
+		mutedWrap->entity()->toggleOn(
+			rpl::single(filters.mentionsFolderIncludeMuted()));
+		mutedWrap->toggle(mentionsOn, anim::type::instant);
+		mentionsButton->toggledChanges(
+		) | rpl::on_next([=](bool enabled) {
+			if (enabled) {
+				if (Ui::ChatFilterTabHidden(session, Data::kMentionsFilterId)) {
+					Ui::SetChatFilterTabVisibility(
+						session,
+						Data::kMentionsFilterId,
+						Ui::ChatFilterTabVisibility::Show);
+				}
+				session->data().chatsFilters().setMentionsFolderEnabled(true);
+			} else {
+				session->data().chatsFilters().setMentionsFolderEnabled(false);
+			}
+			mutedWrap->toggle(enabled, anim::type::normal);
+		}, mentionsButton->lifetime());
+		mutedWrap->entity()->toggledChanges(
+		) | rpl::on_next([=](bool includeMuted) {
+			session->data().chatsFilters().setMentionsFolderIncludeMuted(
+				includeMuted);
+		}, mutedWrap->lifetime());
+
 		Ui::AddSkip(content);
 
 		return SectionBuilder::WidgetToAdd{};

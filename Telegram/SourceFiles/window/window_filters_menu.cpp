@@ -19,6 +19,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/event_filter.h"
 #include "base/options.h"
 #include "core/application.h"
+#include "core/shortcuts.h"
 #include "core/core_settings.h"
 #include "core/ui_integration.h"
 #include "data/data_session.h"
@@ -55,6 +56,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "styles/style_widgets.h"
 #include "styles/style_window.h"
 
+#include <QtGui/QCursor>
+#include <QtGui/QGuiApplication>
 #include <QtGui/QtEvents>
 #include <algorithm>
 #include <array>
@@ -562,6 +565,27 @@ void FiltersMenu::refresh() {
 			nextIsLocked);
 		now.emplace(filter.id(), std::move(button));
 	}
+	if (list.empty() && ranges::contains(visibleIds, FilterId(0))) {
+		auto button = prepareButton(
+			_list,
+			FilterId(0),
+			Data::ChatFilterTitle{},
+			Ui::FilterIcon::All,
+			false);
+		now.emplace(FilterId(0), std::move(button));
+	}
+	if (ranges::contains(visibleIds, Data::kMentionsFilterId)) {
+		auto button = prepareButton(
+			_list,
+			Data::kMentionsFilterId,
+			Data::ChatFilterTitle{
+				TextWithEntities{ tr::lng_filters_mentions_name(tr::now) },
+			},
+			Ui::FilterIcon::Unread,
+			false);
+		now.emplace(Data::kMentionsFilterId, std::move(button));
+		_reorder->addPinnedInterval(int(now.size()) - 1, 1);
+	}
 	_filters = std::move(now);
 	// Re-establish the list's Tab-stop on the folder that was focused (if it
 	// survived the rebuild), else on the active one, so a refresh - rename,
@@ -867,7 +891,16 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 				&_session->session(),
 				std::nullopt));
 		} else if (id >= 0) {
+			const auto localPos = raw->mapFromGlobal(QCursor::pos());
+			const auto hitBadgeArea = (localPos.x() > raw->width() / 2)
+				&& (localPos.y() < raw->height() / 2);
+			const auto wasActive = (_session->activeChatsFilterCurrent() == id);
 			_session->setActiveChatsFilter(id);
+			if (hitBadgeArea
+				|| (wasActive
+					&& (QGuiApplication::keyboardModifiers() & Qt::AltModifier))) {
+				Shortcuts::Launch(Shortcuts::Command::ChatNextUnread);
+			}
 		} else {
 			openFiltersSettings();
 		}
@@ -934,7 +967,43 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 		i->second.get(),
 		st::popupMenuWithIcons);
 	const auto addAction = Ui::Menu::CreateAddActionCallback(_popupMenu);
-	if (id) {
+	if (Data::IsLocalFilterId(id)) {
+		const auto session = &_session->session();
+		const auto includeMuted
+			= session->data().chatsFilters().mentionsFolderIncludeMuted();
+		addAction(
+			includeMuted
+				? tr::lng_filters_mentions_exclude_muted(tr::now)
+				: tr::lng_filters_mentions_include_muted(tr::now),
+			crl::guard(&_outer, [=] {
+				session->data().chatsFilters().setMentionsFolderIncludeMuted(
+					!includeMuted);
+			}),
+			includeMuted ? &st::menuIconMute : &st::menuIconShowInChat);
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			crl::guard(&_outer, [=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			}),
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
+		addAction(
+			tr::lng_filters_hide_folder(tr::now),
+			crl::guard(&_outer, [=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					Ui::ChatFilterTabVisibility::Hidden);
+			}),
+			&st::menuIconClear);
+	} else if (id) {
 		addAction(
 			tr::lng_filters_context_edit(tr::now),
 			crl::guard(&_outer, [=] { EditExistingFilter(_session, id); }),

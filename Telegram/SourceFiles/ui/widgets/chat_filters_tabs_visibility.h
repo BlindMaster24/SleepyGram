@@ -137,13 +137,21 @@ ChatFilterTabVisibilityChanges() {
 
 [[nodiscard]] inline std::vector<FilterId> VisibleChatFilterTabIds(
 		not_null<Main::Session*> session) {
-	const auto &list = session->data().chatsFilters().list();
+	const auto &filters = session->data().chatsFilters();
+	const auto &list = filters.list();
 	auto result = std::vector<FilterId>();
-	result.reserve(list.size());
+	result.reserve(list.size() + 1);
 	for (const auto &filter : list) {
 		if (!filter.id() || !ChatFilterTabHidden(session, filter.id())) {
 			result.push_back(filter.id());
 		}
+	}
+	if (filters.mentionsFolderEnabled()
+		&& !ChatFilterTabHidden(session, Data::kMentionsFilterId)) {
+		if (result.empty()) {
+			result.push_back(FilterId(0));
+		}
+		result.push_back(Data::kMentionsFilterId);
 	}
 	return result;
 }

@@ -321,13 +321,21 @@ void ChatsFiltersTabs::paintEvent(QPaintEvent *e) {
 			{
 				const auto it = _unreadCounts.find(index);
 				if (it != _unreadCounts.end()) {
+					const auto badgeLeft = labelLeft
+						+ iconExtra
+						+ labelWidth
+						+ _unreadSkip;
 					p.drawImage(
-						labelLeft
-							+ iconExtra
-							+ labelWidth
-							+ _unreadSkip,
+						badgeLeft,
 						_st.labelTop,
 						it->second.cache);
+					const auto dpr = style::DevicePixelRatio();
+					it->second.badgeRect = QRect(
+						badgeLeft,
+						_st.labelTop,
+						it->second.cache.width() / dpr,
+						it->second.cache.height() / dpr).marginsAdded(
+							QMargins(4, 4, 4, 4));
 				}
 			}
 			if (locked) {
@@ -411,7 +419,18 @@ void ChatsFiltersTabs::mouseReleaseEvent(QMouseEvent *e) {
 					}
 				}
 			} else {
-				Ui::SettingsSlider::mouseReleaseEvent(e);
+				auto badgeHit = -1;
+				for (const auto &[idx, unread] : _unreadCounts) {
+					if (unread.count > 0 && unread.badgeRect.contains(e->pos())) {
+						badgeHit = idx;
+						break;
+					}
+				}
+				if (badgeHit >= 0) {
+					_badgeClicked.fire_copy(badgeHit);
+				} else {
+					Ui::SettingsSlider::mouseReleaseEvent(e);
+				}
 			}
 		}
 	} else {
@@ -444,6 +463,10 @@ rpl::producer<int> ChatsFiltersTabs::contextMenuRequested() const {
 
 rpl::producer<> ChatsFiltersTabs::lockedClicked() const {
 	return _lockedClicked.events();
+}
+
+rpl::producer<int> ChatsFiltersTabs::badgeClicked() const {
+	return _badgeClicked.events();
 }
 
 int ChatsFiltersTabs::count() const {

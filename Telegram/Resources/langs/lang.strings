@@ -9726,3 +9726,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 "lng_download_organize_by_topic" = "Organize downloads into topic subfolders";
 "lng_download_organize_by_type" = "Organize downloads by file type (Images, PDF, etc.)";
+
+"lng_filters_mentions_name" = "Mentions";
+"lng_filters_mentions_enable" = "Show Mentions folder";
+"lng_filters_mentions_include_muted" = "Include muted chats";
+"lng_filters_mentions_exclude_muted" = "Exclude muted chats";

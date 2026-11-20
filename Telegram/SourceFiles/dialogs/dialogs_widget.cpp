@@ -58,6 +58,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "main/main_session_settings.h"
 #include "api/api_authorizations.h"
 #include "api/api_chat_filters.h"
+#include "api/api_unread_things.h"
+#include "ayu/features/chat_lock/chat_lock.h"
 #include "apiwrap.h"
 #include "chat_helpers/message_field.h"
 #include "core/application.h"
@@ -1050,9 +1052,18 @@ void Widget::chosenRow(const ChosenRow &row) {
 		return;
 	} else if (history) {
 		const auto peer = history->peer;
-		const auto showAtMsgId = controller()->uniqueChatsInSearchResults(
+		auto showAtMsgId = controller()->uniqueChatsInSearchResults(
 			_searchState
 		) ? ShowAtUnreadMsgId : row.message.fullId.msg;
+		if (controller()->activeChatsFilterCurrent() == Data::kMentionsFilterId
+			&& !row.filteredRow
+			&& !Ayu::ChatLock::IsChatLocked(&session(), peer->id)) {
+			if (const auto mentionId = history->unreadMentions().minLoaded()) {
+				showAtMsgId = mentionId;
+			} else if (history->unreadMentions().has()) {
+				session().api().unreadThings().preloadEnoughMentions(history);
+			}
+		}
 		auto params = Window::SectionShow(
 			Window::SectionShow::Way::ClearStack);
 		params.highlight = Window::SearchHighlightId(_searchState.query);

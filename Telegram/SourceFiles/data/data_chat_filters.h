@@ -23,6 +23,12 @@ struct MoreChatsBarContent;
 
 namespace Data {
 
+inline constexpr FilterId kMentionsFilterId = 0x7FFF0001;
+
+[[nodiscard]] inline bool IsLocalFilterId(FilterId id) {
+	return (id == kMentionsFilterId);
+}
+
 class Session;
 
 struct ChatFilterTitle {
@@ -177,6 +183,13 @@ public:
 
 	[[nodiscard]] not_null<Dialogs::MainList*> chatsList(FilterId filterId);
 	void clear();
+
+	[[nodiscard]] bool mentionsFolderEnabled() const;
+	[[nodiscard]] bool mentionsFolderIncludeMuted() const;
+	void setMentionsFolderEnabled(bool enabled);
+	void setMentionsFolderIncludeMuted(bool includeMuted);
+	[[nodiscard]] bool shouldBeInMentions(not_null<History*> history) const;
+	void refreshMentionsFolder();
 
 	const ChatFilter &applyUpdatedPinned(
 		FilterId id,

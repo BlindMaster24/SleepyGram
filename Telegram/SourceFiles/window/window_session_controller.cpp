@@ -1921,7 +1921,12 @@ SessionController::SessionController(
 	}, lifetime());
 
 	const auto processFiltersMenu = [this] {
-		if (SessionNavigation::session().data().chatsFilters().has()) {
+		const auto &filters = SessionNavigation::session().data().chatsFilters();
+		const auto hasMentionsTab = filters.mentionsFolderEnabled()
+			&& !Ui::ChatFilterTabHidden(
+				&SessionNavigation::session(),
+				Data::kMentionsFilterId);
+		if (filters.has() || hasMentionsTab) {
 			const auto isHorizontal
 				= Core::App().settings().chatFiltersHorizontal()
 					|| !enoughSpaceForFilters();
@@ -1935,7 +1940,8 @@ SessionController::SessionController(
 	rpl::merge(
 		enoughSpaceForFiltersValue() | rpl::skip(1) | rpl::to_empty,
 		Core::App().settings().chatFiltersHorizontalChanges() | rpl::to_empty,
-		session->data().chatsFilters().changed()
+		session->data().chatsFilters().changed(),
+		Ui::ChatFilterTabVisibilityChanges()
 	) | rpl::on_next([=] {
 		if (!_filtersActivated) {
 			processFiltersMenu();
@@ -2304,9 +2310,13 @@ rpl::producer<> SessionController::filtersMenuChanged() const {
 void SessionController::checkOpenedFilter() {
 	activateFirstChatsFilter();
 	if (const auto filterId = activeChatsFilterCurrent()) {
-		const auto &list = session().data().chatsFilters().list();
+		const auto &filters = session().data().chatsFilters();
+		const auto isLocal = Data::IsLocalFilterId(filterId)
+			&& filters.mentionsFolderEnabled()
+			&& !Ui::ChatFilterTabHidden(&session(), filterId);
+		const auto &list = filters.list();
 		const auto i = ranges::find(list, filterId, &Data::ChatFilter::id);
-		if (i == end(list)) {
+		if (!isLocal && i == end(list)) {
 			setActiveChatsFilter(
 				0,
 				{ anim::type::normal, anim::activation::background });
@@ -4475,13 +4485,15 @@ bool CheckAndJumpToNearChatsFilter(
 		return false;
 	}
 	const auto targetId = visibleIds[changed];
-	const auto rawIndex = int(ranges::find(
-		*list,
-		targetId,
-		&Data::ChatFilter::id
-	) - begin(*list));
-	if (rawIndex > Data::PremiumLimits(session).dialogFiltersCurrent()) {
-		return false;
+	if (targetId && !Data::IsLocalFilterId(targetId)) {
+		const auto rawIndex = int(ranges::find(
+			*list,
+			targetId,
+			&Data::ChatFilter::id
+		) - begin(*list));
+		if (rawIndex > Data::PremiumLimits(session).dialogFiltersCurrent()) {
+			return false;
+		}
 	}
 	if (jump) {
 		controller->setActiveChatsFilter(targetId);

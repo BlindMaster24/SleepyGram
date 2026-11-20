@@ -5792,6 +5792,27 @@ void Session::refreshChatListEntry(Dialogs::Key key) {
 			_chatListEntryRefreshes.fire(std::move(event));
 		}
 	}
+	{
+		const auto id = Data::kMentionsFilterId;
+		auto event = ChatListEntryRefresh{ .key = key, .filterId = id };
+		const auto inMentions = _chatsFilters->shouldBeInMentions(history)
+			|| (entry->inChatList(id) && history->fakeUnreadWhileOpened());
+		if (inMentions) {
+			const auto filterList = chatsFilters().chatsList(id);
+			event.existenceChanged = !entry->inChatList(id);
+			if (event.existenceChanged) {
+				entry->addToChatList(id, filterList);
+			} else {
+				event.moved = entry->adjustByPosInChatList(id, filterList);
+			}
+		} else if (entry->inChatList(id)) {
+			entry->removeFromChatList(id, chatsFilters().chatsList(id));
+			event.existenceChanged = true;
+		}
+		if (event) {
+			_chatListEntryRefreshes.fire(std::move(event));
+		}
+	}
 
 	if (creating) {
 		if (const auto from = history->peer->migrateFrom()) {
@@ -5847,6 +5868,16 @@ void Session::removeChatListEntry(Dialogs::Key key) {
 				.existenceChanged = true
 			});
 		}
+	}
+	if (entry->inChatList(Data::kMentionsFilterId)) {
+		entry->removeFromChatList(
+			Data::kMentionsFilterId,
+			chatsFilters().chatsList(Data::kMentionsFilterId));
+		_chatListEntryRefreshes.fire(ChatListEntryRefresh{
+			.key = key,
+			.filterId = Data::kMentionsFilterId,
+			.existenceChanged = true
+		});
 	}
 	const auto mainList = chatsListFor(entry);
 	entry->removeFromChatList(0, mainList);

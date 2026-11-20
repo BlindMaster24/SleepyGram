@@ -24,6 +24,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "main/main_session.h"
 #include "main/main_app_config.h"
+#include "storage/storage_account.h"
 #include "apiwrap.h"
 
 // AyuGram includes
@@ -442,6 +443,66 @@ not_null<Dialogs::MainList*> ChatFilters::chatsList(FilterId filterId) {
 void ChatFilters::clear() {
 	_chatsLists.clear();
 	_list.clear();
+}
+
+bool ChatFilters::mentionsFolderEnabled() const {
+	return _owner->session().local().readPref<bool>(
+		"sleepygram.mentionsFolder.enabled",
+		true);
+}
+
+bool ChatFilters::mentionsFolderIncludeMuted() const {
+	return _owner->session().local().readPref<bool>(
+		"sleepygram.mentionsFolder.includeMuted",
+		true);
+}
+
+void ChatFilters::setMentionsFolderEnabled(bool enabled) {
+	if (mentionsFolderEnabled() == enabled) {
+		return;
+	}
+	_owner->session().local().writePref<bool>(
+		"sleepygram.mentionsFolder.enabled",
+		enabled);
+	refreshMentionsFolder();
+}
+
+void ChatFilters::setMentionsFolderIncludeMuted(bool includeMuted) {
+	if (mentionsFolderIncludeMuted() == includeMuted) {
+		return;
+	}
+	_owner->session().local().writePref<bool>(
+		"sleepygram.mentionsFolder.includeMuted",
+		includeMuted);
+	refreshMentionsFolder();
+}
+
+bool ChatFilters::shouldBeInMentions(not_null<History*> history) const {
+	if (!mentionsFolderEnabled() || history->folder()) {
+		return false;
+	}
+	const auto badges = history->chatListBadgesState();
+	const auto hasMention = history->unreadMentions().has() || badges.mention;
+	if (!hasMention) {
+		return false;
+	}
+	if (!mentionsFolderIncludeMuted() && history->muted()) {
+		return false;
+	}
+	return true;
+}
+
+void ChatFilters::refreshMentionsFolder() {
+	auto histories = std::vector<not_null<History*>>();
+	for (const auto &row : _owner->chatsList()->indexed()->all()) {
+		if (const auto history = row->history()) {
+			histories.push_back(history);
+		}
+	}
+	for (const auto &history : histories) {
+		_owner->refreshChatListEntry(history);
+	}
+	_listChanged.fire({});
 }
 
 void ChatFilters::setPreloaded(
@@ -1036,7 +1097,7 @@ bool ChatFilters::loadNextExceptions(bool chatsListLoaded) {
 }
 
 void ChatFilters::refreshHistory(not_null<History*> history) {
-	if (history->inChatList() && !list().empty()) {
+	if (history->inChatList() && (!list().empty() || mentionsFolderEnabled())) {
 		_owner->refreshChatListEntry(history);
 	}
 }

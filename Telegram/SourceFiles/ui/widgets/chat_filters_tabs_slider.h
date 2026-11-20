@@ -47,6 +47,7 @@ public:
 
 	[[nodiscard]] rpl::producer<int> contextMenuRequested() const;
 	[[nodiscard]] rpl::producer<> lockedClicked() const;
+	[[nodiscard]] rpl::producer<int> badgeClicked() const;
 
 	void setHorizontalShift(int index, int shift);
 	void setRaised(int index);
@@ -86,6 +87,7 @@ private:
 	using Index = int;
 	struct Unread final {
 		QImage cache;
+		QRect badgeRect;
 		ushort count = 0;
 		bool muted = false;
 	};
@@ -112,6 +114,7 @@ private:
 	rpl::lifetime _paletteLifetime;
 	rpl::event_stream<int> _contextMenuRequested;
 	rpl::event_stream<> _lockedClicked;
+	rpl::event_stream<int> _badgeClicked;
 
 };
 
