@@ -90,6 +90,30 @@ void ShowMenu(
 			[=] { return session->data().chatsFilters().chatsList(id); },
 			addAction);
 
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			[=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			},
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
+		addAction(
+			tr::lng_filters_hide_folder(tr::now),
+			[=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					Ui::ChatFilterTabVisibility::Hidden);
+			},
+			&st::menuIconClear);
+
 		auto showRemoveBox = [=] {
 			state->removeApi.request(base::make_weak(parent), controller, id);
 		};
@@ -123,6 +147,21 @@ void ShowMenu(
 			MarkAsReadMenu::ChatListKind::AllChats,
 			[=] { return session->data().chatsList(); },
 			addAction);
+
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			[=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			},
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
 	}
 	if (state->menu->empty()) {
 		state->menu = nullptr;
@@ -252,7 +291,8 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 					- (includeMuted ? 0 : muted);
 				const auto isMuted = includeMuted && (count == muted);
 
-				if (hideCounters) {
+				if (hideCounters
+					|| Ui::ChatFilterTabBadgeHidden(session, ids[i])) {
 					count = 0;
 				}
 
@@ -448,6 +488,9 @@ not_null<Ui::RpWidget*> AddChatFiltersTabsStrip(
 				: FilterIcon::All).tabs.get();
 		}) | ranges::to_vector);
 		if (!sectionsChanged) {
+			if (trackActiveFilterAndUnreadAndReorder) {
+				reassignUnreadValue();
+			}
 			return;
 		}
 		state->rebuildLifetime.destroy();

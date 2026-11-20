@@ -117,6 +117,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/features/chat_lock/chat_lock.h"
 #include "ayu/ayu_settings.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "ayu/ui/ayu_userpic.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
@@ -6885,22 +6886,24 @@ void InnerWidget::setupShortcuts() {
 		});
 
 		if (session().data().chatsFilters().has()) {
-			const auto filters = &session().data().chatsFilters();
-			const auto filtersCount = int(filters->list().size());
-			auto &&folders = ranges::views::zip(
-				Shortcuts::kShowFolder,
-				ranges::views::ints(0, ranges::unreachable));
-			for (const auto &[command, index] : folders) {
-				const auto select = (command == Command::ShowFolderLast)
-					? (filtersCount - 1)
-					: std::clamp(index, 0, filtersCount - 1);
-				request->check(command) && request->handle([=] {
-					if (select <= filtersCount) {
-						_controller->setActiveChatsFilter(
-							filters->lookupId(select));
-					}
-					return true;
-				});
+			const auto visibleIds = Ui::VisibleChatFilterTabIds(&session());
+			const auto filtersCount = int(visibleIds.size());
+			if (filtersCount > 0) {
+				auto &&folders = ranges::views::zip(
+					Shortcuts::kShowFolder,
+					ranges::views::ints(0, ranges::unreachable));
+				for (const auto &[command, index] : folders) {
+					const auto select = (command == Command::ShowFolderLast)
+						? (filtersCount - 1)
+						: std::clamp(index, 0, filtersCount - 1);
+					request->check(command) && request->handle([=] {
+						if (select >= 0 && select < filtersCount) {
+							_controller->setActiveChatsFilter(
+								visibleIds[select]);
+						}
+						return true;
+					});
+				}
 			}
 		}
 

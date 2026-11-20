@@ -18,6 +18,13 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <vector>
 
 namespace Ui {
+
+enum class ChatFilterTabVisibility : uchar {
+	Show,
+	ShowWithoutBadge,
+	Hidden,
+};
+
 namespace details {
 
 inline auto &ChatFilterTabVisibilityChanges() {
@@ -25,30 +32,102 @@ inline auto &ChatFilterTabVisibilityChanges() {
 	return changes;
 }
 
-inline auto ChatFilterTabVisibilityPrefKey(FilterId id) {
+inline auto ChatFilterTabHiddenPrefKey(FilterId id) {
 	return "ayu.hiddenChatFolder." + std::to_string(id);
+}
+
+inline auto ChatFilterTabVisibilityPrefKey(FilterId id) {
+	return "ayu.chatFolderVisibility." + std::to_string(id);
 }
 
 } // namespace details
 
+[[nodiscard]] inline ChatFilterTabVisibility GetChatFilterTabVisibility(
+		not_null<Main::Session*> session,
+		FilterId id) {
+	const auto raw = session->local().readPref<QString>(
+		details::ChatFilterTabVisibilityPrefKey(id));
+	if (raw == u"no_badge"_q) {
+		return ChatFilterTabVisibility::ShowWithoutBadge;
+	} else if (raw == u"hidden"_q && id) {
+		return ChatFilterTabVisibility::Hidden;
+	} else if (raw == u"show"_q) {
+		return ChatFilterTabVisibility::Show;
+	}
+	if (id && session->local().readPref<bool>(
+			details::ChatFilterTabHiddenPrefKey(id))) {
+		return ChatFilterTabVisibility::Hidden;
+	}
+	return ChatFilterTabVisibility::Show;
+}
+
+inline void SetChatFilterTabVisibility(
+		not_null<Main::Session*> session,
+		FilterId id,
+		ChatFilterTabVisibility visibility) {
+	if (!id && visibility == ChatFilterTabVisibility::Hidden) {
+		visibility = ChatFilterTabVisibility::Show;
+	}
+	if (GetChatFilterTabVisibility(session, id) == visibility) {
+		return;
+	}
+	const auto key = details::ChatFilterTabVisibilityPrefKey(id);
+	const auto legacyKey = details::ChatFilterTabHiddenPrefKey(id);
+	switch (visibility) {
+	case ChatFilterTabVisibility::Show:
+		session->local().clearPref(key);
+		session->local().clearPref(legacyKey);
+		break;
+	case ChatFilterTabVisibility::ShowWithoutBadge:
+		session->local().writePref<QString>(key, u"no_badge"_q);
+		session->local().clearPref(legacyKey);
+		break;
+	case ChatFilterTabVisibility::Hidden:
+		session->local().writePref<QString>(key, u"hidden"_q);
+		session->local().clearPref(legacyKey);
+		break;
+	}
+	details::ChatFilterTabVisibilityChanges().fire(std::move(session));
+}
+
+inline void ClearChatFilterTabVisibility(
+		not_null<Main::Session*> session,
+		FilterId id) {
+	if (!id) {
+		return;
+	}
+	session->local().clearPref(details::ChatFilterTabVisibilityPrefKey(id));
+	session->local().clearPref(details::ChatFilterTabHiddenPrefKey(id));
+}
+
 [[nodiscard]] inline bool ChatFilterTabHidden(
 		not_null<Main::Session*> session,
 		FilterId id) {
-	return id && session->local().readPref<bool>(
-		details::ChatFilterTabVisibilityPrefKey(id));
+	return id
+		&& (GetChatFilterTabVisibility(session, id)
+			== ChatFilterTabVisibility::Hidden);
+}
+
+[[nodiscard]] inline bool ChatFilterTabBadgeHidden(
+		not_null<Main::Session*> session,
+		FilterId id) {
+	return GetChatFilterTabVisibility(session, id)
+		== ChatFilterTabVisibility::ShowWithoutBadge;
 }
 
 inline void SetChatFilterTabHidden(
 		not_null<Main::Session*> session,
 		FilterId id,
 		bool hidden) {
-	if (!id || (ChatFilterTabHidden(session, id) == hidden)) {
+	if (!id) {
 		return;
 	}
-	session->local().writePref<bool>(
-		details::ChatFilterTabVisibilityPrefKey(id),
-		hidden);
-	details::ChatFilterTabVisibilityChanges().fire(std::move(session));
+	SetChatFilterTabVisibility(
+		session,
+		id,
+		hidden
+			? ChatFilterTabVisibility::Hidden
+			: ChatFilterTabVisibility::Show);
 }
 
 [[nodiscard]] inline rpl::producer<not_null<Main::Session*>>

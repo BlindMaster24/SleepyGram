@@ -7745,6 +7745,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_filters_restore" = "Undo";
 "lng_filters_hide_folder" = "Hide folder";
 "lng_filters_show_folder" = "Show folder";
+"lng_filters_hide_counter" = "Hide counter";
+"lng_filters_show_counter" = "Show counter";
+"lng_filters_visibility_show" = "Shown";
+"lng_filters_visibility_no_badge" = "No counter";
+"lng_filters_visibility_hidden" = "Hidden";
 "lng_filters_new" = "New Folder";
 "lng_filters_edit" = "Edit Folder";
 "lng_filters_setup_menu" = "Edit Folders";

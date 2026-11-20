@@ -766,21 +766,29 @@ base::unique_qptr<Ui::SideBarButton> FiltersMenu::prepareButton(
 			raw->setAccessibleDescription(
 				tr::lng_sr_folder_locked_about(tr::now));
 		}
+		const auto session = &_session->session();
+		auto visibilityChanges = rpl::single(rpl::empty)
+			| rpl::then(Ui::ChatFilterTabVisibilityChanges(
+			) | rpl::filter([=](not_null<Main::Session*> changed) {
+				return changed == session;
+			}) | rpl::to_empty);
 		rpl::combine(
-			Data::UnreadStateValue(&_session->session(), id),
+			Data::UnreadStateValue(session, id),
 			Data::IncludeMutedCounterFoldersValue(),
-			AyuSettings::getInstance().hideNotificationCountersValue()
+			AyuSettings::getInstance().hideNotificationCountersValue(),
+			std::move(visibilityChanges)
 		) | rpl::on_next([=](
 				const Dialogs::UnreadState &state,
 				bool includeMuted,
-				bool hideCounters) {
+				bool hideCounters,
+				rpl::empty_value) {
 			const auto chats = state.chats;
 			const auto chatsMuted = state.chatsMuted;
 			auto muted = (chatsMuted + state.marksMuted);
 			auto count = (chats + state.marks)
 				- (includeMuted ? 0 : muted);
 
-			if (hideCounters) {
+			if (hideCounters || Ui::ChatFilterTabBadgeHidden(session, id)) {
 				count = 0;
 				muted = 0;
 			}
@@ -961,6 +969,31 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 				&st::menuIconShowInChat);
 		}
 
+		const auto session = &_session->session();
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			crl::guard(&_outer, [=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			}),
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
+		addAction(
+			tr::lng_filters_hide_folder(tr::now),
+			crl::guard(&_outer, [=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					Ui::ChatFilterTabVisibility::Hidden);
+			}),
+			&st::menuIconClear);
+
 		addAction({
 			.text = tr::lng_filters_context_remove(tr::now),
 			.handler = crl::guard(&_outer, [=, this] {
@@ -980,6 +1013,22 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 			MarkAsReadMenu::ChatListKind::AllChats,
 			[=] { return _session->session().data().chatsList(); },
 			addAction);
+
+		const auto session = &_session->session();
+		const auto badgeHidden = Ui::ChatFilterTabBadgeHidden(session, id);
+		addAction(
+			badgeHidden
+				? tr::lng_filters_show_counter(tr::now)
+				: tr::lng_filters_hide_counter(tr::now),
+			crl::guard(&_outer, [=] {
+				Ui::SetChatFilterTabVisibility(
+					session,
+					id,
+					badgeHidden
+						? Ui::ChatFilterTabVisibility::Show
+						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
+			}),
+			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
 	}
 	if (_popupMenu->empty()) {
 		_popupMenu = nullptr;

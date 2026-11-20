@@ -75,12 +75,11 @@ public:
 		const Data::ChatFilter &filter,
 		bool ignoreCount = false);
 	void updateCount(const Data::ChatFilter &filter);
-	void setHidden(bool hidden);
+	void setVisibility(Ui::ChatFilterTabVisibility visibility);
 
 	[[nodiscard]] rpl::producer<> removeRequests() const;
 	[[nodiscard]] rpl::producer<> restoreRequests() const;
-	[[nodiscard]] rpl::producer<> hideRequests() const;
-	[[nodiscard]] rpl::producer<> showRequests() const;
+	[[nodiscard]] rpl::producer<> visibilityToggleRequests() const;
 	[[nodiscard]] rpl::producer<> addRequests() const;
 
 	void setColorIndexProgress(float64 progress);
@@ -97,13 +96,15 @@ private:
 	void setup(const Data::ChatFilter &filter, const QString &status);
 	void setState(State state, bool force = false);
 	void updateButtonsVisibility();
+	void updateButtonsGeometry(QSize size);
 
 	const not_null<::Main::Session*> _session;
 
 	Ui::IconButton _remove;
 	Ui::RoundButton _restore;
-	Ui::RoundButton _show;
-	Ui::RoundButton _hide;
+	rpl::variable<Ui::ChatFilterTabVisibility> _visibilityState
+		= Ui::ChatFilterTabVisibility::Show;
+	Ui::RoundButton _visibility;
 	Ui::RoundButton _add;
 
 	Ui::Text::String _title;
@@ -114,7 +115,6 @@ private:
 
 	State _state = State::Normal;
 	bool _canHide = false;
-	bool _hidden = false;
 
 };
 
@@ -192,18 +192,31 @@ FilterRowButton::FilterRowButton(
 , _session(session)
 , _remove(this, st::filtersRemove)
 , _restore(this, tr::lng_filters_restore(), st::settingsFilterAddRecommended)
-, _show(this, tr::lng_filters_show_folder(), st::settingsFilterAddRecommended)
-, _hide(this, tr::lng_filters_hide_folder(), st::settingsFilterAddRecommended)
+, _visibilityState(filter.id()
+	? Ui::GetChatFilterTabVisibility(session, filter.id())
+	: Ui::ChatFilterTabVisibility::Show)
+, _visibility(
+	this,
+	_visibilityState.value() | rpl::map([](Ui::ChatFilterTabVisibility v) {
+		switch (v) {
+		case Ui::ChatFilterTabVisibility::Show:
+			return tr::lng_filters_visibility_show();
+		case Ui::ChatFilterTabVisibility::ShowWithoutBadge:
+			return tr::lng_filters_visibility_no_badge();
+		case Ui::ChatFilterTabVisibility::Hidden:
+			return tr::lng_filters_visibility_hidden();
+		}
+		Unexpected("Visibility value in FilterRowButton.");
+	}) | rpl::flatten_latest(),
+	st::settingsFilterAddRecommended)
 , _add(
 	this,
 	tr::lng_filters_recommended_add(),
 	st::settingsFilterAddRecommended)
 , _state(description.isEmpty() ? State::Normal : State::Suggested) {
 	_canHide = (filter.id() != 0);
-	_hidden = _canHide && Ui::ChatFilterTabHidden(session, filter.id());
 	_restore.setFullRadius(true);
-	_show.setFullRadius(true);
-	_hide.setFullRadius(true);
+	_visibility.setFullRadius(true);
 	_add.setFullRadius(true);
 	setup(filter, description.isEmpty()
 		? ComputeCountString(session, filter)
@@ -241,9 +254,10 @@ void FilterRowButton::updateCount(const Data::ChatFilter &filter) {
 	update();
 }
 
-void FilterRowButton::setHidden(bool hidden) {
-	_hidden = hidden;
-	updateButtonsVisibility();
+void FilterRowButton::setVisibility(Ui::ChatFilterTabVisibility visibility) {
+	_visibilityState = visibility;
+	updateButtonsGeometry(size());
+	update();
 }
 
 void FilterRowButton::setState(State state, bool force) {
@@ -257,6 +271,21 @@ void FilterRowButton::setState(State state, bool force) {
 	update();
 }
 
+void FilterRowButton::updateButtonsGeometry(QSize size) {
+	const auto right = st::contactsPadding.right()
+		+ st::contactsCheckPosition.x();
+	const auto width = size.width();
+	const auto height = size.height();
+	_restore.moveToRight(right, (height - _restore.height()) / 2, width);
+	_add.moveToRight(right, (height - _add.height()) / 2, width);
+	const auto skipped = right - st::stickersRemoveSkip;
+	_remove.moveToRight(skipped, (height - _remove.height()) / 2, width);
+	_visibility.moveToRight(
+		skipped + _remove.width() + st::stickersRemoveSkip,
+		(height - _visibility.height()) / 2,
+		width);
+}
+
 void FilterRowButton::setup(
 		const Data::ChatFilter &filter,
 		const QString &status) {
@@ -267,27 +296,18 @@ void FilterRowButton::setup(
 	setState(_state, true);
 
 	sizeValue() | rpl::on_next([=](QSize size) {
-		const auto right = st::contactsPadding.right()
-			+ st::contactsCheckPosition.x();
-		const auto width = size.width();
-		const auto height = size.height();
-		_restore.moveToRight(right, (height - _restore.height()) / 2, width);
-		_add.moveToRight(right, (height - _add.height()) / 2, width);
-		const auto skipped = right - st::stickersRemoveSkip;
-		_remove.moveToRight(skipped, (height - _remove.height()) / 2, width);
-		_show.moveToRight(right, (height - _show.height()) / 2, width);
-		_hide.moveToRight(
-			skipped + _remove.width() + st::stickersRemoveSkip,
-			(height - _hide.height()) / 2,
-			width);
+		updateButtonsGeometry(size);
+	}, lifetime());
+	_visibility.widthValue() | rpl::on_next([=] {
+		updateButtonsGeometry(size());
+		update();
 	}, lifetime());
 }
 
 void FilterRowButton::updateButtonsVisibility() {
 	_remove.setVisible(_state == State::Normal);
 	_restore.setVisible(_state == State::Removed);
-	_show.setVisible(_state == State::Normal && _canHide && _hidden);
-	_hide.setVisible(_state == State::Normal && _canHide && !_hidden);
+	_visibility.setVisible(_state == State::Normal && _canHide);
 	_add.setVisible(_state == State::Suggested);
 }
 
@@ -299,12 +319,8 @@ rpl::producer<> FilterRowButton::restoreRequests() const {
 	return _restore.clicks() | rpl::to_empty;
 }
 
-rpl::producer<> FilterRowButton::hideRequests() const {
-	return _hide.clicks() | rpl::to_empty;
-}
-
-rpl::producer<> FilterRowButton::showRequests() const {
-	return _show.clicks() | rpl::to_empty;
+rpl::producer<> FilterRowButton::visibilityToggleRequests() const {
+	return _visibility.clicks() | rpl::to_empty;
 }
 
 rpl::producer<> FilterRowButton::addRequests() const {
@@ -332,8 +348,9 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 			p.setPen(Qt::NoPen);
 			p.setBrush(Ui::EmptyUserpic::UserpicColor(*_colorIndex).color2);
 			const auto w = height() / 3;
+			const auto anchorX = _canHide ? _visibility.x() : _remove.x();
 			const auto rect = QRect(
-				_remove.x() - w - st::contactsCheckPosition.x(),
+				anchorX - w - st::contactsCheckPosition.x(),
 				(height() - w) / 2,
 				w,
 				w);
@@ -351,8 +368,7 @@ void FilterRowButton::paintEvent(QPaintEvent *e) {
 		_add.x(),
 		_remove.x(),
 		_restore.x(),
-		_show.x(),
-		_hide.x(),
+		_canHide ? _visibility.x() : _remove.x(),
 	});
 	const auto availableWidth = buttonsLeft - left;
 
@@ -418,23 +434,26 @@ void SetupFilterRowButton(
 		button->setRemoved(false);
 		find(button)->removed = false;
 	}, button->lifetime());
-	button->hideRequests(
+	button->visibilityToggleRequests(
 	) | rpl::on_next([=] {
 		const auto row = find(button);
-		Ui::SetChatFilterTabHidden(
-			&controller->session(),
-			row->filter.id(),
-			true);
-		button->setHidden(true);
-	}, button->lifetime());
-	button->showRequests(
-	) | rpl::on_next([=] {
-		const auto row = find(button);
-		Ui::SetChatFilterTabHidden(
-			&controller->session(),
-			row->filter.id(),
-			false);
-		button->setHidden(false);
+		const auto session = &controller->session();
+		const auto current = Ui::GetChatFilterTabVisibility(
+			session,
+			row->filter.id());
+		const auto next = [&] {
+			switch (current) {
+			case Ui::ChatFilterTabVisibility::Show:
+				return Ui::ChatFilterTabVisibility::ShowWithoutBadge;
+			case Ui::ChatFilterTabVisibility::ShowWithoutBadge:
+				return Ui::ChatFilterTabVisibility::Hidden;
+			case Ui::ChatFilterTabVisibility::Hidden:
+				return Ui::ChatFilterTabVisibility::Show;
+			}
+			return Ui::ChatFilterTabVisibility::Show;
+		}();
+		Ui::SetChatFilterTabVisibility(session, row->filter.id(), next);
+		button->setVisibility(next);
 	}, button->lifetime());
 	button->setClickedCallback([=] {
 		const auto found = find(button);

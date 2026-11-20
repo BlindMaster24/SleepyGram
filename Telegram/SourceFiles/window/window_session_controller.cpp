@@ -4465,25 +4465,26 @@ bool CheckAndJumpToNearChatsFilter(
 	const auto id = controller->activeChatsFilterCurrent();
 	const auto session = &controller->session();
 	const auto list = &session->data().chatsFilters().list();
-	const auto index = int(ranges::find(
-		*list,
-		id,
-		&Data::ChatFilter::id
-	) - begin(*list));
-	if (index == list->size() && id != 0) {
+	const auto visibleIds = Ui::VisibleChatFilterTabIds(session);
+	const auto index = int(ranges::find(visibleIds, id) - begin(visibleIds));
+	if (index == int(visibleIds.size()) && id != 0) {
 		return false;
 	}
 	const auto changed = index + (isNext ? 1 : -1);
-	if (changed >= int(list->size()) || changed < 0) {
+	if (changed >= int(visibleIds.size()) || changed < 0) {
 		return false;
 	}
-	if (changed > Data::PremiumLimits(session).dialogFiltersCurrent()) {
+	const auto targetId = visibleIds[changed];
+	const auto rawIndex = int(ranges::find(
+		*list,
+		targetId,
+		&Data::ChatFilter::id
+	) - begin(*list));
+	if (rawIndex > Data::PremiumLimits(session).dialogFiltersCurrent()) {
 		return false;
 	}
 	if (jump) {
-		controller->setActiveChatsFilter((changed >= 0)
-			? (*list)[changed].id()
-			: 0);
+		controller->setActiveChatsFilter(targetId);
 	}
 	return true;
 }

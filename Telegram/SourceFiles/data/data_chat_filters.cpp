@@ -21,6 +21,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "history/history_unread_things.h"
 #include "ui/ui_utility.h"
 #include "ui/chat/more_chats_bar.h"
+#include "ui/widgets/chat_filters_tabs_visibility.h"
 #include "main/main_session.h"
 #include "main/main_app_config.h"
 #include "apiwrap.h"
@@ -743,6 +744,7 @@ void ChatFilters::applyRemove(int position) {
 	const auto i = begin(_list) + position;
 	auto filter = std::move(*i);
 	_list.erase(i);
+	Ui::ClearChatFilterTabVisibility(&_owner->session(), filter.id());
 	applyChange(filter, ChatFilter(filter.id(), {}, {}, {}, {}, {}, {}, {}));
 }
 
