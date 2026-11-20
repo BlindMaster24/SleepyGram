@@ -1652,6 +1652,23 @@ void SetupMessages(
 		Core::App().saveSettingsDelayed();
 	}, inner->lifetime());
 
+	const auto hideContactSignUp = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_hide_contact_signup_chats(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kHideContactSignUpChatsKey,
+				false),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	hideContactSignUp->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kHideContactSignUpChatsKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
 
 	const auto groupQuick = std::make_shared<Ui::RadioenumGroup<Quick>>(

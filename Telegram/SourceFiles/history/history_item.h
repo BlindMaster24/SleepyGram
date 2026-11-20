@@ -405,6 +405,9 @@ public:
 	[[nodiscard]] bool needCheck() const;
 
 	[[nodiscard]] bool isService() const;
+	[[nodiscard]] bool isContactSignUp() const {
+		return (_flags & MessageFlag::IsContactSignUp) != 0;
+	}
 	void applyEdition(HistoryMessageEdition &&edition);
 	void applyChanges(not_null<Data::Story*> story);
 

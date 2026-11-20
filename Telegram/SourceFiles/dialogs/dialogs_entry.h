@@ -125,6 +125,14 @@ public:
 	[[nodiscard]] bool isPinnedDialog(FilterId filterId) const {
 		return lookupPinnedIndex(filterId) != 0;
 	}
+	[[nodiscard]] bool isPinnedInAnyFilter() const {
+		for (const auto &[filterId, index] : _pinnedIndex) {
+			if (index != 0) {
+				return true;
+			}
+		}
+		return false;
+	}
 	void cachePinnedIndex(FilterId filterId, int index);
 	[[nodiscard]] uint64 sortKeyInChatList(FilterId filterId) const {
 		return filterId

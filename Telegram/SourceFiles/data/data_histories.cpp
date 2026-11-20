@@ -197,6 +197,20 @@ void Histories::refreshGhostReadPresentation() {
 	}
 }
 
+void Histories::refreshContactSignUpExistence() {
+	auto histories = std::vector<not_null<History*>>();
+	histories.reserve(_map.size());
+	for (const auto &entry : _map) {
+		histories.push_back(entry.second.get());
+	}
+	for (const auto &history : histories) {
+		history->updateChatListExistence();
+		if (history->shouldBeInChatList()) {
+			history->updateChatListSortPosition();
+		}
+	}
+}
+
 void Histories::readInbox(not_null<History*> history) {
 	DEBUG_LOG(("Reading: readInbox called."));
 	if (history->lastServerMessageKnown()) {

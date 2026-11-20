@@ -80,6 +80,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "payments/payments_checkout_process.h"
 #include "core/crash_reports.h"
 #include "core/application.h"
+#include "core/core_settings.h"
 #include "base/options.h"
 #include "base/unixtime.h"
 #include "base/qt/qt_common_adapters.h"
@@ -3214,6 +3215,9 @@ void History::setLastMessage(HistoryItem *item) {
 	if (_lastMessage && *_lastMessage == item) {
 		return;
 	}
+	const auto wasContactSignUp = _lastMessage
+		&& *_lastMessage
+		&& (*_lastMessage)->isContactSignUp();
 	_lastMessage = item;
 	if (!item || item->isRegular()) {
 		_lastServerMessage = item;
@@ -3227,6 +3231,12 @@ void History::setLastMessage(HistoryItem *item) {
 		setChatListMessageFromLast();
 		if (!chatListMessageKnown()) {
 			setFakeChatListMessage();
+		}
+	}
+	if (wasContactSignUp || (item && item->isContactSignUp())) {
+		updateChatListExistence();
+		if (shouldBeInChatList()) {
+			updateChatListSortPosition();
 		}
 	}
 }
@@ -3546,11 +3556,38 @@ bool History::shouldBeInChatList() const {
 	}
 	const auto last = lastMessage();
 	return !lastMessageKnown()
-		|| (last != nullptr && !isNewPeerMessage(last));
+		|| (last != nullptr
+			&& !isNewPeerMessage(last)
+			&& !isEmptyContactSignUpChat());
 }
 
 bool History::isNewPeerMessage(not_null<HistoryItem*> item) const {
 	return (item == _newPeerPhotoChange) || (item == _newPeerNameChange);
+}
+
+bool History::isEmptyContactSignUpChat() const {
+	if (!Core::App().settings().readPref<bool>(
+			Core::kHideContactSignUpChatsKey,
+			false)) {
+		return false;
+	} else if (!peer->isUser() || isPinnedInAnyFilter()) {
+		return false;
+	} else if (localDraft(MsgId(), PeerId()) || cloudDraft(MsgId(), PeerId())) {
+		return false;
+	}
+	const auto last = lastMessage();
+	if (!last || !last->isContactSignUp()) {
+		return false;
+	}
+	for (const auto &block : blocks) {
+		for (const auto &view : block->messages) {
+			const auto item = view->data();
+			if (!item->isContactSignUp() && !isNewPeerMessage(item)) {
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 void History::unknownMessageDeleted(MsgId messageId) {

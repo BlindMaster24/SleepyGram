@@ -416,6 +416,12 @@ Session::Session(not_null<Main::Session*> session)
 		refreshChatListUnreadOnTop();
 	}, _lifetime);
 
+	Core::App().settings().prefChanges(
+		Core::kHideContactSignUpChatsKey
+	) | rpl::on_next([=] {
+		_histories->refreshContactSignUpExistence();
+	}, _lifetime);
+
 	_chatsFilters->changed(
 	) | rpl::on_next([=] {
 		const auto enabled = _chatsFilters->has();

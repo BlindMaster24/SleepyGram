@@ -740,6 +740,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_settings_chat_quick_action_none" = "Do nothing on double click";
 "lng_settings_disable_link_previews_by_default" = "Disable link previews by default";
 "lng_settings_show_current_account_in_compose" = "Show current account in the message composer";
+"lng_settings_hide_contact_signup_chats" = "Hide empty \"Contact joined Telegram\" chats";
 "lng_compose_current_account_marker" = "Current account: {name}";
 "lng_settings_copy_monospace_on_click" = "Copy monospace text on click";
 "lng_settings_chat_corner_reply" = "Reply button on messages";

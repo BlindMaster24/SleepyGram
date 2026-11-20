@@ -47,6 +47,8 @@ inline constexpr std::string_view kDisableLinkPreviewsByDefaultKey
 	= "disable-link-previews-by-default";
 inline constexpr std::string_view kShowCurrentAccountInComposeKey
 	= "show-current-account-in-compose";
+inline constexpr std::string_view kHideContactSignUpChatsKey
+	= "hide-contact-signup-chats";
 
 struct WindowPosition {
 	int32 moncrc = 0;
