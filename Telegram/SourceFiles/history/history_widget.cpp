@@ -1360,7 +1360,12 @@ HistoryWidget::HistoryWidget(
 		st::historyAccountMarker,
 		Ui::PeerUserpicShape::Circle);
 	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
-	session().domain().accountsChanges() | rpl::on_next([=] {
+	_accountMarker->hide();
+	rpl::merge(
+		session().domain().accountsChanges(),
+		Core::App().settings().prefChanges(
+			Core::kShowCurrentAccountInComposeKey)
+	) | rpl::on_next([=] {
 		updateAccountMarker();
 		updateControlsGeometry();
 	}, lifetime());
@@ -1593,6 +1598,7 @@ void HistoryWidget::initVoiceRecordBar() {
 		updateAiButtonVisibility();
 		updateSendAsFileVisibility();
 		updateExpandButtonVisibility();
+		updateAccountMarker();
 		if (_stash) {
 			_stash->updateButton();
 		}
@@ -4408,12 +4414,15 @@ void HistoryWidget::updateAccountMarker() {
 	}
 	const auto show = _history
 		&& !_showAnimation
+		&& (!_voiceRecordBar || !_voiceRecordBar->isActive())
 		&& (!_field->isHidden() || !_richDraftPreview->isHidden())
 		&& Core::App().settings().readPref<bool>(
 			Core::kShowCurrentAccountInComposeKey,
 			true)
 		&& session().domain().accountsAuthedCount() >= 2;
-	_accountMarker->setVisible(show);
+	if (_accountMarker->isHidden() == show) {
+		_accountMarker->setVisible(show);
+	}
 	if (!show) {
 		return;
 	}
@@ -4851,6 +4860,7 @@ void HistoryWidget::updateControlsVisibility() {
 	updateSendAsFileVisibility();
 	updateExpandButtonVisibility();
 	updateDiscardRichDraftVisibility();
+	updateAccountMarker();
 	updateMouseTracking();
 }
 

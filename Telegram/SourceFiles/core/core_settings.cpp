@@ -1498,12 +1498,22 @@ void Settings::addFromSerialized(
 }
 
 void Settings::clearPref(std::string_view key) {
-	const auto i = _prefs.find(QByteArray(key.data(), key.size()));
+	const auto raw = QByteArray(key.data(), key.size());
+	const auto i = _prefs.find(raw);
 	if (i == end(_prefs)) {
 		return;
 	}
 	_prefs.erase(i);
+	_prefChanges.fire_copy(raw);
 	_saveDelayed.fire({});
+}
+
+rpl::producer<> Settings::prefChanges(std::string_view key) const {
+	auto target = QByteArray(key.data(), key.size());
+	return _prefChanges.events(
+	) | rpl::filter([target = std::move(target)](const QByteArray &changed) {
+		return changed == target;
+	}) | rpl::to_empty;
 }
 
 void Settings::writePrefGeneric(
@@ -1518,6 +1528,7 @@ void Settings::writePrefGeneric(
 	} else {
 		_prefs.emplace(raw, value);
 	}
+	_prefChanges.fire_copy(raw);
 	_saveDelayed.fire({});
 }
 
@@ -1566,6 +1577,22 @@ void Settings::writePrefImpl<QByteArray>(
 		std::string_view key,
 		QByteArray value) {
 	writePrefGeneric(key, value);
+}
+
+template <>
+std::optional<QString> Settings::readPrefImpl<QString>(
+		std::string_view key) {
+	if (const auto data = readPrefGeneric(key)) {
+		return QString::fromUtf8(*data);
+	}
+	return {};
+}
+
+template <>
+void Settings::writePrefImpl<QString>(
+		std::string_view key,
+		QString value) {
+	writePrefGeneric(key, value.toUtf8());
 }
 
 QString Settings::getSoundPath(const QString &key) const {

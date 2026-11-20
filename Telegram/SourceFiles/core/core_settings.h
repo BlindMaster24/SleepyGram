@@ -1058,6 +1058,7 @@ public:
 		return readPrefImpl<Type>(key).value_or(
 			std::forward<Other>(fallback));
 	}
+	[[nodiscard]] rpl::producer<> prefChanges(std::string_view key) const;
 
 	void resetOnLastLogout();
 
@@ -1207,6 +1208,7 @@ private:
 	rpl::variable<Ui::ChatsFiltersTabsMode> _chatFiltersTabsMode
 		= Ui::ChatsFiltersTabsMode::Default;
 	base::flat_map<QByteArray, QByteArray> _prefs;
+	rpl::event_stream<QByteArray> _prefChanges;
 
 	rpl::event_stream<> _saveDelayed;
 	float64 _rememberedSongVolume = kDefaultVolume;

@@ -1464,7 +1464,11 @@ ComposeControls::ComposeControls(
 		Ui::PeerUserpicShape::Circle);
 	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_accountMarker->hide();
-	session().domain().accountsChanges() | rpl::on_next([=] {
+	rpl::merge(
+		session().domain().accountsChanges(),
+		Core::App().settings().prefChanges(
+			Core::kShowCurrentAccountInComposeKey)
+	) | rpl::on_next([=] {
 		updateAccountMarker();
 		updateControlsGeometry(_wrap->size());
 	}, _wrap->lifetime());
@@ -3173,11 +3177,15 @@ void ComposeControls::updateAccountMarker() {
 	if (!_accountMarker) {
 		return;
 	}
-	const auto show = Core::App().settings().readPref<bool>(
-		Core::kShowCurrentAccountInComposeKey,
-		true)
+	const auto show = _history
+		&& (!_voiceRecordBar || !_voiceRecordBar->isActive())
+		&& Core::App().settings().readPref<bool>(
+			Core::kShowCurrentAccountInComposeKey,
+			true)
 		&& session().domain().accountsAuthedCount() >= 2;
-	_accountMarker->setVisible(show);
+	if (_accountMarker->isHidden() == show) {
+		_accountMarker->setVisible(show);
+	}
 	if (!show) {
 		return;
 	}
@@ -4608,6 +4616,7 @@ void ComposeControls::initVoiceRecordBar() {
 		updateAiButtonVisibility();
 		updateSendAsFileVisibility();
 		updateExpandButtonVisibility();
+		updateAccountMarker();
 	}, _recordingStateLifetime);
 
 	_voiceRecordBar->setStartRecordingFilter([=] {
