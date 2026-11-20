@@ -2082,6 +2082,7 @@ void Filler::fillHistoryActions() {
 	addInfo();
 	AyuUi::AddJumpToBeginningAction(_peer, _thread, _controller, _addAction);
 	AyuUi::AddOpenChannelAction(_peer, _controller, _addAction);
+	AyuUi::AddOpenInNewWindowAction(_peer, _thread, _controller, _addAction);
 	addViewAsTopics();
 	addManageChat();
 	addStoryArchive();
@@ -2125,6 +2126,7 @@ void Filler::fillProfileActions() {
 	addManageTopic();
 	addToggleTopicClosed();
 	AyuUi::AddOpenChannelAction(_peer, _controller, _addAction);
+	AyuUi::AddOpenInNewWindowAction(_peer, _thread, _controller, _addAction);
 	AyuUi::AddShadowBanAction(_peer, _addAction);
 	addViewDiscussion();
 	addDirectMessages();

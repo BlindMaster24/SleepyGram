@@ -36,6 +36,15 @@ void AddShadowBanAction(PeerData *peerData,
 void AddOpenChannelAction(PeerData *peerData,
 						  not_null<Window::SessionController*> sessionController,
 						  const Window::PeerMenuCallback &addCallback);
+void AddOpenInNewWindowAction(
+	PeerData *peerData,
+	Data::Thread *thread,
+	not_null<Window::SessionController*> sessionController,
+	const Window::PeerMenuCallback &addCallback);
+void AddOpenLinkInNewWindowAction(
+	not_null<Ui::PopupMenu*> menu,
+	const ClickHandlerPtr &link,
+	not_null<Window::SessionController*> controller);
 void AddDeleteOwnMessagesAction(PeerData *peerData,
 								Data::ForumTopic *topic,
 								not_null<Window::SessionController*> sessionController,

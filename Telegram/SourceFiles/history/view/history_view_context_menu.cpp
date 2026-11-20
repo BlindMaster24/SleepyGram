@@ -2057,6 +2057,7 @@ void FillContextMenuItems(
 		|| !list->hasCopyRestriction(view ? view->data().get() : item)) {
 		AddCopyLinkAction(result, link);
 	}
+	AyuUi::AddOpenLinkInNewWindowAction(result, link, list->controller());
 	AddMessageActions(result, request, list);
 
 	const auto wasAmount = result->actions().size();

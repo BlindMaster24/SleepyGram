@@ -27,6 +27,8 @@
 #include "base/call_delayed.h"
 #include "base/random.h"
 #include "base/unixtime.h"
+#include "core/click_handler_types.h"
+#include "core/local_url_handlers.h"
 #include "core/mime_type.h"
 #include "data/data_channel.h"
 #include "data/data_chat.h"
@@ -45,10 +47,13 @@
 #include "styles/style_layers.h"
 #include "styles/style_menu_icons.h"
 #include "ui/boxes/confirm_box.h"
+#include "ui/delayed_activation.h"
 #include "ui/widgets/popup_menu.h"
 #include "ui/widgets/menu/menu_add_action_callback_factory.h"
 #include "window/window_peer_menu.h"
+#include "window/window_separate_id.h"
 #include "window/window_session_controller.h"
+#include "window/window_session_controller_link_info.h"
 
 namespace AyuUi {
 
@@ -493,6 +498,102 @@ void AddOpenChannelAction(PeerData *peerData,
 			sessionController->showPeerHistory(chat, Window::SectionShow::Way::Forward);
 		},
 		&st::menuIconChannel);
+}
+
+void AddOpenInNewWindowAction(
+		PeerData *peerData,
+		Data::Thread *thread,
+		not_null<Window::SessionController*> sessionController,
+		const Window::PeerMenuCallback &addCallback) {
+	if (!peerData) {
+		return;
+	}
+	const auto targetThread = thread
+		? not_null<Data::Thread*>(thread)
+		: peerData->owner().history(peerData);
+	const auto channel = peerData->asChannel();
+	const auto separateId = (channel && channel->isCommunity())
+		? Window::SeparateId(
+			Window::SeparateType::Community,
+			channel->owner().history(channel))
+		: (!targetThread->asTopic()
+			&& peerData->isForum()
+			&& !peerData->useSubsectionTabs())
+		? Window::SeparateId(Window::SeparateType::Forum, targetThread)
+		: Window::SeparateId(Window::SeparateType::Chat, targetThread);
+	if (sessionController->windowId() == separateId
+		|| !Window::CanShowSeparateWindow(separateId)) {
+		return;
+	}
+	const auto weak = base::make_weak(targetThread);
+	addCallback(
+		tr::lng_context_new_window(tr::now),
+		[=] {
+			Ui::PreventDelayedActivation();
+			if (const auto strong = weak.get()) {
+				const auto id = (channel && channel->isCommunity())
+					? Window::SeparateId(
+						Window::SeparateType::Community,
+						channel->owner().history(channel))
+					: (!strong->asTopic()
+						&& peerData->isForum()
+						&& !peerData->useSubsectionTabs())
+					? Window::SeparateId(Window::SeparateType::Forum, strong)
+					: Window::SeparateId(Window::SeparateType::Chat, strong);
+				sessionController->showInNewWindow(id);
+			}
+		},
+		&st::menuIconNewWindow);
+}
+
+void AddOpenLinkInNewWindowAction(
+		not_null<Ui::PopupMenu*> menu,
+		const ClickHandlerPtr &link,
+		not_null<Window::SessionController*> controller) {
+	if (!link) {
+		return;
+	}
+	if (const auto mention = dynamic_cast<const MentionClickHandler*>(
+			link.get())) {
+		const auto tag = mention->dragText();
+		if (tag.size() <= 1 || !tag.startsWith('@')) {
+			return;
+		}
+		const auto username = tag.mid(1);
+		menu->addAction(tr::lng_context_new_window(tr::now), [=] {
+			Ui::PreventDelayedActivation();
+			controller->showPeerByLink(Window::PeerByLinkInfo{
+				.usernameOrId = username,
+				.resolveType = Window::ResolveType::Mention,
+				.historyInNewWindow = true,
+			});
+		}, &st::menuIconNewWindow);
+		return;
+	}
+	if (!dynamic_cast<const UrlClickHandler*>(link.get())) {
+		return;
+	}
+	const auto rawUrl = link->copyToClipboardText();
+	if (rawUrl.isEmpty()) {
+		return;
+	}
+	auto local = Core::TryConvertUrlToLocal(rawUrl);
+	if (!local.startsWith(u"tg://resolve?"_q)
+		|| local.contains(u"story="_q)
+		|| local.contains(u"startapp="_q)
+		|| local.contains(u"boost"_q)
+		|| local.contains(u"tdesktop_target="_q)) {
+		return;
+	}
+	local += u"&tdesktop_target=blank"_q;
+	menu->addAction(tr::lng_context_new_window(tr::now), [=] {
+		Ui::PreventDelayedActivation();
+		UrlClickHandler::Open(
+			local,
+			QVariant::fromValue(ClickHandlerContext{
+				.sessionWindow = base::make_weak(controller),
+			}));
+	}, &st::menuIconNewWindow);
 }
 
 void AddShadowBanAction(PeerData *peerData,

@@ -4161,6 +4161,7 @@ void HistoryInner::showContextMenu(QContextMenuEvent *e, bool showFromTouch) {
 					QGuiApplication::clipboard()->setText(text);
 				},
 				&st::menuIconCopy);
+			AyuUi::AddOpenLinkInNewWindowAction(_menu, link, _controller);
 		} else if (item
 			&& item->hasDirectLink()
 			&& isUponSelected != 2
