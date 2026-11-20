@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "data/data_folder.h"
 
+#include "ayu/ayu_settings.h"
 #include "data/data_session.h"
 #include "data/data_channel.h"
 #include "data/data_histories.h"
@@ -386,7 +387,9 @@ int Folder::fixedOnTopIndex() const {
 }
 
 bool Folder::shouldBeInChatList() const {
-	return !_chatsList.empty() || (_storiesCount > 0);
+	const auto hasStories = !AyuSettings::getInstance().disableStories()
+		&& (_storiesCount > 0);
+	return !_chatsList.empty() || hasStories;
 }
 
 Dialogs::UnreadState Folder::chatListUnreadState() const {

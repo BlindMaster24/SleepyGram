@@ -4233,6 +4233,9 @@ void SessionController::openPeerStories(
 		std::optional<Data::StorySourcesList> list,
 		bool onlyLive,
 		bool afterReload) {
+	if (!onlyLive && AyuSettings::getInstance().disableStories()) {
+		return;
+	}
 	using namespace Media::View;
 	using namespace Data;
 

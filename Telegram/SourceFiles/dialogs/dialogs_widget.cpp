@@ -319,7 +319,8 @@ Widget::Widget(
 , _chatsFilterForTopBarSuggestion(controller->activeChatsFilterCurrent())
 , _scroll(this)
 , _scrollToTop(_scroll, st::dialogsToUp)
-, _stories((_layout != Layout::Child)
+, _stories((_layout != Layout::Child
+	&& !AyuSettings::getInstance().disableStories())
 	? std::make_unique<Stories::List>(
 		this,
 		st::dialogsStoriesList,
@@ -1063,7 +1064,7 @@ void Widget::chosenRow(const ChosenRow &row) {
 			hideChildList();
 		}
 	} else if (const auto folder = row.key.folder()) {
-		if (row.userpicClick) {
+		if (row.userpicClick && !AyuSettings::getInstance().disableStories()) {
 			const auto list = Data::StorySourcesList::Hidden;
 			const auto &sources = session().data().stories().sources(list);
 			if (!sources.empty()) {

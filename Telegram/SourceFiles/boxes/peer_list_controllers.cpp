@@ -9,6 +9,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "api/api_chat_participants.h"
 #include "api/api_premium.h" // MessageMoneyRestriction.
+#include "ayu/ayu_settings.h"
 #include "base/random.h"
 #include "boxes/filters/edit_filter_chats_list.h"
 #include "settings/settings_common.h"
@@ -538,6 +539,9 @@ void PeerListStories::updateFor(uint64 id, Counts counts) {
 }
 
 void PeerListStories::process(not_null<PeerListRow*> row) {
+	if (AyuSettings::getInstance().disableStories()) {
+		return;
+	}
 	const auto user = row->peer()->asUser();
 	if (!user) {
 		return;

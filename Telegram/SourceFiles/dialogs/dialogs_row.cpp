@@ -759,7 +759,9 @@ void Row::paintUserpic(
 	const auto storiesPeer = settings.disableStories() ? nullptr : peer
 		? ((peer->isUser() || peer->isChannel()) ? peer : nullptr)
 		: nullptr;
-	const auto storiesFolder = peer ? nullptr : _id.folder();
+	const auto storiesFolder = (settings.disableStories() || peer)
+		? nullptr
+		: _id.folder();
 	const auto storiesHas = storiesPeer
 		? storiesPeer->hasActiveStories()
 		: storiesFolder

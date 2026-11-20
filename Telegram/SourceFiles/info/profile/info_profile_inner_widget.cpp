@@ -289,7 +289,9 @@ object_ptr<Ui::RpWidget> InnerWidget::setupContent(
 			tabs.push_back(MakeChatsTabDescriptor());
 		}
 		if (!_topic && !_savedMessages) {
-			tabs.push_back(MakeStoriesTabDescriptor(tabsPeer));
+			if (!AyuSettings::getInstance().disableStories()) {
+				tabs.push_back(MakeStoriesTabDescriptor(tabsPeer));
+			}
 			if (!_sublist) {
 				tabs.push_back(MakeGiftsTabDescriptor(_peer));
 			}

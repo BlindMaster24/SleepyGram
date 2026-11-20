@@ -116,6 +116,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/ayu_settings.h"
 #include "ayu/ui/ayu_userpic.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
@@ -634,7 +635,9 @@ InnerWidget::InnerWidget(
 		processGlobalForceClick(globalPosition);
 	}, lifetime());
 
-	session().data().stories().incrementPreloadingMainSources();
+	if (!AyuSettings::getInstance().disableStories()) {
+		session().data().stories().incrementPreloadingMainSources();
+	}
 
 	handleChatListEntryRefreshes();
 

@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_peer_photo.h"
 #include "api/api_user_privacy.h"
 #include "apiwrap.h"
+#include "ayu/ayu_settings.h"
 #include "base/call_delayed.h"
 #include "base/timer_rpl.h"
 #include "base/timer.h"
@@ -3814,10 +3815,14 @@ void TopBar::updateStoryOutline(std::optional<QColor> edgeColor) {
 		return;
 	}
 
-	const auto hasActiveStories = (_source == Source::Preview)
+	const auto storiesDisabled = (_source != Source::Preview)
+		&& AyuSettings::getInstance().disableStories();
+	const auto hasActiveStories = storiesDisabled
+		? false
+		: (_source == Source::Preview)
 		? true
 		: (user ? user->hasActiveStories() : channel->hasActiveStories());
-	const auto hasLiveStories = (_source == Source::Preview)
+	const auto hasLiveStories = (storiesDisabled || _source == Source::Preview)
 		? false
 		: (user ? user->hasActiveVideoStream() : false);
 

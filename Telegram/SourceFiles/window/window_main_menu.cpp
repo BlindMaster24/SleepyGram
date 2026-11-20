@@ -518,8 +518,10 @@ void MainMenu::setupArchive() {
 	};
 	const auto checkArchive = [=] {
 		const auto f = folder();
+		const auto hasStories = !AyuSettings::getInstance().disableStories()
+			&& (f && f->storiesCount() > 0);
 		return f
-			&& (!f->chatsList()->empty() || f->storiesCount() > 0)
+			&& (!f->chatsList()->empty() || hasStories)
 			&& controller->session().settings().archiveInMainMenu();
 	};
 
