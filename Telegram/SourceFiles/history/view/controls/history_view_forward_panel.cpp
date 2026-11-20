@@ -7,6 +7,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/controls/history_view_forward_panel.h"
 
+#include "ayu/features/forward/forward_prefs.h"
+
 #include "history/history.h"
 #include "history/history_item.h"
 #include "history/history_item_helpers.h"
@@ -158,7 +160,9 @@ void ForwardPanel::updateTexts() {
 			}
 		}
 		if (!keepNames || HasOnlyDroppedForwardedInfo(_data.items)) {
-			from = tr::lng_forward_sender_names_removed(tr::now);
+			from = (!keepCaptions && ItemsForwardCaptionsCount(_data.items) > 0)
+				? tr::lng_forward_sender_and_captions_removed(tr::now)
+				: tr::lng_forward_sender_names_removed(tr::now);
 		} else if (names.size() > 2) {
 			from = tr::lng_forwarding_from(
 				tr::now,
@@ -235,6 +239,7 @@ void ForwardPanel::applyOptions(Data::ForwardOptions options) {
 	if (_data.items.empty()) {
 		return;
 	}
+	Ayu::ForwardPrefs::RememberLast(&_to->session(), options);
 	options = NormalizeForwardOptions(&_to->session(), _data.items, options);
 	if (_data.options != options) {
 		const auto topicRootId = _to->topicRootId();

@@ -53,6 +53,8 @@ inline constexpr std::string_view kConfirmFilesToWorkChatsKey
 	= "confirm-files-to-work-chats";
 inline constexpr std::string_view kConfirmForwardsToWorkChatsKey
 	= "confirm-forwards-to-work-chats";
+inline constexpr std::string_view kRememberForwardModeKey
+	= "remember-forward-mode";
 
 struct WindowPosition {
 	int32 moncrc = 0;

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/share_box.h"
 
+#include "ayu/features/forward/forward_prefs.h"
 #include "ayu/features/send_guard/send_guard.h"
 #include "api/api_premium.h"
 #include "base/call_delayed.h"
@@ -588,7 +589,15 @@ void ShareBox::showMenu(not_null<Ui::RpWidget*> parent) {
 		Ui::FillForwardOptions(
 			std::move(createView),
 			_forwardOptions,
-			[=](Ui::ForwardOptions value) { _forwardOptions = value; },
+			[=](Ui::ForwardOptions value) {
+				_forwardOptions = value;
+				const auto opts = (value.captionsCount && value.dropCaptions)
+					? Data::ForwardOptions::NoNamesAndCaptions
+					: value.dropNames
+					? Data::ForwardOptions::NoSenderNames
+					: Data::ForwardOptions::PreserveInfo;
+				Ayu::ForwardPrefs::RememberLast(_descriptor.session, opts);
+			},
 			_menu->lifetime());
 
 		_menu->addSeparator();
@@ -637,6 +646,15 @@ void ShareBox::createButtons() {
 			= _descriptor.forwardOptions.sendersCount;
 		_forwardOptions.captionsCount
 			= _descriptor.forwardOptions.captionsCount;
+		if (_descriptor.forwardOptions.show) {
+			const auto preset = Ayu::ForwardPrefs::ResolveForSession(
+				_descriptor.session);
+			_forwardOptions.dropNames
+				= (preset != Data::ForwardOptions::PreserveInfo);
+			_forwardOptions.dropCaptions
+				= (_forwardOptions.captionsCount > 0)
+				&& (preset == Data::ForwardOptions::NoNamesAndCaptions);
+		}
 
 		send->setAcceptBoth();
 		send->clicks(

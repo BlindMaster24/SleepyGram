@@ -1704,6 +1704,23 @@ void SetupMessages(
 		Core::App().saveSettingsDelayed();
 	}, inner->lifetime());
 
+	const auto rememberForwardMode = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_remember_forward_mode(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kRememberForwardModeKey,
+				true),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	rememberForwardMode->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kRememberForwardModeKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
 	inner->add(
 		object_ptr<Ui::SettingsButton>(
 			inner,

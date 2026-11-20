@@ -380,6 +380,8 @@ set(ayugram_files
         ayu/features/forward/ayu_forward.h
         ayu/features/forward/ayu_forward_rich.cpp
         ayu/features/forward/ayu_forward_rich.h
+        ayu/features/forward/forward_prefs.cpp
+        ayu/features/forward/forward_prefs.h
         ayu/features/forward/ayu_sync.cpp
         ayu/features/forward/ayu_sync.h
         ayu/features/offline_history/offline_history.cpp

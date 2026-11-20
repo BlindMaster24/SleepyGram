@@ -147,6 +147,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/features/forward/forward_prefs.h"
 #include "ayu/features/send_guard/send_guard.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
@@ -3726,6 +3727,11 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 			if (Ayu::ChatLock::IsChatLocked(&peer->session(), peer->id)) {
 				return false;
 			}
+			if (const auto preset = Ayu::ForwardPrefs::PeerPreset(
+					&peer->session(),
+					peer->id)) {
+				draft.options = *preset;
+			}
 			if (peer->isSelf()
 				&& !draft.ids.empty()
 				&& draft.ids.front().peer != peer->id) {
@@ -3954,6 +3960,9 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 				state->box->forwardOptions(),
 				[=](Ui::ForwardOptions o) {
 					state->box->setForwardOptions(o);
+					Ayu::ForwardPrefs::RememberLast(
+						session,
+						state->box->forwardOptionsData());
 				},
 				state->menu->lifetime());
 
@@ -4078,7 +4087,11 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 		Fn<void()> &&successCallback) {
 	return ShowForwardMessagesBox(
 		navigation,
-		Data::ForwardDraft{ .ids = std::move(items) },
+		Data::ForwardDraft{
+			.ids = std::move(items),
+			.options = Ayu::ForwardPrefs::ResolveForSession(
+				&navigation->session()),
+		},
 		std::move(successCallback));
 }
 

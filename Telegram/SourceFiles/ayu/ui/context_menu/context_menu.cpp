@@ -17,6 +17,7 @@
 #include "ayu/features/filters/filters_controller.h"
 #include "ayu/features/forward/ayu_forward.h"
 #include "ayu/features/forward/ayu_forward_rich.h"
+#include "ayu/features/forward/forward_prefs.h"
 #include "ayu/features/reply_later/reply_later.h"
 #include "ayu/features/send_guard/send_guard.h"
 #include "ayu/ui/context_menu/menu_item_subtext.h"
@@ -373,6 +374,61 @@ void AddAyuGramActions(PeerData *peerData,
 							!isWork);
 					},
 					&st::menuIconInfo);
+				const auto currentPreset = Ayu::ForwardPrefs::PeerPreset(
+					session,
+					peerData->id);
+				addAction({
+					.text = tr::lng_forward_preset_menu(tr::now),
+					.icon = &st::menuIconForward,
+					.fillSubmenu = [=](not_null<Ui::PopupMenu*> submenu) {
+						const auto mark = [&](bool selected, QString text) {
+							return selected ? (u"✓ "_q + text) : text;
+						};
+						submenu->addAction(
+							mark(
+								!currentPreset.has_value(),
+								tr::lng_forward_preset_default(tr::now)),
+							[=] {
+								Ayu::ForwardPrefs::SetPeerPreset(
+									session,
+									peerData->id,
+									std::nullopt);
+							});
+						submenu->addAction(
+							mark(
+								currentPreset
+									== Data::ForwardOptions::PreserveInfo,
+								tr::lng_forward_preset_preserve(tr::now)),
+							[=] {
+								Ayu::ForwardPrefs::SetPeerPreset(
+									session,
+									peerData->id,
+									Data::ForwardOptions::PreserveInfo);
+							});
+						submenu->addAction(
+							mark(
+								currentPreset
+									== Data::ForwardOptions::NoSenderNames,
+								tr::lng_forward_preset_no_sender(tr::now)),
+							[=] {
+								Ayu::ForwardPrefs::SetPeerPreset(
+									session,
+									peerData->id,
+									Data::ForwardOptions::NoSenderNames);
+							});
+						submenu->addAction(
+							mark(
+								currentPreset
+									== Data::ForwardOptions::NoNamesAndCaptions,
+								tr::lng_forward_preset_no_captions(tr::now)),
+							[=] {
+								Ayu::ForwardPrefs::SetPeerPreset(
+									session,
+									peerData->id,
+									Data::ForwardOptions::NoNamesAndCaptions);
+							});
+					},
+				});
 			}
 			if (!archiveLocked) addAction(
 				tr::ayu_ViewEditedMessagesMenuText(tr::now),

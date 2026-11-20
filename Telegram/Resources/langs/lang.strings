@@ -9715,3 +9715,11 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_send_guard_badge_about" = "Leave empty to use the account short name and default profile color.";
 "lng_settings_confirm_work_files" = "Confirm sending files to work chats";
 "lng_settings_confirm_work_forwards" = "Confirm forwarding to work chats";
+
+"lng_settings_remember_forward_mode" = "Remember forwarding options (sender & captions)";
+"lng_forward_sender_and_captions_removed" = "Sender names and captions hidden";
+"lng_forward_preset_menu" = "Forwarding preset for this chat";
+"lng_forward_preset_default" = "Account default";
+"lng_forward_preset_preserve" = "Show sender and captions";
+"lng_forward_preset_no_sender" = "Hide sender names";
+"lng_forward_preset_no_captions" = "Hide sender names and captions";
