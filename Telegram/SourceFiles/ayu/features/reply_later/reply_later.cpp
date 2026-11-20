@@ -7,9 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "ayu/features/reply_later/reply_later.h"
 
-#include "ayu/data/messages_storage.h"
 #include "ayu/features/chat_lock/chat_lock.h"
-#include "ayu/ui/message_history/history_section.h"
 #include "base/timer.h"
 #include "core/application.h"
 #include "data/data_forum_topic.h"
@@ -31,6 +29,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "ui/boxes/choose_date_time.h"
 #include "ui/layers/generic_box.h"
 #include "ui/text/text_utilities.h"
+#include "ui/toast/toast.h"
 #include "ui/vertical_list.h"
 #include "ui/widgets/buttons.h"
 #include "ui/widgets/labels.h"
@@ -150,6 +149,7 @@ void CheckDueReminders() {
 		if (!controller) {
 			continue;
 		}
+		const auto weakController = base::make_weak(controller);
 		if (due.size() > 1) {
 			const auto openLink = tr::link(
 				tr::semibold(tr::lng_reply_later_open(tr::now)));
@@ -163,7 +163,9 @@ void CheckDueReminders() {
 			controller->showToast(Ui::Toast::Config{
 				.text = text,
 				.filter = [=](const auto &...) {
-					ShowListBox(controller);
+					if (const auto strong = weakController.get()) {
+						ShowListBox(strong);
+					}
 					return false;
 				},
 				.duration = crl::time(8000),
@@ -193,7 +195,9 @@ void CheckDueReminders() {
 			controller->showToast(Ui::Toast::Config{
 				.text = std::move(text),
 				.filter = [=](const auto &...) {
-					OpenEntry(controller, entry);
+					if (const auto strong = weakController.get()) {
+						OpenEntry(strong, entry);
+					}
 					return false;
 				},
 				.duration = crl::time(8000),
@@ -384,16 +388,6 @@ void OpenEntry(
 			sublist,
 			msgId,
 			Window::SectionShow::Way::Forward);
-		return;
-	}
-	const auto existing = session->data().message(peerId, msgId);
-	if (!existing
-		&& !Ayu::ChatLock::IsChatLocked(session, peerId)
-		&& AyuMessages::hasDeletedMessages(peer, entry.topicRootId)) {
-		controller->showPeerHistory(
-			peerId,
-			Window::SectionShow::Way::Forward,
-			msgId);
 		return;
 	}
 	controller->showPeerHistory(

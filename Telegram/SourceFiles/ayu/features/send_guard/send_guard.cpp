@@ -205,7 +205,7 @@ void ConfirmIfNeeded(
 			lt_from,
 			from);
 	show->show(Ui::MakeConfirmBox({
-		.text = text,
+		.text = rpl::single(text),
 		.confirmed = [=](Fn<void()> close) {
 			close();
 			proceed();
@@ -250,7 +250,7 @@ void ConfirmManyIfNeeded(
 			lt_from,
 			from);
 	show->show(Ui::MakeConfirmBox({
-		.text = text,
+		.text = rpl::single(text),
 		.confirmed = [=](Fn<void()> close) {
 			close();
 			proceed();
