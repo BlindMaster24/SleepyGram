@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "settings/sections/settings_chat.h"
 
+#include "ayu/features/send_guard/send_guard.h"
 #include "settings/settings_common_session.h"
 
 #include "base/timer_rpl.h"
@@ -1668,6 +1669,49 @@ void SetupMessages(
 			checked);
 		Core::App().saveSettingsDelayed();
 	}, inner->lifetime());
+
+	const auto confirmWorkFiles = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_confirm_work_files(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kConfirmFilesToWorkChatsKey,
+				true),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	confirmWorkFiles->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kConfirmFilesToWorkChatsKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
+	const auto confirmWorkForwards = inner->add(
+		object_ptr<Ui::Checkbox>(
+			inner,
+			tr::lng_settings_confirm_work_forwards(tr::now),
+			Core::App().settings().readPref<bool>(
+				Core::kConfirmForwardsToWorkChatsKey,
+				true),
+			st::settingsCheckbox),
+		st::settingsCheckboxPadding);
+	confirmWorkForwards->checkedChanges(
+	) | rpl::on_next([=](bool checked) {
+		Core::App().settings().writePref<bool>(
+			Core::kConfirmForwardsToWorkChatsKey,
+			checked);
+		Core::App().saveSettingsDelayed();
+	}, inner->lifetime());
+
+	inner->add(
+		object_ptr<Ui::SettingsButton>(
+			inner,
+			tr::lng_send_guard_badge_button(),
+			st::settingsButtonNoIcon)
+	)->addClickHandler([=] {
+		Ayu::SendGuard::ShowAccountBadgeBox(controller);
+	});
 
 	Ui::AddSkip(inner, st::settingsCheckboxesSkip);
 

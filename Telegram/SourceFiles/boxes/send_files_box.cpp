@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/send_files_box.h"
 
+#include "ayu/features/send_guard/send_guard.h"
 #include "lang/lang_keys.h"
 #include "storage/localimageloader.h"
 #include "storage/localstorage.h"
@@ -2935,6 +2936,26 @@ void SendFilesBox::send(
 		_whenReadySend = [=] {
 			send(options, ctrlShiftEnter);
 		};
+		return;
+	}
+	if (!_sendGuardConfirmed
+		&& Ayu::SendGuard::NeedsConfirmation(
+			&_show->session(),
+			_toPeer->id,
+			Ayu::SendGuard::ActionKind::Files)) {
+		const auto weak = base::make_weak(this);
+		Ayu::SendGuard::ConfirmIfNeeded(
+			_show,
+			&_show->session(),
+			_toPeer,
+			Ayu::SendGuard::ActionKind::Files,
+			[=] {
+				if (const auto strong = weak.get()) {
+					strong->_sendGuardConfirmed = true;
+					strong->send(options, ctrlShiftEnter);
+					strong->_sendGuardConfirmed = false;
+				}
+			});
 		return;
 	}
 

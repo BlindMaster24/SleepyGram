@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "boxes/share_box.h"
 
+#include "ayu/features/send_guard/send_guard.h"
 #include "api/api_premium.h"
 #include "base/call_delayed.h"
 #include "base/random.h"
@@ -696,6 +697,37 @@ void ShareBox::submit(Api::SendOptions options) {
 	_submitLifetime.destroy();
 
 	auto threads = _inner->selected();
+	if (!_sendGuardConfirmed) {
+		auto peers = std::vector<not_null<PeerData*>>();
+		peers.reserve(threads.size());
+		for (const auto &thread : threads) {
+			peers.push_back(thread->peer());
+		}
+		const auto needsConfirm = ranges::any_of(
+			peers,
+			[&](not_null<PeerData*> peer) {
+				return Ayu::SendGuard::NeedsConfirmation(
+					_descriptor.session,
+					peer->id,
+					Ayu::SendGuard::ActionKind::Forward);
+			});
+		if (needsConfirm) {
+			const auto weak = base::make_weak(this);
+			Ayu::SendGuard::ConfirmManyIfNeeded(
+				uiShow(),
+				_descriptor.session,
+				peers,
+				Ayu::SendGuard::ActionKind::Forward,
+				[=] {
+					if (const auto strong = weak.get()) {
+						strong->_sendGuardConfirmed = true;
+						strong->submit(options);
+						strong->_sendGuardConfirmed = false;
+					}
+				});
+			return;
+		}
+	}
 	const auto weak = base::make_weak(this);
 	const auto field = _comment->entity();
 	auto comment = field->getTextWithAppliedMarkdown();

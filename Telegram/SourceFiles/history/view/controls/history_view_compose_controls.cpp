@@ -149,6 +149,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "data/data_ai_compose_tones.h"
 #include "ayu/ayu_settings.h"
+#include "ayu/features/send_guard/send_guard.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "history/history_item_components.h"
 
@@ -1464,10 +1465,15 @@ ComposeControls::ComposeControls(
 		Ui::PeerUserpicShape::Circle);
 	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_accountMarker->hide();
+	_accountBadge = std::make_unique<Ayu::SendGuard::AccountBadgeWidget>(
+		_wrap.get(),
+		&session());
 	rpl::merge(
 		session().domain().accountsChanges(),
 		Core::App().settings().prefChanges(
-			Core::kShowCurrentAccountInComposeKey)
+			Core::kShowCurrentAccountInComposeKey),
+		Ayu::SendGuard::Changes() | rpl::to_empty,
+		session().sendAsPeers().updated() | rpl::to_empty
 	) | rpl::on_next([=] {
 		updateAccountMarker();
 		updateControlsGeometry(_wrap->size());
@@ -3185,6 +3191,14 @@ void ComposeControls::updateAccountMarker() {
 		&& session().domain().accountsAuthedCount() >= 2;
 	if (_accountMarker->isHidden() == show) {
 		_accountMarker->setVisible(show);
+	}
+	if (_accountBadge) {
+		if (show) {
+			_accountBadge->updateContent(_history ? _history->peer.get() : nullptr);
+		}
+		if (_accountBadge->isHidden() == show) {
+			_accountBadge->setVisible(show);
+		}
 	}
 	if (!show) {
 		return;
@@ -5220,6 +5234,9 @@ void ComposeControls::updateControlsGeometry(QSize size) {
 		- (_accountMarker && !_accountMarker->isHidden()
 			? (_accountMarker->width() + st::historyAccountMarkerSkip)
 			: 0)
+		- (_accountBadge && !_accountBadge->isHidden()
+			? (_accountBadge->width() + st::historyAccountMarkerSkip)
+			: 0)
 		- _st.padding.right()
 		- _send->width()
 		- (_editStars ? _editStars->width() : 0)
@@ -5317,6 +5334,12 @@ void ComposeControls::updateControlsGeometry(QSize size) {
 	right += _st.padding.right();
 	_send->moveToRight(right, buttonsTop);
 	right += _send->width();
+	if (_accountBadge && !_accountBadge->isHidden()) {
+		_accountBadge->moveToRight(
+			right,
+			buttonsTop + (_st.attach.height - _accountBadge->height()) / 2);
+		right += _accountBadge->width() + st::historyAccountMarkerSkip;
+	}
 	if (_editStars) {
 		_editStars->moveToRight(right, buttonsTop);
 		right += _editStars->width();

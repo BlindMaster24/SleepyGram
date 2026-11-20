@@ -397,6 +397,7 @@ private:
 		Fn<void()> done);
 	void send();
 	void send(Api::SendOptions options);
+	bool _sendGuardConfirmed = false;
 	void sendVoice(const Controls::VoiceToSend &data);
 	void edit(
 		not_null<HistoryItem*> item,

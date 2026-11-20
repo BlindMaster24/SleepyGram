@@ -69,6 +69,10 @@ class Autocomplete;
 struct Contact;
 } // namespace Support
 
+namespace Ayu::SendGuard {
+class AccountBadgeWidget;
+} // namespace Ayu::SendGuard
+
 namespace Ui {
 class InnerDropdown;
 class DropdownMenu;
@@ -961,6 +965,8 @@ private:
 	object_ptr<Ui::IconButton> _replaceMedia = { nullptr };
 	object_ptr<Ui::SendAsButton> _sendAs = { nullptr };
 	object_ptr<Ui::UserpicButton> _accountMarker = { nullptr };
+	object_ptr<Ayu::SendGuard::AccountBadgeWidget> _accountBadge = { nullptr };
+	bool _sendGuardConfirmed = false;
 	object_ptr<Ui::EmojiButton> _tabbedSelectorToggle;
 	object_ptr<Ui::IconButton> _botKeyboardShow;
 	object_ptr<Ui::IconButton> _botKeyboardHide;

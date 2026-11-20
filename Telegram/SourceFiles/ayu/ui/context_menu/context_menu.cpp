@@ -18,6 +18,7 @@
 #include "ayu/features/forward/ayu_forward.h"
 #include "ayu/features/forward/ayu_forward_rich.h"
 #include "ayu/features/reply_later/reply_later.h"
+#include "ayu/features/send_guard/send_guard.h"
 #include "ayu/ui/context_menu/menu_item_subtext.h"
 #include "ayu/ui/message_history/history_section.h"
 #include "ayu/ui/settings/filters/edit_filter.h"
@@ -355,6 +356,23 @@ void AddAyuGramActions(PeerData *peerData,
 					suppressed
 						? &st::menuIconShowInChat
 						: &st::menuIconCaptionHide);
+			}
+			{
+				const auto session = &sessionController->session();
+				const auto isWork = Ayu::SendGuard::IsWorkChat(
+					session,
+					peerData->id);
+				addAction(
+					isWork
+						? tr::lng_send_guard_unmark_work(tr::now)
+						: tr::lng_send_guard_mark_work(tr::now),
+					[=] {
+						Ayu::SendGuard::SetWorkChat(
+							session,
+							peerData->id,
+							!isWork);
+					},
+					&st::menuIconInfo);
 			}
 			if (!archiveLocked) addAction(
 				tr::ayu_ViewEditedMessagesMenuText(tr::now),

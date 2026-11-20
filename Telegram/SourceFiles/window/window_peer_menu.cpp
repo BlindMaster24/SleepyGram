@@ -147,6 +147,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 // AyuGram includes
 #include "ayu/ayu_settings.h"
 #include "ayu/features/chat_lock/chat_lock.h"
+#include "ayu/features/send_guard/send_guard.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "styles/style_ayu_icons.h"
 #include "ayu/ui/context_menu/context_menu.h"
@@ -3790,6 +3791,7 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 
 	const auto weak = base::make_weak(state->box);
 	const auto field = comment->entity();
+	const auto sendGuardConfirmed = std::make_shared<bool>(false);
 	state->submit = [=](Api::SendOptions options) {
 		const auto peers = state->box->collectSelectedRows();
 		if (ranges::any_of(peers, [&](not_null<PeerData*> peer) {
@@ -3797,6 +3799,27 @@ base::weak_qptr<Ui::BoxContent> ShowForwardMessagesBox(
 					&peer->session(),
 					peer->id);
 			})) {
+			return;
+		}
+		if (!*sendGuardConfirmed
+			&& ranges::any_of(peers, [&](not_null<PeerData*> peer) {
+				return Ayu::SendGuard::NeedsConfirmation(
+					session,
+					peer->id,
+					Ayu::SendGuard::ActionKind::Forward);
+			})) {
+			Ayu::SendGuard::ConfirmManyIfNeeded(
+				show,
+				session,
+				peers,
+				Ayu::SendGuard::ActionKind::Forward,
+				crl::guard(weak, [=] {
+					*sendGuardConfirmed = true;
+					if (const auto onstack = state->submit) {
+						onstack(options);
+					}
+					*sendGuardConfirmed = false;
+				}));
 			return;
 		}
 		auto comment = field->getTextWithAppliedMarkdown();

@@ -344,6 +344,7 @@ private:
 	std::unique_ptr<Ui::RpWidget> _priceTag;
 	QImage _priceTagBg;
 	bool _confirmed = false;
+	bool _sendGuardConfirmed = false;
 	bool _stashed = false;
 	bool _textTaken = false;
 	bool _invertCaption = false;

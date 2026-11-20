@@ -155,6 +155,7 @@ private:
 	void scrollAnimationCallback();
 
 	void submit(Api::SendOptions options);
+	bool _sendGuardConfirmed = false;
 	void copyLink() const;
 	bool searchByUsername(bool useCache = false);
 

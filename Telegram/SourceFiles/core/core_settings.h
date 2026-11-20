@@ -49,6 +49,10 @@ inline constexpr std::string_view kShowCurrentAccountInComposeKey
 	= "show-current-account-in-compose";
 inline constexpr std::string_view kHideContactSignUpChatsKey
 	= "hide-contact-signup-chats";
+inline constexpr std::string_view kConfirmFilesToWorkChatsKey
+	= "confirm-files-to-work-chats";
+inline constexpr std::string_view kConfirmForwardsToWorkChatsKey
+	= "confirm-forwards-to-work-chats";
 
 struct WindowPosition {
 	int32 moncrc = 0;

@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "history/view/history_view_chat_section.h"
 
+#include "ayu/features/send_guard/send_guard.h"
 #include "history/admin_log/history_admin_log_section.h"
 #include "history/view/controls/history_view_top_controls.h"
 #include "history/view/controls/history_view_bottom_controls.h"
@@ -2457,6 +2458,27 @@ void ChatWidget::sendVoice(const ComposeControls::VoiceToSend &data) {
 
 void ChatWidget::send(Api::SendOptions options) {
 	if (monoforumReplyMissing()) {
+		return;
+	}
+	if (!_composeControls->forwardItems().empty()
+		&& !_sendGuardConfirmed
+		&& Ayu::SendGuard::NeedsConfirmation(
+			&session(),
+			_history->peer->id,
+			Ayu::SendGuard::ActionKind::Forward)) {
+		const auto weak = base::make_weak(this);
+		Ayu::SendGuard::ConfirmIfNeeded(
+			controller()->uiShow(),
+			&session(),
+			_history->peer,
+			Ayu::SendGuard::ActionKind::Forward,
+			[=] {
+				if (const auto strong = weak.get()) {
+					strong->_sendGuardConfirmed = true;
+					strong->send(options);
+					strong->_sendGuardConfirmed = false;
+				}
+			});
 		return;
 	} else if (const auto page = _composeControls->shownRichMessage()) {
 		sendRichDraft(page, options);

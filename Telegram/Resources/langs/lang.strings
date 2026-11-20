@@ -9703,3 +9703,15 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_reply_later_due_one" = "{chat}: {text} {link}";
 "lng_reply_later_due_many#one" = "{count} message waiting for reply. {link}";
 "lng_reply_later_due_many#other" = "{count} messages waiting for reply. {link}";
+
+"lng_send_guard_mark_work" = "Mark as work chat (confirm sends)";
+"lng_send_guard_unmark_work" = "Unmark work chat";
+"lng_send_guard_confirm_files" = "Send files to \"{chat}\" from account \"{from}\"?";
+"lng_send_guard_confirm_forward" = "Forward messages to \"{chat}\" from account \"{from}\"?";
+"lng_send_guard_badge_button" = "Composer account badge label & color";
+"lng_send_guard_badge_title" = "Account composer badge";
+"lng_send_guard_badge_label_ph" = "Short account label (optional)";
+"lng_send_guard_badge_color_ph" = "Accent color #RRGGBB (optional)";
+"lng_send_guard_badge_about" = "Leave empty to use the account short name and default profile color.";
+"lng_settings_confirm_work_files" = "Confirm sending files to work chats";
+"lng_settings_confirm_work_forwards" = "Confirm forwarding to work chats";

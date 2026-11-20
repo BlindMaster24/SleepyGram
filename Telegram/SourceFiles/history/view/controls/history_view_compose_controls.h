@@ -65,6 +65,10 @@ class Result;
 struct ResultSelected;
 } // namespace InlineBots
 
+namespace Ayu::SendGuard {
+class AccountBadgeWidget;
+} // namespace Ayu::SendGuard
+
 namespace Ui {
 class AbstractButton;
 class SendButton;
@@ -598,6 +602,7 @@ private:
 	PeerId _botMenuPeer = 0;
 	std::unique_ptr<Ui::SendAsButton> _sendAs;
 	std::unique_ptr<Ui::UserpicButton> _accountMarker;
+	std::unique_ptr<Ayu::SendGuard::AccountBadgeWidget> _accountBadge;
 	rpl::variable<bool> _videoStreamAdmin;
 	std::unique_ptr<Ui::SilentToggle> _silent;
 	std::unique_ptr<Controls::TTLButton> _ttlInfo;

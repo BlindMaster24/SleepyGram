@@ -230,6 +230,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 // AyuGram includes
 #include "ayu/ayu_settings.h"
+#include "ayu/features/send_guard/send_guard.h"
 #include "ayu/features/filters/filters_cache_controller.h"
 #include "ayu/utils/telegram_helpers.h"
 #include "ayu/features/message_shot/message_shot.h"
@@ -1361,10 +1362,13 @@ HistoryWidget::HistoryWidget(
 		Ui::PeerUserpicShape::Circle);
 	_accountMarker->setAttribute(Qt::WA_TransparentForMouseEvents);
 	_accountMarker->hide();
+	_accountBadge.create(this, &session());
 	rpl::merge(
 		session().domain().accountsChanges(),
 		Core::App().settings().prefChanges(
-			Core::kShowCurrentAccountInComposeKey)
+			Core::kShowCurrentAccountInComposeKey),
+		Ayu::SendGuard::Changes() | rpl::to_empty,
+		session().sendAsPeers().updated() | rpl::to_empty
 	) | rpl::on_next([=] {
 		updateAccountMarker();
 		updateControlsGeometry();
@@ -4423,6 +4427,14 @@ void HistoryWidget::updateAccountMarker() {
 	if (_accountMarker->isHidden() == show) {
 		_accountMarker->setVisible(show);
 	}
+	if (_accountBadge) {
+		if (show) {
+			_accountBadge->updateContent(_peer);
+		}
+		if (_accountBadge->isHidden() == show) {
+			_accountBadge->setVisible(show);
+		}
+	}
 	if (!show) {
 		return;
 	}
@@ -6149,6 +6161,27 @@ void HistoryWidget::send(Api::SendOptions options) {
 	}
 	if (_voiceRecordBar->isListenState()) {
 		_voiceRecordBar->requestToSendWithOptions(options);
+		return;
+	}
+	if (readyToForward()
+		&& !_sendGuardConfirmed
+		&& Ayu::SendGuard::NeedsConfirmation(
+			&session(),
+			_history->peer->id,
+			Ayu::SendGuard::ActionKind::Forward)) {
+		const auto weak = base::make_weak(this);
+		Ayu::SendGuard::ConfirmIfNeeded(
+			controller()->uiShow(),
+			&session(),
+			_history->peer,
+			Ayu::SendGuard::ActionKind::Forward,
+			[=] {
+				if (const auto strong = weak.get()) {
+					strong->_sendGuardConfirmed = true;
+					strong->send(options);
+					strong->_sendGuardConfirmed = false;
+				}
+			});
 		return;
 	}
 
@@ -7966,6 +7999,13 @@ void HistoryWidget::moveFieldControls() {
 	}
 	auto right = st::historySendRight;
 	_send->moveToRight(right, buttonsBottom); right += _send->width();
+	if (_accountBadge && !_accountBadge->isHidden()) {
+		_accountBadge->moveToRight(
+			right,
+			buttonsBottom
+				+ (_attachToggle->height() - _accountBadge->height()) / 2);
+		right += _accountBadge->width() + st::historyAccountMarkerSkip;
+	}
 	_voiceRecordBar->moveToLeft(0, bottom - _voiceRecordBar->height());
 	_tabbedSelectorToggle->moveToRight(right, buttonsBottom);
 	_botKeyboardHide->moveToRight(right, buttonsBottom);
@@ -8048,6 +8088,9 @@ void HistoryWidget::updateFieldSize() {
 	}
 	if (_accountMarker && !_accountMarker->isHidden()) {
 		fieldWidth -= _accountMarker->width() + st::historyAccountMarkerSkip;
+	}
+	if (_accountBadge && !_accountBadge->isHidden()) {
+		fieldWidth -= _accountBadge->width() + st::historyAccountMarkerSkip;
 	}
 	if (kbShowShown) {
 		fieldWidth -= _botKeyboardShow->width();
