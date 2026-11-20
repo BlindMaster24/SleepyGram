@@ -28,6 +28,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_values.h"
 #include "data/data_premium_limits.h"
 #include "data/data_unread_value.h"
+#include "dialogs/dialogs_common.h"
 #include "lang/lang_keys.h"
 #include "ui/filter_icons.h"
 #include "ui/wrap/vertical_layout.h"
@@ -1099,6 +1100,35 @@ void FiltersMenu::showMenu(QPoint position, FilterId id) {
 			}),
 			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
 	}
+	{
+		const auto session = &_session->session();
+		const auto currentSort = session->data().chatsFilters().folderSortMode(id);
+		addAction({
+			.text = tr::lng_filters_sort_by(tr::now),
+			.icon = &st::menuIconOrderDate,
+			.fillSubmenu = [=](not_null<Ui::PopupMenu*> submenu) {
+				const auto addSortOption = [&](
+						Dialogs::FolderSortMode mode,
+						QString label) {
+					const auto text = (currentSort == mode)
+						? (u"✓ "_q + label)
+						: label;
+					submenu->addAction(text, crl::guard(&_outer, [=] {
+						session->data().chatsFilters().setFolderSortMode(id, mode);
+					}));
+				};
+				addSortOption(
+					Dialogs::FolderSortMode::RecentFirst,
+					tr::lng_filters_sort_recent(tr::now));
+				addSortOption(
+					Dialogs::FolderSortMode::OldestFirst,
+					tr::lng_filters_sort_oldest(tr::now));
+				addSortOption(
+					Dialogs::FolderSortMode::NameAsc,
+					tr::lng_filters_sort_name(tr::now));
+			},
+		});
+	}
 	if (_popupMenu->empty()) {
 		_popupMenu = nullptr;
 		return;
@@ -1124,18 +1154,6 @@ void FiltersMenu::applyReorder(
 			filters->moveAllToFront();
 		}
 	}
-	Assert(oldPosition >= 0 && oldPosition < list.size());
-	Assert(newPosition >= 0 && newPosition < list.size());
-	const auto id = list[oldPosition].id();
-	const auto i = _filters.find(id);
-	Assert(i != end(_filters));
-	Assert(i->second == widget);
-
-	auto order = ranges::views::all(
-		list
-	) | ranges::views::transform(
-		&Data::ChatFilter::id
-	) | ranges::to_vector;
 	const auto visibleIds = Ui::VisibleChatFilterTabIds(
 		&_session->session());
 	if (oldPosition < 0
@@ -1146,6 +1164,15 @@ void FiltersMenu::applyReorder(
 	}
 	const auto oldId = visibleIds[oldPosition];
 	const auto newId = visibleIds[newPosition];
+	const auto i = _filters.find(oldId);
+	Assert(i != end(_filters));
+	Assert(i->second == widget);
+
+	auto order = ranges::views::all(
+		list
+	) | ranges::views::transform(
+		&Data::ChatFilter::id
+	) | ranges::to_vector;
 	const auto oldIndex = ranges::find(order, oldId) - order.begin();
 	const auto newIndex = ranges::find(order, newId) - order.begin();
 	if (oldIndex < 0 || newIndex < 0

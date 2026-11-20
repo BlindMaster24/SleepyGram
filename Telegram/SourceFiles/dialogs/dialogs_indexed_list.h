@@ -24,6 +24,10 @@ public:
 	void moveToTop(Key key);
 	void freeze();
 	void unfreeze();
+	void setFolderSortMode(FolderSortMode mode);
+	[[nodiscard]] FolderSortMode folderSortMode() const {
+		return _list.folderSortMode();
+	}
 	bool updateHeight(Key key, float64 narrowRatio);
 	bool updateHeights(float64 narrowRatio);
 

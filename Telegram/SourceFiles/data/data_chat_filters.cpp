@@ -395,8 +395,20 @@ bool ChatFilter::contains(
 
 ChatFilters::ChatFilters(not_null<Session*> owner)
 : _owner(owner)
-, _moreChatsTimer([=] { checkLoadMoreChatsLists(); }) {
+, _moreChatsTimer([=] { checkLoadMoreChatsLists(); })
+, _sortPreloadTimer([=] {
+	if (_owner->chatsListLoaded(nullptr) || _sortPreloadRemaining <= 0) {
+		_sortPreloadRemaining = 0;
+		return;
+	}
+	--_sortPreloadRemaining;
+	_owner->session().api().requestDialogs(nullptr);
+	if (_sortPreloadRemaining > 0) {
+		_sortPreloadTimer.callOnce(350);
+	}
+}) {
 	_list.emplace_back();
+	_owner->chatsList()->setFolderSortMode(folderSortMode(0));
 	crl::on_main(&owner->session(), [=] { load(); });
 
 	AyuSettings::getInstance().hideAllChatsFolderChanges()
@@ -436,6 +448,7 @@ not_null<Dialogs::MainList*> ChatFilters::chatsList(FilterId filterId) {
 			&_owner->session(),
 			filterId,
 			_owner->maxPinnedChatsLimitValue(filterId));
+		pointer->setFolderSortMode(folderSortMode(filterId));
 	}
 	return pointer.get();
 }
@@ -503,6 +516,56 @@ void ChatFilters::refreshMentionsFolder() {
 		_owner->refreshChatListEntry(history);
 	}
 	_listChanged.fire({});
+}
+
+Dialogs::FolderSortMode ChatFilters::folderSortMode(FilterId filterId) const {
+	const auto key = "ayu.folderSort." + std::to_string(filterId);
+	const auto value = _owner->session().local().readPref<QString>(key);
+	if (value == u"oldest"_q) {
+		return Dialogs::FolderSortMode::OldestFirst;
+	} else if (value == u"name"_q) {
+		return Dialogs::FolderSortMode::NameAsc;
+	}
+	return Dialogs::FolderSortMode::RecentFirst;
+}
+
+void ChatFilters::setFolderSortMode(
+		FilterId filterId,
+		Dialogs::FolderSortMode mode) {
+	const auto key = "ayu.folderSort." + std::to_string(filterId);
+	if (mode == Dialogs::FolderSortMode::RecentFirst) {
+		_owner->session().local().clearPref(key);
+	} else {
+		_owner->session().local().writePref<QString>(
+			key,
+			(mode == Dialogs::FolderSortMode::OldestFirst)
+				? u"oldest"_q
+				: u"name"_q);
+	}
+	const auto target = filterId
+		? chatsList(filterId)
+		: _owner->chatsList();
+	target->setFolderSortMode(mode);
+	_folderSortChanged.fire_copy(filterId);
+	if (mode != Dialogs::FolderSortMode::RecentFirst) {
+		ensureSortDialogsLoaded(filterId);
+	}
+}
+
+rpl::producer<FilterId> ChatFilters::folderSortChanges() const {
+	return _folderSortChanged.events();
+}
+
+void ChatFilters::ensureSortDialogsLoaded(FilterId filterId) {
+	if (folderSortMode(filterId) == Dialogs::FolderSortMode::RecentFirst
+		|| _owner->chatsListLoaded(nullptr)) {
+		return;
+	}
+	_sortPreloadRemaining = std::max(_sortPreloadRemaining, 25);
+	if (!_sortPreloadTimer.isActive()) {
+		_owner->session().api().requestDialogs(nullptr);
+		_sortPreloadTimer.callOnce(350);
+	}
 }
 
 void ChatFilters::setPreloaded(
@@ -806,6 +869,8 @@ void ChatFilters::applyRemove(int position) {
 	auto filter = std::move(*i);
 	_list.erase(i);
 	Ui::ClearChatFilterTabVisibility(&_owner->session(), filter.id());
+	_owner->session().local().clearPref(
+		"ayu.folderSort." + std::to_string(filter.id()));
 	applyChange(filter, ChatFilter(filter.id(), {}, {}, {}, {}, {}, {}, {}));
 }
 

@@ -9731,3 +9731,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_filters_mentions_enable" = "Show Mentions folder";
 "lng_filters_mentions_include_muted" = "Include muted chats";
 "lng_filters_mentions_exclude_muted" = "Exclude muted chats";
+
+"lng_filters_sort_by" = "Sort by";
+"lng_filters_sort_recent" = "Recent first";
+"lng_filters_sort_oldest" = "Oldest first";
+"lng_filters_sort_name" = "Name (A–Z)";

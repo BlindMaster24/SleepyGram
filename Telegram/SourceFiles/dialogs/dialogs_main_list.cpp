@@ -230,6 +230,14 @@ not_null<const IndexedList*> MainList::indexed() const {
 	return &_all;
 }
 
+void MainList::setFolderSortMode(FolderSortMode mode) {
+	_all.setFolderSortMode(mode);
+}
+
+FolderSortMode MainList::folderSortMode() const {
+	return _all.folderSortMode();
+}
+
 not_null<PinnedList*> MainList::pinned() {
 	return &_pinned;
 }

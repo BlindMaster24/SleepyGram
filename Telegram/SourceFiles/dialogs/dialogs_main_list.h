@@ -48,6 +48,8 @@ public:
 
 	[[nodiscard]] not_null<IndexedList*> indexed();
 	[[nodiscard]] not_null<const IndexedList*> indexed() const;
+	void setFolderSortMode(FolderSortMode mode);
+	[[nodiscard]] FolderSortMode folderSortMode() const;
 	[[nodiscard]] not_null<PinnedList*> pinned();
 	[[nodiscard]] not_null<const PinnedList*> pinned() const;
 

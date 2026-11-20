@@ -30,6 +30,7 @@ RowsByLetter IndexedList::addToEnd(Key key) {
 		auto j = _index.find(ch);
 		if (j == _index.cend()) {
 			j = _index.emplace(ch, _sortMode, _filterId).first;
+			j->second.setFolderSortMode(_list.folderSortMode());
 		}
 		result.letters.emplace(ch, j->second.addToEnd(key));
 	}
@@ -188,11 +189,27 @@ void IndexedList::adjustNames(
 		auto j = _index.find(ch);
 		if (j == _index.cend()) {
 			j = _index.emplace(ch, _sortMode, _filterId).first;
+			j->second.setFolderSortMode(_list.folderSortMode());
 		}
 		auto row = j->second.addToEnd(key);
 		if (_sortMode == SortMode::Date) {
 			entry->addChatListEntryByLetter(filterId, ch, row);
 		}
+	}
+	if (_sortMode == SortMode::Date
+		&& _list.folderSortMode() == FolderSortMode::NameAsc) {
+		_list.adjustByDate(mainRow);
+	}
+	++_dateVersion;
+}
+
+void IndexedList::setFolderSortMode(FolderSortMode mode) {
+	if (_list.folderSortMode() == mode) {
+		return;
+	}
+	_list.setFolderSortMode(mode);
+	for (auto &[ch, list] : _index) {
+		list.setFolderSortMode(mode);
 	}
 	++_dateVersion;
 }

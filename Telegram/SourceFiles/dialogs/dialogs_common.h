@@ -29,6 +29,12 @@ enum class SortMode {
 	Add     = 0x02,
 };
 
+enum class FolderSortMode : uchar {
+	RecentFirst = 0,
+	OldestFirst = 1,
+	NameAsc     = 2,
+};
+
 struct PositionChange {
 	int from = -1;
 	int to = -1;

@@ -20,6 +20,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_session.h"
 #include "data/data_unread_value.h"
 #include "data/data_user.h"
+#include "dialogs/dialogs_common.h"
 #include "lang/lang_keys.h"
 #include "menu/menu_mark_as_read.h"
 #include "main/main_session.h"
@@ -197,6 +198,34 @@ void ShowMenu(
 						: Ui::ChatFilterTabVisibility::ShowWithoutBadge);
 			},
 			badgeHidden ? &st::menuIconShowInChat : &st::menuIconStealth);
+	}
+	{
+		const auto currentSort = session->data().chatsFilters().folderSortMode(id);
+		addAction({
+			.text = tr::lng_filters_sort_by(tr::now),
+			.icon = &st::menuIconOrderDate,
+			.fillSubmenu = [=](not_null<Ui::PopupMenu*> submenu) {
+				const auto addSortOption = [&](
+						Dialogs::FolderSortMode mode,
+						QString label) {
+					const auto text = (currentSort == mode)
+						? (u"✓ "_q + label)
+						: label;
+					submenu->addAction(text, [=] {
+						session->data().chatsFilters().setFolderSortMode(id, mode);
+					});
+				};
+				addSortOption(
+					Dialogs::FolderSortMode::RecentFirst,
+					tr::lng_filters_sort_recent(tr::now));
+				addSortOption(
+					Dialogs::FolderSortMode::OldestFirst,
+					tr::lng_filters_sort_oldest(tr::now));
+				addSortOption(
+					Dialogs::FolderSortMode::NameAsc,
+					tr::lng_filters_sort_name(tr::now));
+			},
+		});
 	}
 	if (state->menu->empty()) {
 		state->menu = nullptr;

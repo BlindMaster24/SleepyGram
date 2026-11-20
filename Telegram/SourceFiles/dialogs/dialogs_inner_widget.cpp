@@ -448,6 +448,13 @@ InnerWidget::InnerWidget(
 		refreshWithCollapsedRows();
 	}, lifetime());
 
+	session().data().chatsFilters().folderSortChanges(
+	) | rpl::on_next([=](FilterId filterId) {
+		if (filterId == _filterId) {
+			refresh(true);
+		}
+	}, lifetime());
+
 	session().data().chatsFilters().tagsEnabledValue(
 	) | rpl::on_next([=](bool tags) {
 		_handleChatListEntryTagRefreshesLifetime.destroy();
@@ -6231,10 +6238,12 @@ void InnerWidget::switchToFilter(FilterId filterId) {
 		refreshWithCollapsedRows(true);
 	}
 	refreshEmpty();
+	session().data().chatsFilters().ensureSortDialogsLoaded(filterId);
 	{
-		const auto skip = found
-			// Don't save a scroll state for very flexible chat filters.
-			&& (filterIt->flags() & (Data::ChatFilter::Flag::NoRead));
+		const auto skip = isLocal
+			|| (filterIt != end(list)
+				// Don't save a scroll state for very flexible chat filters.
+				&& (filterIt->flags() & (Data::ChatFilter::Flag::NoRead)));
 		if (skip || !restoreChatsFilterScrollState(filterId)) {
 			jumpToTop();
 		}

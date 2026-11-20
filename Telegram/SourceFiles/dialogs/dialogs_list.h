@@ -13,6 +13,7 @@ class PeerData;
 namespace Dialogs {
 
 enum class SortMode;
+enum class FolderSortMode : uchar;
 
 class List final {
 public:
@@ -60,6 +61,10 @@ public:
 	bool updateHeights(float64 narrowRatio);
 	bool remove(Key key, Row *replacedBy = nullptr);
 	void sortByDate();
+	void setFolderSortMode(FolderSortMode mode);
+	[[nodiscard]] FolderSortMode folderSortMode() const {
+		return _folderSortMode;
+	}
 	[[nodiscard]] uint64 dateOrderVersion() const {
 		return _dateOrderVersion;
 	}
@@ -85,6 +90,9 @@ public:
 
 private:
 	void adjustByName(not_null<Row*> row);
+	[[nodiscard]] bool comesBefore(
+		not_null<Row*> a,
+		not_null<Row*> b) const;
 	[[nodiscard]] bool sortedByDate() const;
 	void rotate(
 		std::vector<not_null<Row*>>::iterator first,
@@ -92,6 +100,7 @@ private:
 		std::vector<not_null<Row*>>::iterator last);
 
 	SortMode _sortMode = SortMode();
+	FolderSortMode _folderSortMode = FolderSortMode(0);
 	FilterId _filterId = 0;
 	uint64 _dateOrderVersion = 0;
 	float64 _narrowRatio = 0.;

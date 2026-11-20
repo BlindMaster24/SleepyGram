@@ -15,6 +15,7 @@ class History;
 namespace Dialogs {
 class MainList;
 class Key;
+enum class FolderSortMode : uchar;
 } // namespace Dialogs
 
 namespace Ui {
@@ -191,6 +192,14 @@ public:
 	[[nodiscard]] bool shouldBeInMentions(not_null<History*> history) const;
 	void refreshMentionsFolder();
 
+	[[nodiscard]] Dialogs::FolderSortMode folderSortMode(
+		FilterId filterId) const;
+	void setFolderSortMode(
+		FilterId filterId,
+		Dialogs::FolderSortMode mode);
+	[[nodiscard]] rpl::producer<FilterId> folderSortChanges() const;
+	void ensureSortDialogsLoaded(FilterId filterId);
+
 	const ChatFilter &applyUpdatedPinned(
 		FilterId id,
 		const std::vector<Dialogs::Key> &dialogs);
@@ -278,6 +287,10 @@ private:
 	base::flat_map<FilterId, MoreChatsData> _moreChatsData;
 	rpl::event_stream<FilterId> _moreChatsUpdated;
 	base::Timer _moreChatsTimer;
+
+	rpl::event_stream<FilterId> _folderSortChanged;
+	base::Timer _sortPreloadTimer;
+	int _sortPreloadRemaining = 0;
 
 	rpl::lifetime _lifetime;
 
