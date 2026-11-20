@@ -285,6 +285,8 @@ set(ayugram_files
         ayu/features/send_guard/send_guard.h
         ayu/features/downloads/download_layout.cpp
         ayu/features/downloads/download_layout.h
+        ayu/features/dialogs_multiselect/dialogs_multiselect.cpp
+        ayu/features/dialogs_multiselect/dialogs_multiselect.h
         ayu/features/emergency_actions/emergency_action_plan.cpp
         ayu/features/emergency_actions/emergency_action_plan.h
         ayu/features/emergency_actions/emergency_action_journal.cpp

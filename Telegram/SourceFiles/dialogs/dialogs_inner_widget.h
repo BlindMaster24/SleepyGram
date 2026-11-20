@@ -229,6 +229,8 @@ public:
 		selectedSearchMessageChanges() const;
 	[[nodiscard]] std::vector<FullMsgId> selectedSearchMessageIds() const;
 	void clearSearchMessageSelection();
+	[[nodiscard]] bool hasSelectedDialogs() const;
+	void clearSelectedDialogs();
 
 	[[nodiscard]] rpl::producer<int> scrollByDeltaRequests() const;
 	[[nodiscard]] rpl::producer<Ui::ScrollToRequest> mustScrollTo() const;
@@ -770,6 +772,10 @@ private:
 	std::vector<std::unique_ptr<FakeRow>> _searchResults;
 	base::flat_set<FullMsgId> _selectedSearchMessages;
 	rpl::event_stream<std::vector<FullMsgId>> _selectedSearchMessageChanges;
+	base::flat_set<Key> _selectedDialogs;
+	Key _dialogSelectionAnchor;
+	void toggleDialogSelection(Key key);
+	void selectDialogRange(Key toKey);
 	int _searchedCount = 0;
 	int _searchedMigratedCount = 0;
 	int _searchedSelected = -1;

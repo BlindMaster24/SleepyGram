@@ -7,6 +7,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 */
 #include "dialogs/dialogs_inner_widget.h"
 
+#include "ayu/features/dialogs_multiselect/dialogs_multiselect.h"
 #include "dialogs/dialogs_three_state_icon.h"
 #include "dialogs/ui/chat_search_empty.h"
 #include "dialogs/ui/chat_search_in.h"
@@ -954,6 +955,7 @@ void InnerWidget::changeOpenedFolder(Data::Folder *folder) {
 	}
 	stopReorderPinned();
 	clearSelection();
+	clearSelectedDialogs();
 	_openedFolder = folder;
 	refreshShownList();
 	refreshWithCollapsedRows(true);
@@ -970,6 +972,7 @@ void InnerWidget::changeOpenedForum(Data::Forum *forum) {
 	}
 	stopReorderPinned();
 	clearSelection();
+	clearSelectedDialogs();
 
 	if (forum) {
 		saveChatsFilterScrollState(_filterId);
@@ -1210,6 +1213,8 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 		const auto cacheRatio = style::DevicePixelRatio();
 		const auto cacheKey = RowsCacheKey(row->entry());
 		const auto cacheSize = QSize(fullWidth, row->height()) * cacheRatio;
+		const auto multiSelected = (_state == WidgetState::Default)
+			&& _selectedDialogs.contains(row->key());
 		const auto cacheSelected = _menuRow.key
 			? (row->key() == _menuRow.key)
 			: _chatPreviewRow.key
@@ -1219,6 +1224,7 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 			&& (!videoUserpic || !context.narrow)
 			&& !active
 			&& !cacheSelected
+			&& !multiSelected
 			&& !context.quickActionContext
 			&& !context.rightButton
 			&& !expanding
@@ -1351,6 +1357,15 @@ void InnerWidget::paintEvent(QPaintEvent *e) {
 			paintCachedRowOverlays(p, row, cacheKey, context);
 		} else {
 			Ui::RowPainter::Paint(p, row, videoUserpic, context);
+		}
+		if (multiSelected) {
+			p.save();
+			auto overlayColor = st::windowBgActive->c;
+			overlayColor.setAlpha(active ? 54 : 36);
+			p.fillRect(0, 0, fullWidth, row->height(), overlayColor);
+			const auto barWidth = std::max(3, style::ConvertScale(3));
+			p.fillRect(0, 0, barWidth, row->height(), st::windowBgActive);
+			p.restore();
 		}
 		if (context.quickActionContext) {
 			context.quickActionContext = nullptr;
@@ -2269,7 +2284,7 @@ void InnerWidget::mouseMoveEvent(QMouseEvent *e) {
 				>= style::ConvertScale(kStartDragToFilterThresholdX)
 			|| std::abs(delta.y()) >= style::ConvertScale(thresholdY);
 
-		if (!_qdragging && outside && distanceExceeded) {
+		if (!_qdragging && outside && distanceExceeded && _selectedDialogs.empty()) {
 			if (_pressed->history()) {
 				unfreezeShownList(true);
 				_dragging = _pressed;
@@ -2951,6 +2966,7 @@ const std::vector<Key> &InnerWidget::pinnedChatsOrder() const {
 void InnerWidget::checkReorderPinnedStart(QPoint localPosition) {
 	if (!_pressed
 		|| _dragging
+		|| !_selectedDialogs.empty()
 		|| (_state != WidgetState::Default)
 		|| _pressedRightButtonData) {
 		return;
@@ -3332,8 +3348,33 @@ void InnerWidget::mousePressReleased(
 			deactivateQuickAction();
 		}
 	}
+	auto dialogMultiSelectionHandled = false;
+	if (!searchMessageSelectionToggled
+		&& !wasDragging
+		&& button == Qt::LeftButton
+		&& _state == WidgetState::Default
+		&& !_openedForum
+		&& !_savedSublists
+		&& pressed
+		&& pressed == _selected
+		&& !pressedTopicJump
+		&& !pressedRightButton
+		&& pressed->history()) {
+		const auto ctrlPressed = (modifiers.testFlag(Qt::ControlModifier)
+				|| modifiers.testFlag(Qt::MetaModifier))
+			&& !modifiers.testFlag(Qt::AltModifier);
+		const auto shiftPressed = modifiers.testFlag(Qt::ShiftModifier);
+		if (shiftPressed && (_dialogSelectionAnchor || !_selectedDialogs.empty())) {
+			selectDialogRange(pressed->key());
+			dialogMultiSelectionHandled = true;
+		} else if (ctrlPressed || !_selectedDialogs.empty()) {
+			toggleDialogSelection(pressed->key());
+			dialogMultiSelectionHandled = true;
+		}
+	}
 	updateSelectedRow();
 	if (!searchMessageSelectionToggled
+		&& !dialogMultiSelectionHandled
 		&& !wasDragging
 		&& button == Qt::LeftButton) {
 		if ((collapsedPressed >= 0 && collapsedPressed == _collapsedSelected)
@@ -3586,6 +3627,12 @@ void InnerWidget::dialogRowReplaced(
 		Row *newRow) {
 	if (oldRow && !newRow) {
 		prepareRemovedRowSlide(oldRow);
+		if (_selectedDialogs.remove(oldRow->key())) {
+			if (_dialogSelectionAnchor == oldRow->key()) {
+				_dialogSelectionAnchor = Key();
+			}
+			_rowsScrollCache.clear();
+		}
 	}
 	if (oldRow) {
 		invalidateCachedRow(RowsCacheKey(oldRow->entry()));
@@ -4452,7 +4499,27 @@ void InnerWidget::contextMenuEvent(QContextMenuEvent *e) {
 		} else if (_searchResultsOnlyTitle || !_selectedSearchMessages.empty()) {
 			fillSearchResultMenu(_menu.get(), row.fullId);
 		}
+	} else if (_state == WidgetState::Default
+			&& !_selectedDialogs.empty()
+			&& _selectedDialogs.contains(row.key)) {
+		auto histories = std::vector<not_null<History*>>();
+		histories.reserve(_selectedDialogs.size());
+		for (const auto &selectedKey : _selectedDialogs) {
+			if (const auto history = selectedKey.history()) {
+				histories.push_back(history);
+			}
+		}
+		if (!histories.empty()) {
+			Ayu::DialogsMultiSelect::FillMultiDialogsMenu(
+				_controller,
+				_menu.get(),
+				std::move(histories),
+				[=] { clearSelectedDialogs(); });
+		}
 	} else {
+		if (!_selectedDialogs.empty()) {
+			clearSelectedDialogs();
+		}
 		const auto addAction = Ui::Menu::CreateAddActionCallback(_menu);
 		Window::FillDialogsEntryMenu(
 			_controller,
@@ -5080,6 +5147,64 @@ void InnerWidget::toggleSearchMessageSelection(FullMsgId itemId) {
 	}
 	_selectedSearchMessageChanges.fire_copy(selectedSearchMessageIds());
 	refresh();
+}
+
+bool InnerWidget::hasSelectedDialogs() const {
+	return !_selectedDialogs.empty();
+}
+
+void InnerWidget::clearSelectedDialogs() {
+	if (_selectedDialogs.empty() && !_dialogSelectionAnchor) {
+		return;
+	}
+	_selectedDialogs.clear();
+	_dialogSelectionAnchor = Key();
+	_rowsScrollCache.clear();
+	update();
+}
+
+void InnerWidget::toggleDialogSelection(Key key) {
+	if (!key.history()) {
+		return;
+	}
+	if (_selectedDialogs.contains(key)) {
+		_selectedDialogs.remove(key);
+		if (_selectedDialogs.empty()) {
+			_dialogSelectionAnchor = Key();
+		}
+	} else {
+		_selectedDialogs.emplace(key);
+		_dialogSelectionAnchor = key;
+	}
+	_rowsScrollCache.clear();
+	update();
+}
+
+void InnerWidget::selectDialogRange(Key toKey) {
+	if (!toKey.history() || !_shownList) {
+		return;
+	}
+	const auto anchorKey = _dialogSelectionAnchor
+		? _dialogSelectionAnchor
+		: (!_selectedDialogs.empty() ? *_selectedDialogs.begin() : Key());
+	const auto fromRow = anchorKey ? _shownList->getRow(anchorKey) : nullptr;
+	const auto toRow = _shownList->getRow(toKey);
+	if (!fromRow || !toRow) {
+		toggleDialogSelection(toKey);
+		return;
+	}
+	const auto a = _shownList->cfind(fromRow);
+	const auto b = _shownList->cfind(toRow);
+	const auto first = (a <= b) ? a : b;
+	const auto last = (a <= b) ? b : a;
+	for (auto it = first; it <= last; ++it) {
+		if ((*it)->history()) {
+			_selectedDialogs.emplace((*it)->key());
+		}
+	}
+	_dialogSelectionAnchor = toKey;
+	_rowsScrollCache.clear();
+	update();
 }
 
 rpl::producer<int> InnerWidget::scrollByDeltaRequests() const {
@@ -5897,6 +6022,9 @@ void InnerWidget::clearFilter() {
 }
 
 void InnerWidget::setState(WidgetState state) {
+	if (_state != state) {
+		clearSelectedDialogs();
+	}
 	_state = state;
 	updateCommunityRequestableGeometry();
 }
@@ -6232,6 +6360,7 @@ void InnerWidget::switchToFilter(FilterId filterId) {
 		refreshShownList();
 	} else {
 		clearSelection();
+		clearSelectedDialogs();
 		stopReorderPinned();
 		_filterId = filterId;
 		refreshShownList();
@@ -6462,7 +6591,8 @@ bool InnerWidget::chooseRow(
 	const auto modifyChosenRow = [&](
 			ChosenRow row,
 			Qt::KeyboardModifiers modifiers) {
-		row.newWindow = (modifiers & Qt::ControlModifier);
+		row.newWindow = modifiers.testFlag(Qt::ControlModifier)
+			&& modifiers.testFlag(Qt::AltModifier);
 		row.userpicClick = isUserpicPressOnWide();
 		row.communityBadgeClick = isCommunityBadgePressOnNarrow();
 		return row;

@@ -2986,6 +2986,10 @@ void Widget::escape() {
 }
 
 void Widget::escape(CancelSearchOptions options) {
+	if (_inner->hasSelectedDialogs()) {
+		_inner->clearSelectedDialogs();
+		return;
+	}
 	if (!cancelSearch(options)) {
 		if (const auto forum = controller()->shownForum().current()) {
 			const auto id = controller()->windowId();
