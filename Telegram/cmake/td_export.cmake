@@ -15,6 +15,8 @@ PRIVATE
     export/export_api_wrap.h
     export/export_controller.cpp
     export/export_controller.h
+    export/export_incremental_state.cpp
+    export/export_incremental_state.h
     export/export_pch.h
     export/export_settings.cpp
     export/export_settings.h

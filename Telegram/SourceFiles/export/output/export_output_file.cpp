@@ -30,6 +30,13 @@ bool File::empty() const {
 	return !_offset;
 }
 
+void File::setResumeOffset(int64 offset) {
+	Expects(offset >= 0);
+	Expects(!_file.has_value());
+
+	_offset = offset;
+}
+
 Result File::writeBlock(const QByteArray &block) {
 	const auto result = writeBlockAttempt(block);
 	if (!result) {

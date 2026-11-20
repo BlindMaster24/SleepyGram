@@ -14,6 +14,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include <cmath>
 
 #include <QtCore/QDateTime>
+#include <QtCore/QFile>
 #include <QtCore/QJsonDocument>
 #include <QtCore/QJsonObject>
 #include <QtCore/QJsonArray>
@@ -2477,7 +2478,29 @@ Result JsonWriter::start(
 	_environment = environment;
 	_stats = stats;
 	_output = fileWithRelativePath(mainFileRelativePath());
+	_incrementalResume = false;
+	_dialogOpen = false;
 	if (_settings.onlySinglePeer()) {
+		if (_settings.incremental
+			&& _settings.incrementalState
+			&& _settings.incrementalState->jsonCloseOffset > 0) {
+			const auto offset = _settings.incrementalState->jsonCloseOffset;
+			auto probe = QFile(mainFilePath());
+			if (probe.exists()
+				&& probe.size() >= offset
+				&& probe.open(QIODevice::ReadOnly)
+				&& probe.seek(offset)) {
+				const auto tail = probe.readAll().simplified();
+				if (tail == "] }") {
+					_output->setResumeOffset(offset);
+					_context.nesting = { Context::kObject, Context::kArray };
+					_currentNestingHadItem
+						= (_settings.incrementalState->messagesCount > 0);
+					_incrementalResume = true;
+					_dialogOpen = true;
+				}
+			}
+		}
 		return Result::Success();
 	}
 	auto block = pushNesting(Context::kObject);
@@ -2981,6 +3004,9 @@ Result JsonWriter::writeDialogStart(const Data::DialogInfo &data) {
 		Unexpected("Dialog type in TypeString.");
 	};
 
+	if (_incrementalResume && _settings.onlySinglePeer()) {
+		return Result::Success();
+	}
 	auto block = _settings.onlySinglePeer()
 		? QByteArray()
 		: prepareArrayItemStart();
@@ -2997,6 +3023,7 @@ Result JsonWriter::writeDialogStart(const Data::DialogInfo &data) {
 		+ Data::NumberToString(Data::PeerToBareId(data.peerId)));
 	block.append(prepareObjectItemStart("messages"));
 	block.append(pushNesting(Context::kArray));
+	_dialogOpen = _settings.onlySinglePeer();
 	return _output->writeBlock(block);
 }
 
@@ -3039,6 +3066,10 @@ Result JsonWriter::writeDialogSlice(const Data::MessagesSlice &data) {
 Result JsonWriter::writeDialogEnd() {
 	Expects(_output != nullptr);
 
+	if (_settings.onlySinglePeer() && _settings.incrementalState) {
+		_settings.incrementalState->jsonCloseOffset = _output->size();
+	}
+	_dialogOpen = false;
 	auto block = popNesting();
 	return _output->writeBlock(block + popNesting());
 }
@@ -3097,6 +3128,13 @@ QString JsonWriter::pathWithRelativePath(const QString &path) const {
 std::unique_ptr<File> JsonWriter::fileWithRelativePath(
 		const QString &path) const {
 	return std::make_unique<File>(pathWithRelativePath(path), _stats);
+}
+
+JsonWriter::~JsonWriter() {
+	if (_dialogOpen && _output && _context.nesting.size() == 2) {
+		auto block = popNesting();
+		(void)_output->writeBlock(block + popNesting());
+	}
 }
 
 } // namespace Output

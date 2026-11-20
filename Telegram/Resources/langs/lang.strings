@@ -9772,3 +9772,5 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 "lng_notify_batch_settings_title" = "Burst notifications";
 "lng_notify_batch_window_label" = "Quiet window before alert";
 "lng_notify_batch_settings_about" = "When enabled per chat (via chat menu), rapid messages are grouped into one notification after the quiet window. Mentions, replies to you, keyword alerts, and calls always arrive immediately.";
+
+"lng_export_option_incremental" = "Update existing export (incremental)";

@@ -68,6 +68,8 @@ public:
 
 	QString mainFilePath() override;
 
+	~JsonWriter() override;
+
 private:
 	using Context = details::JsonContext;
 	enum class DialogsMode {
@@ -104,6 +106,8 @@ private:
 
 	Context _context;
 	bool _currentNestingHadItem = false;
+	bool _incrementalResume = false;
+	bool _dialogOpen = false;
 	DialogsMode _dialogsMode = DialogsMode::None;
 
 	std::unique_ptr<File> _output;

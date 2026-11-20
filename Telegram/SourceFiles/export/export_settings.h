@@ -9,6 +9,9 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 
 #include "base/flags.h"
 #include "base/flat_map.h"
+#include "export/export_incremental_state.h"
+
+#include <memory>
 
 namespace Export {
 namespace Output {
@@ -91,6 +94,9 @@ struct Settings {
 	int32 singleTopicRootId = 0;
 	uint64 singleTopicPeerId = 0;
 	QString singleTopicTitle;
+
+	bool incremental = false;
+	std::shared_ptr<IncrementalState> incrementalState;
 
 	TimeId availableAt = 0;
 

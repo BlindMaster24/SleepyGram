@@ -3309,6 +3309,9 @@ public:
 	Wrap(const QString &path, const QString &base, Stats *stats);
 
 	[[nodiscard]] bool empty() const;
+	[[nodiscard]] int64 size() const { return _file.size(); }
+	[[nodiscard]] bool closed() const { return _closed; }
+	void resumeAt(int64 offset) { _file.setResumeOffset(offset); }
 
 	[[nodiscard]] QByteArray pushTag(
 		const QByteArray &tag,
@@ -6417,13 +6420,53 @@ Result HtmlWriter::writeDialogsStart(const Data::DialogsInfo &data) {
 Result HtmlWriter::writeDialogStart(const Data::DialogInfo &data) {
 	Expects(_chat == nullptr);
 
+	_dialog = data;
+	if (_settings.onlySinglePeer()
+		&& _settings.incremental
+		&& _settings.incrementalState
+		&& _settings.incrementalState->htmlLastFileCloseOffset > 0
+		&& _settings.incrementalState->messagesCount > 0) {
+		const auto &st = *_settings.incrementalState;
+		const auto relPath = data.relativePath + messagesFile(st.htmlLastFileIndex);
+		auto probe = QFile(pathWithRelativePath(relPath));
+		if (probe.exists() && probe.size() >= st.htmlLastFileCloseOffset) {
+			_chat = fileWithRelativePath(relPath);
+			(void)_chat->pushDiv("page_body chat_page");
+			(void)_chat->pushDiv("history");
+			_chat->resumeAt(st.htmlLastFileCloseOffset);
+			_chatFileEmpty = false;
+			_messagesCount = st.messagesCount;
+			_dateMessageId = st.htmlDateMessageId;
+			_lastMessageIdsPerFile = st.htmlLastMessageIdsPerFile;
+			if (st.htmlLastMessage.valid) {
+				auto info = std::make_unique<MessageInfo>();
+				info->id = st.htmlLastMessage.id;
+				info->type = st.htmlLastMessage.isDefault
+					? MessageInfo::Type::Default
+					: MessageInfo::Type::Service;
+				info->fromId = PeerId(st.htmlLastMessage.fromId);
+				info->viaBotId = UserId(st.htmlLastMessage.viaBotId);
+				info->date = TimeId(st.htmlLastMessage.date);
+				info->forwardedFromId = PeerId(st.htmlLastMessage.forwardedFromId);
+				info->forwardedFromName = st.htmlLastMessage.forwardedFromName;
+				info->forwarded = st.htmlLastMessage.forwarded;
+				info->showForwardedAsOriginal
+					= st.htmlLastMessage.showForwardedAsOriginal;
+				info->forwardedDate = TimeId(st.htmlLastMessage.forwardedDate);
+				_lastMessageInfo = std::move(info);
+			} else {
+				_lastMessageInfo = nullptr;
+			}
+			return Result::Success();
+		}
+	}
+
 	_chat = fileWithRelativePath(data.relativePath + messagesFile(0));
 	_chatFileEmpty = true;
 	_messagesCount = 0;
 	_dateMessageId = 0;
 	_lastMessageInfo = nullptr;
 	_lastMessageIdsPerFile.clear();
-	_dialog = data;
 	return Result::Success();
 }
 
@@ -6519,6 +6562,34 @@ Result HtmlWriter::writeDialogEnd() {
 
 	if (const auto result = writeEmptySinglePeer(); !result) {
 		return result;
+	}
+
+	if (_settings.onlySinglePeer()
+		&& _settings.incrementalState
+		&& _messagesCount > 0) {
+		auto &st = *_settings.incrementalState;
+		st.messagesCount = _messagesCount;
+		st.htmlLastFileIndex = (_messagesCount - 1) / kMessagesInFile;
+		st.htmlLastFileCloseOffset = _chat->size();
+		st.htmlDateMessageId = _dateMessageId;
+		st.htmlLastMessageIdsPerFile = _lastMessageIdsPerFile;
+		if (_lastMessageInfo) {
+			st.htmlLastMessage.valid = true;
+			st.htmlLastMessage.id = _lastMessageInfo->id;
+			st.htmlLastMessage.isDefault
+				= (_lastMessageInfo->type == MessageInfo::Type::Default);
+			st.htmlLastMessage.fromId = _lastMessageInfo->fromId.value;
+			st.htmlLastMessage.viaBotId = _lastMessageInfo->viaBotId.bare;
+			st.htmlLastMessage.date = _lastMessageInfo->date;
+			st.htmlLastMessage.forwardedFromId
+				= _lastMessageInfo->forwardedFromId.value;
+			st.htmlLastMessage.forwardedFromName
+				= _lastMessageInfo->forwardedFromName;
+			st.htmlLastMessage.forwarded = _lastMessageInfo->forwarded;
+			st.htmlLastMessage.showForwardedAsOriginal
+				= _lastMessageInfo->showForwardedAsOriginal;
+			st.htmlLastMessage.forwardedDate = _lastMessageInfo->forwardedDate;
+		}
 	}
 
 	if (const auto closed = base::take(_chat)->close(); !closed) {
@@ -6776,10 +6847,11 @@ Result HtmlWriter::finish() {
 Result HtmlWriter::copyFile(
 		const QString &source,
 		const QString &relativePath) const {
-	return File::Copy(
-		source,
-		pathWithRelativePath(relativePath),
-		_stats);
+	const auto target = pathWithRelativePath(relativePath);
+	if (_settings.incremental && QFile::exists(target)) {
+		return Result::Success();
+	}
+	return File::Copy(source, target, _stats);
 }
 
 QString HtmlWriter::mainFilePath() {
@@ -6810,7 +6882,11 @@ std::unique_ptr<HtmlWriter::Wrap> HtmlWriter::fileWithRelativePath(
 		_stats);
 }
 
-HtmlWriter::~HtmlWriter() = default;
+HtmlWriter::~HtmlWriter() {
+	if (_chat && !_chat->closed()) {
+		(void)_chat->close();
+	}
+}
 
 } // namespace Output
 } // namespace Export

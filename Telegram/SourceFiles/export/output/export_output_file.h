@@ -25,6 +25,7 @@ public:
 
 	[[nodiscard]] int64 size() const;
 	[[nodiscard]] bool empty() const;
+	void setResumeOffset(int64 offset);
 
 	[[nodiscard]] Result writeBlock(const QByteArray &block);
 

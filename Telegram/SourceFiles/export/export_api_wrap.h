@@ -11,6 +11,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "data/data_peer_id.h"
 
 namespace Export {
+struct IncrementalState;
 namespace Data {
 struct File;
 struct Chat;
@@ -116,6 +117,7 @@ public:
 		FnMut<void()> done);
 
 	void finishExport(FnMut<void()> done);
+	void collectIncrementalState(IncrementalState &out) const;
 	void skipFile(uint64 randomId);
 	void cancelExportFast();
 
@@ -358,6 +360,14 @@ private:
 	base::flat_set<uint64> _unresolvedCustomEmoji;
 	base::flat_map<uint64, Data::Document> _resolvedCustomEmoji;
 	QVector<MTPMessageRange> _splits;
+
+	int32 _lastExportedMessageId = 0;
+	int _lastExportedSplitIndex = 0;
+	int _lastMediaPhotos = 0;
+	int _lastMediaAudios = 0;
+	int _lastMediaVideos = 0;
+	int _lastMediaFiles = 0;
+	int _lastMediaContacts = 0;
 
 	rpl::event_stream<MTP::Error> _errors;
 	rpl::event_stream<Output::Result> _ioErrors;

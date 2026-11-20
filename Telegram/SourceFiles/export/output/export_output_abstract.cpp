@@ -21,6 +21,9 @@ QString NormalizePath(const Settings &settings) {
 	QDir folder(settings.path);
 	const auto path = folder.absolutePath();
 	auto result = path.endsWith('/') ? path : (path + '/');
+	if (settings.incremental && settings.incrementalState) {
+		return result;
+	}
 	if (!folder.exists() && !settings.forceSubPath) {
 		return result;
 	}

@@ -276,6 +276,69 @@ void SettingsWidget::setupPathAndFormat(
 		not_null<Ui::VerticalLayout*> container) {
 	if (_singlePeerId != 0) {
 		addFormatAndLocationLabel(container);
+		const auto incrementalWrap = container->add(
+			object_ptr<Ui::SlideWrap<Ui::Checkbox>>(
+				container,
+				object_ptr<Ui::Checkbox>(
+					container,
+					tr::lng_export_option_incremental(tr::now),
+					false,
+					st::defaultBoxCheckbox),
+				st::exportSettingPadding));
+		incrementalWrap->toggle(false, anim::type::instant);
+		const auto detected = incrementalWrap->lifetime().make_state<
+			std::shared_ptr<IncrementalState>>();
+		const auto refreshDetected = [=](const QString &path) {
+			auto loaded = LoadIncrementalState(path);
+			const auto matches = loaded
+				&& MatchesIncrementalTarget(
+					*loaded,
+					_session->userId().bare,
+					_singlePeerId.value,
+					readData().singleTopicRootId);
+			if (matches) {
+				*detected = std::make_shared<IncrementalState>(
+					std::move(*loaded));
+				incrementalWrap->toggle(true, anim::type::normal);
+				incrementalWrap->entity()->setChecked(true);
+				changeData([&](Settings &data) {
+					data.incremental = true;
+					data.incrementalState = *detected;
+					data.format = Format((*detected)->format);
+					data.singlePeerFrom = 0;
+				});
+			} else {
+				*detected = nullptr;
+				incrementalWrap->entity()->setChecked(false);
+				incrementalWrap->toggle(false, anim::type::normal);
+				if (readData().incremental || readData().incrementalState) {
+					changeData([&](Settings &data) {
+						data.incremental = false;
+						data.incrementalState = nullptr;
+					});
+				}
+			}
+		};
+		incrementalWrap->entity()->checkedChanges(
+		) | rpl::on_next([=](bool checked) {
+			changeData([&](Settings &data) {
+				if (checked && *detected) {
+					data.incremental = true;
+					data.incrementalState = *detected;
+					data.format = Format((*detected)->format);
+					data.singlePeerFrom = 0;
+				} else {
+					data.incremental = false;
+					data.incrementalState = nullptr;
+				}
+			});
+		}, incrementalWrap->lifetime());
+		value() | rpl::map([](const Settings &data) {
+			return data.path;
+		}) | rpl::distinct_until_changed(
+		) | rpl::on_next([=](const QString &path) {
+			refreshDetected(path);
+		}, incrementalWrap->lifetime());
 		addLimitsLabel(container);
 		return;
 	}
@@ -335,6 +398,9 @@ void SettingsWidget::addLocationLabel(
 }
 
 void SettingsWidget::chooseFormat() {
+	if (readData().incremental) {
+		return;
+	}
 	const auto shared = std::make_shared<base::weak_qptr<Ui::GenericBox>>();
 	const auto callback = [=](Format format) {
 		changeData([&](Settings &data) {
@@ -522,6 +588,9 @@ void SettingsWidget::addLimitsLabel(
 
 	label->overrideLinkClickHandler([=](const QString &url) {
 		if (url == u"internal:edit_from"_q) {
+			if (readData().incremental) {
+				return;
+			}
 			const auto done = [=](TimeId limit) {
 				changeData([&](Settings &settings) {
 					settings.singlePeerFrom = limit;

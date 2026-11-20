@@ -15,6 +15,8 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "base/bytes.h"
 #include "base/options.h"
 #include "base/random.h"
+#include <QtCore/QFileInfo>
+#include <algorithm>
 #include <set>
 #include <deque>
 
@@ -433,7 +435,10 @@ public:
 	LoadedFileCache(int limit);
 
 	void save(const Location &location, const QString &relativePath);
+	void preload(uint64 type, uint64 id, const QString &relativePath);
 	std::optional<QString> find(const Location &location) const;
+	[[nodiscard]] std::vector<IncrementalFileEntry> exportEntries(
+		const QString &basePath) const;
 
 private:
 	int _limit = 0;
@@ -722,6 +727,42 @@ std::optional<QString> ApiWrap::LoadedFileCache::find(
 	return std::nullopt;
 }
 
+void ApiWrap::LoadedFileCache::preload(
+		uint64 type,
+		uint64 id,
+		const QString &relativePath) {
+	if (relativePath.isEmpty()) {
+		return;
+	}
+	const auto key = LocationKey{ type, id };
+	_map[key] = relativePath;
+	_list.push_back(key);
+	if (_list.size() > _limit) {
+		const auto front = _list.front();
+		_list.pop_front();
+		_map.erase(front);
+	}
+}
+
+std::vector<IncrementalFileEntry> ApiWrap::LoadedFileCache::exportEntries(
+		const QString &basePath) const {
+	auto result = std::vector<IncrementalFileEntry>();
+	result.reserve(_map.size());
+	for (const auto &[key, relativePath] : _map) {
+		const auto info = QFileInfo(basePath + relativePath);
+		if (!info.exists()) {
+			continue;
+		}
+		result.push_back(IncrementalFileEntry{
+			.type = key.type,
+			.id = key.id,
+			.relativePath = relativePath,
+			.size = info.size(),
+		});
+	}
+	return result;
+}
+
 ApiWrap::FileProcess::FileProcess(const QString &path, Output::Stats *stats)
 : file(path, stats) {
 }
@@ -814,6 +855,23 @@ void ApiWrap::startExport(
 	_stats = stats;
 	_startProcess = std::make_unique<StartProcess>();
 	_startProcess->done = std::move(done);
+
+	if (_settings->incremental && _settings->incrementalState) {
+		const auto &st = *_settings->incrementalState;
+		_lastExportedMessageId = st.lastMessageId;
+		_lastExportedSplitIndex = st.lastSplitIndex;
+		_lastMediaPhotos = st.mediaCounters.photos;
+		_lastMediaAudios = st.mediaCounters.audios;
+		_lastMediaVideos = st.mediaCounters.videos;
+		_lastMediaFiles = st.mediaCounters.files;
+		_lastMediaContacts = st.mediaCounters.contacts;
+		for (const auto &entry : st.files) {
+			const auto info = QFileInfo(_settings->path + entry.relativePath);
+			if (info.exists() && info.size() == entry.size) {
+				_fileCache->preload(entry.type, entry.id, entry.relativePath);
+			}
+		}
+	}
 
 	using Step = StartProcess::Step;
 	if (_settings->types & Settings::Type::Userpics) {
@@ -1804,6 +1862,14 @@ void ApiWrap::requestMessages(
 
 	_chatProcess = std::make_unique<ChatProcess>();
 	_chatProcess->context.selfPeerId = peerFromUser(*_selfId);
+	if (_settings->incremental && _settings->incrementalState) {
+		const auto &mc = _settings->incrementalState->mediaCounters;
+		_chatProcess->context.photos = mc.photos;
+		_chatProcess->context.audios = mc.audios;
+		_chatProcess->context.videos = mc.videos;
+		_chatProcess->context.files = mc.files;
+		_chatProcess->context.contacts = mc.contacts;
+	}
 	_chatProcess->info = info;
 	_chatProcess->start = std::move(start);
 	_chatProcess->fileProgress = std::move(progress);
@@ -1947,6 +2013,16 @@ void ApiWrap::messagesCountLoaded(int localSplitIndex, int count) {
 	if (localSplitIndex + 1 < _chatProcess->info.splits.size()) {
 		requestMessagesCount(localSplitIndex + 1);
 	} else if (_chatProcess->start(_chatProcess->info)) {
+		if (_settings->incremental
+			&& _settings->incrementalState
+			&& _settings->incrementalState->lastMessageId > 0) {
+			_chatProcess->localSplitIndex = std::clamp(
+				_settings->incrementalState->lastSplitIndex,
+				0,
+				std::max(0, int(_chatProcess->info.splits.size()) - 1));
+			_chatProcess->largestIdPlusOne
+				= _settings->incrementalState->lastMessageId + 1;
+		}
 		requestMessagesSlice();
 	}
 }
@@ -2944,6 +3020,12 @@ void ApiWrap::finishMessagesSlice() {
 	auto slice = *base::take(_chatProcess->slice);
 	if (!slice.list.empty()) {
 		_chatProcess->largestIdPlusOne = slice.list.back().id + 1;
+		for (const auto &msg : slice.list) {
+			if (!Data::SkipMessageByDate(msg, *_settings)) {
+				_lastExportedMessageId = std::max(_lastExportedMessageId, msg.id);
+				_lastExportedSplitIndex = _chatProcess->localSplitIndex;
+			}
+		}
 		if (_settings->singlePeerTill > 0
 			&& slice.list.back().date >= _settings->singlePeerTill) {
 			_chatProcess->lastSlice = true;
@@ -3041,6 +3123,11 @@ void ApiWrap::finishMessages() {
 	Expects(_chatProcess != nullptr);
 	Expects(!_chatProcess->slice.has_value());
 
+	_lastMediaPhotos = _chatProcess->context.photos;
+	_lastMediaAudios = _chatProcess->context.audios;
+	_lastMediaVideos = _chatProcess->context.videos;
+	_lastMediaFiles = _chatProcess->context.files;
+	_lastMediaContacts = _chatProcess->context.contacts;
 	const auto process = base::take(_chatProcess);
 	process->done();
 }
@@ -3058,6 +3145,19 @@ void ApiWrap::requestTopicMessages(
 
 	_topicProcess = std::make_unique<TopicProcess>();
 	_topicProcess->context.selfPeerId = peerFromUser(*_selfId);
+	if (_settings->incremental && _settings->incrementalState) {
+		const auto &mc = _settings->incrementalState->mediaCounters;
+		_topicProcess->context.photos = mc.photos;
+		_topicProcess->context.audios = mc.audios;
+		_topicProcess->context.videos = mc.videos;
+		_topicProcess->context.files = mc.files;
+		_topicProcess->context.contacts = mc.contacts;
+		if (_settings->incrementalState->lastMessageId > 0) {
+			_topicProcess->offsetId
+				= _settings->incrementalState->lastMessageId;
+			_topicProcess->repliesStarted = true;
+		}
+	}
 	_topicProcess->peerId = peerId;
 	_topicProcess->inputPeer = inputPeer;
 	_topicProcess->topicRootId = topicRootId;
@@ -3124,7 +3224,8 @@ void ApiWrap::requestTopicMessages(
 					if (!_topicProcess->start(adjustedCount)) {
 						return;
 					}
-					if (!rootSlicePtr->list.empty()
+					if (!_topicProcess->repliesStarted
+						&& !rootSlicePtr->list.empty()
 						&& !Data::SkipMessageByDate(
 							rootSlicePtr->list.front(),
 							*_settings)) {
@@ -3400,6 +3501,11 @@ void ApiWrap::finishTopicMessagesSlice() {
 				_topicProcess->lastSlice = true;
 			}
 		}
+		for (const auto &msg : slice.list) {
+			if (!Data::SkipMessageByDate(msg, *_settings)) {
+				_lastExportedMessageId = std::max(_lastExportedMessageId, msg.id);
+			}
+		}
 		_topicProcess->processedCount += slice.list.size();
 		if (!_topicProcess->handleSlice(std::move(slice))) {
 			return;
@@ -3460,8 +3566,29 @@ void ApiWrap::finishTopicMessages() {
 	Expects(_topicProcess != nullptr);
 	Expects(!_topicProcess->slice.has_value());
 
+	_lastMediaPhotos = _topicProcess->context.photos;
+	_lastMediaAudios = _topicProcess->context.audios;
+	_lastMediaVideos = _topicProcess->context.videos;
+	_lastMediaFiles = _topicProcess->context.files;
+	_lastMediaContacts = _topicProcess->context.contacts;
 	const auto process = base::take(_topicProcess);
 	process->done();
+}
+
+void ApiWrap::collectIncrementalState(IncrementalState &out) const {
+	if (_selfId) {
+		out.accountUserId = _selfId->bare;
+	}
+	out.lastMessageId = std::max(out.lastMessageId, _lastExportedMessageId);
+	out.lastSplitIndex = _lastExportedSplitIndex;
+	out.mediaCounters.photos = _lastMediaPhotos;
+	out.mediaCounters.audios = _lastMediaAudios;
+	out.mediaCounters.videos = _lastMediaVideos;
+	out.mediaCounters.files = _lastMediaFiles;
+	out.mediaCounters.contacts = _lastMediaContacts;
+	if (_settings && _fileCache) {
+		out.files = _fileCache->exportEntries(_settings->path);
+	}
 }
 
 bool ApiWrap::processFileLoad(

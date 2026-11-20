@@ -69,6 +69,7 @@ private:
 	void setState(State &&state);
 	void ioError(const QString &path);
 	bool ioCatchError(Output::Result result);
+	void saveIncrementalStateIfNeeded();
 	void setFinishedState();
 
 	//void requestPasswordState();
@@ -302,6 +303,9 @@ void ControllerObject::startExport(
 	_environment = environment;
 	_settings.singleTopicRootId = _topicRootId;
 	_settings.singleTopicPeerId = _topicPeerId;
+	if (_settings.onlySinglePeer() && !_settings.incrementalState) {
+		_settings.incrementalState = std::make_shared<IncrementalState>();
+	}
 
 	_settings.path = Output::NormalizePath(_settings);
 	_writer = Output::CreateWriter(_settings.format);
@@ -407,6 +411,7 @@ void ControllerObject::exportNext() {
 			return;
 		}
 		_api.finishExport([=] {
+			saveIncrementalStateIfNeeded();
 			setFinishedState();
 		});
 		return;
@@ -605,6 +610,15 @@ void ControllerObject::exportNextDialog() {
 			if (ioCatchError(_writer->writeDialogSlice(result))) {
 				return false;
 			}
+			if (_settings.onlySinglePeer()
+				&& _settings.incrementalState
+				&& _settings.format == Output::Format::Json) {
+				for (const auto &msg : result.list) {
+					if (!Data::SkipMessageByDate(msg, _settings)) {
+						++_settings.incrementalState->messagesCount;
+					}
+				}
+			}
 			_messagesWritten += result.list.size();
 			setState(stateDialogs(DownloadProgress()));
 			return true;
@@ -790,6 +804,14 @@ void ControllerObject::exportTopic() {
 			if (ioCatchError(_writer->writeDialogSlice(slice))) {
 				return false;
 			}
+			if (_settings.incrementalState
+				&& _settings.format == Output::Format::Json) {
+				for (const auto &msg : slice.list) {
+					if (!Data::SkipMessageByDate(msg, _settings)) {
+						++_settings.incrementalState->messagesCount;
+					}
+				}
+			}
 			_messagesWritten += slice.list.size();
 			setState(stateTopic(DownloadProgress()));
 			return true;
@@ -802,6 +824,7 @@ void ControllerObject::exportTopic() {
 				return;
 			}
 			_api.finishExport([=] {
+				saveIncrementalStateIfNeeded();
 				setFinishedState();
 			});
 		});
@@ -824,6 +847,27 @@ ProcessingState ControllerObject::stateTopic(
 		result.bytesLoaded = progress.ready;
 		result.bytesCount = progress.total;
 	});
+}
+
+void ControllerObject::saveIncrementalStateIfNeeded() {
+	if (!_settings.onlySinglePeer() || !_settings.incrementalState) {
+		return;
+	}
+	auto &st = *_settings.incrementalState;
+	st.mode = _settings.onlySingleTopic()
+		? u"single_topic"_q
+		: u"single_peer"_q;
+	st.format = int(_settings.format);
+	st.topicRootId = _topicRootId;
+	if (_settings.onlySingleTopic()) {
+		st.peerId = _topicPeerId;
+	} else if (const auto dialog = _dialogsInfo.item(0)) {
+		st.peerId = dialog->peerId.value;
+	}
+	_api.collectIncrementalState(st);
+	if (st.lastMessageId > 0 && st.peerId != 0) {
+		SaveIncrementalState(_settings.path, st);
+	}
 }
 
 void ControllerObject::setFinishedState() {
