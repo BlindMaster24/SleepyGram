@@ -230,6 +230,7 @@ private:
 	void requestTopicMessagesSlice();
 	void requestTopicReplies(
 		int offsetId,
+		int offsetDate,
 		int addOffset,
 		int limit,
 		FnMut<void(MTPmessages_Messages&&)> done);
