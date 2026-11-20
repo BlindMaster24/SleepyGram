@@ -635,6 +635,22 @@ void MainWindow::handleActiveChanged(bool active) {
 
 void MainWindow::handleVisibleChanged(bool visible) {
 	if (visible) {
+		if (const auto handle = windowHandle(); handle
+			&& !handle->property("_sgScreenHooked").toBool()) {
+			handle->setProperty("_sgScreenHooked", true);
+			const auto debounce = lifetime().make_state<base::Timer>([=] {
+				unreadCounterChangedHook();
+				Core::App().tray().updateIconCounters();
+				update();
+			});
+			QObject::connect(
+				handle,
+				&QWindow::screenChanged,
+				this,
+				[=](QScreen*) {
+					debounce->callOnce(120);
+				});
+		}
 		if (_maximizedBeforeHide) {
 			DEBUG_LOG(("Window Pos: Window was maximized before hidding, setting maximized."));
 			setWindowState(Qt::WindowMaximized);

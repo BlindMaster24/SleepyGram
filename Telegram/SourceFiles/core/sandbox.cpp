@@ -331,7 +331,17 @@ void Sandbox::setupScreenScale() {
 	logEnv("QT_USE_PHYSICAL_DPI");
 	logEnv("QT_FONT_DPI");
 
-	const auto useRatio = std::clamp(int(std::ceil(ratio)), 1, 3);
+	auto effectiveRatio = ratio;
+	if (base::options::lookup<bool>(kOptionAutoScaleBetweenMonitors).value()) {
+		for (const auto screen : QGuiApplication::screens()) {
+			if (screen) {
+				effectiveRatio = std::max(
+					effectiveRatio,
+					screen->devicePixelRatio());
+			}
+		}
+	}
+	const auto useRatio = std::clamp(int(std::ceil(effectiveRatio)), 1, 3);
 	style::SetDevicePixelRatio(useRatio);
 
 	const auto screen = Sandbox::primaryScreen();

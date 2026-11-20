@@ -17,6 +17,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "api/api_sensitive_content.h"
 #include "apiwrap.h"
 #include "base/call_delayed.h"
+#include "base/options.h"
 #include "base/platform/base_platform_info.h"
 #include "boxes/language_box.h"
 #include "boxes/keys_legend.h"
@@ -24,6 +25,7 @@ https://github.com/telegramdesktop/tdesktop/blob/master/LEGAL
 #include "boxes/username_box.h"
 #include "core/application.h"
 #include "core/click_handler_types.h"
+#include "core/launcher.h"
 #include "data/components/credits.h"
 #include "data/components/promo_suggestions.h"
 #include "data/data_chat_filters.h"
@@ -1133,6 +1135,15 @@ void SetupInterfaceScale(
 		label->setText(labelText(cEvalScale(scale)));
 	};
 	updateLabel(cConfigScale());
+	if (const auto handle = window->widget()->windowHandle()) {
+		QObject::connect(
+			handle,
+			&QWindow::screenChanged,
+			label,
+			[=](QScreen*) {
+				updateLabel(cConfigScale());
+			});
+	}
 
 	const auto inSetScale = container->lifetime().make_state<bool>();
 	const auto setScale = [=](int scale, const auto &repeatSetScale) -> void {
@@ -1206,6 +1217,30 @@ void SetupInterfaceScale(
 	}) | rpl::on_next([=](int scale) {
 		setScale(scale, setScale);
 	}, button->lifetime());
+
+	{
+		auto &autoScaleOption = base::options::lookup<bool>(
+			Core::kOptionAutoScaleBetweenMonitors);
+		const auto autoScaleBtn = AddButtonWithIcon(
+			container,
+			tr::lng_settings_auto_scale_monitors(),
+			icon ? st::settingsButton : st::settingsButtonNoIcon,
+			{ icon ? &st::menuIconShowInChat : nullptr }
+		)->toggleOn(rpl::single(autoScaleOption.value()));
+		autoScaleBtn->toggledChanges(
+		) | rpl::on_next([=, &autoScaleOption](bool checked) {
+			if (checked == autoScaleOption.value()) {
+				return;
+			}
+			autoScaleOption.set(checked);
+			window->show(Ui::MakeConfirmBox({
+				.text = tr::lng_settings_need_restart(),
+				.confirmed = [] { Core::Restart(); },
+				.confirmText = tr::lng_settings_restart_now(),
+				.cancelText = tr::lng_settings_restart_later(),
+			}));
+		}, autoScaleBtn->lifetime());
+	}
 
 	if (!icon) {
 		Ui::AddSkip(container, st::settingsThumbSkip);

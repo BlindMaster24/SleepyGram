@@ -13,6 +13,7 @@ namespace Core {
 
 extern const char kOptionFractionalScalingEnabled[];
 extern const char kOptionHighDpiDownscale[];
+extern const char kOptionAutoScaleBetweenMonitors[];
 extern const char kOptionFreeType[];
 
 class Launcher {

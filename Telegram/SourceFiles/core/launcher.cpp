@@ -316,10 +316,20 @@ base::options::toggle OptionFractionalScalingEnabled({
 	.restartRequired = true,
 });
 
+base::options::toggle OptionAutoScaleBetweenMonitors({
+	.id = kOptionAutoScaleBetweenMonitors,
+	.name = "Auto-scale between monitors",
+	.description = "Automatically adapt interface scale when moving the window between displays with different DPI.",
+	.defaultValue = true,
+	.scope = base::options::windows | base::options::linux | base::options::macos,
+	.restartRequired = true,
+});
+
 } // namespace
 
 const char kOptionFractionalScalingEnabled[] = "fractional-scaling-enabled";
 const char kOptionHighDpiDownscale[] = "high-dpi-downscale";
+const char kOptionAutoScaleBetweenMonitors[] = "auto-scale-between-monitors";
 const char kOptionFreeType[] = "freetype";
 
 Launcher *Launcher::InstanceSetter::Instance = nullptr;
@@ -371,14 +381,24 @@ void Launcher::initHighDpi() {
 	QApplication::setAttribute(Qt::AA_EnableHighDpiScaling, true);
 #endif // Qt < 6.0.0
 
+	const auto autoScaleMonitors = OptionAutoScaleBetweenMonitors.value();
+#ifndef Q_OS_MAC
+	if (OptionHighDpiDownscale.value() || autoScaleMonitors) {
+		qputenv("QT_WIDGETS_HIGHDPI_DOWNSCALE", "1");
+	} else {
+		qunsetenv("QT_WIDGETS_HIGHDPI_DOWNSCALE");
+	}
+#else // !Q_OS_MAC
 	if (OptionHighDpiDownscale.value()) {
 		qputenv("QT_WIDGETS_HIGHDPI_DOWNSCALE", "1");
 	} else {
 		qunsetenv("QT_WIDGETS_HIGHDPI_DOWNSCALE");
 	}
+#endif // !Q_OS_MAC
 
 	if (OptionFractionalScalingEnabled.value()
-			|| OptionHighDpiDownscale.value()) {
+			|| OptionHighDpiDownscale.value()
+			|| autoScaleMonitors) {
 		QApplication::setHighDpiScaleFactorRoundingPolicy(
 			Qt::HighDpiScaleFactorRoundingPolicy::PassThrough);
 	} else {
