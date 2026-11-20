@@ -64,6 +64,16 @@ AyuGram brought some of the best privacy and message-preservation features to Te
       <p>Custom fonts, streamer mode, local interface unlocks, built-in translation, folder tweaks, and macOS Force Click media previews & quick reactions.</p>
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h3>🧭 Daily Workflow Power Tools</h3>
+      <p><strong>Reply Later</strong> local message reminders, <strong>SendGuard</strong> account badges & work-chat confirmations, remembered forward presets, and burst notification grouping.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h3>🗂️ Folders, Bulk Ops & Smart Export</h3>
+      <p>Virtual <strong>Mentions</strong> folder, per-folder sorting & badge controls, multi-select bulk chat actions, incremental chat/topic export, topic/type download sorting, and multi-monitor auto-DPI.</p>
+    </td>
+  </tr>
 </table>
 
 ---
