@@ -1,4 +1,4 @@
-import os, sys, pprint, re, json, pathlib, hashlib, subprocess, glob, tempfile, plistlib, platform
+import os, sys, pprint, re, json, pathlib, hashlib, subprocess, glob, tempfile, plistlib, platform, time
 
 executePath = os.getcwd()
 sys.dont_write_bytecode = True
@@ -527,9 +527,26 @@ def runStages():
         clearCacheKey(stage)
         print('BUILDING:')
         os.chdir(stage['directory'])
-        if not run(commands, stageEnvironment) or not probeMacRust(stage):
-            print(prefix + ': FAILED')
-            finish(1)
+        # Every stage starts with removeDir(), so a failed stage can be safely
+        # repeated. This survives flaky CI networking (DNS, git clone, cargo
+        # fetch) without restarting the whole multi-hour prepare. A stage that
+        # ran for a long time most likely failed to compile, so don't repeat it.
+        maxAttempts = 1 + int(os.environ.get('PREPARE_STAGE_RETRIES', '2'))
+        retryMaxSeconds = int(os.environ.get('PREPARE_STAGE_RETRY_MAX_SECONDS', '1200'))
+        attempt = 0
+        while True:
+            attempt = attempt + 1
+            started = time.time()
+            if run(commands, stageEnvironment) and probeMacRust(stage):
+                break
+            elapsed = time.time() - started
+            if attempt >= maxAttempts or elapsed > retryMaxSeconds:
+                print(prefix + ': FAILED')
+                finish(1)
+            delay = 20 * attempt
+            print(prefix + ': FAILED after ' + str(int(elapsed)) + 's, retrying in ' + str(delay) + 's (attempt ' + str(attempt + 1) + '/' + str(maxAttempts) + ')', flush=True)
+            time.sleep(delay)
+            os.chdir(stage['directory'])
         writeCacheKey(stage)
 
 if customRunCommand:
