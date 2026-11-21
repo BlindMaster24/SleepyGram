@@ -17,7 +17,7 @@ from unittest.mock import patch
 import zipfile
 
 from build_artifact import MACOS_INSTALLER, PLATFORMS
-from update_package import TARGETS, TEST_TRUST_DIR, TRUST_FILES, asset_name, pack, stable_version, trust_bundle, verify_candidate
+from update_package import TARGETS, TEST_TRUST_DIR, TRUST_FILES, asset_name, pack, stable_version, trust_bundle, unpack, verify_candidate
 from update_release import check_release_version, check_uploaded_assets, publish, sign, stable_key_id
 
 
@@ -101,6 +101,21 @@ class SignedUpdateTests(unittest.TestCase):
                 signing.write_bytes(signing.read_bytes()[:-1] + b"?")
                 with self.assertRaisesRegex(ValueError, "Incorrect TDUP signing input"):
                     verify_candidate(self.output, platform, version, KEYS, archive)
+
+    def test_windows_sdk_stream_without_end_marker(self):
+        # desktop-app/lzma's LzmaCompress output, using the Packer settings.
+        payload = bytes.fromhex(
+            "5e00000004350000000000088a2d6541ae4175fb980b0f51993f707eb414b9df0"
+            "19ddfb2d773b872e42b336265c180f8cbb7b70be159517c4fdd34f0fa7005fb1787df6bdf1a00"
+        )
+        content = bytes((i * 31) & 255 for i in range(53))
+        out = io.BytesIO()
+        unpack(io.BytesIO(payload), "windows-x64", out)
+        self.assertEqual(out.read(), content)
+        with self.assertRaisesRegex(ValueError, "Incomplete compressed update data"):
+            unpack(io.BytesIO(payload[:-1]), "windows-x64", io.BytesIO())
+        with self.assertRaisesRegex(ValueError, "Invalid TDUP compressed payload size"):
+            unpack(io.BytesIO(payload + b"x"), "windows-x64", io.BytesIO())
 
     def test_release_version_and_upload(self):
         old = {"tag_name": "v7.9.0", "draft": False, "prerelease": False}
