@@ -27,6 +27,12 @@
     &nbsp;·&nbsp;
     <a href="README-RU.md"><strong>Русский</strong></a>
   </p>
+
+  <p>
+    <a href="docs/assets/SleepyGram-7.5-EN.mp4?raw=true"><img src="docs/assets/SleepyGram-7.5-EN.webp" alt="SleepyGram 7.5 preview showing grouped notifications and Reply Later" width="864" /></a>
+    <br />
+    <a href="docs/assets/SleepyGram-7.5-EN.mp4?raw=true">Download the preview with sound</a> · MP4 · 0:21
+  </p>
 </div>
 
 ---

@@ -27,6 +27,12 @@
     &nbsp;·&nbsp;
     <a href="README.md"><strong>English</strong></a>
   </p>
+
+  <p>
+    <a href="docs/assets/SleepyGram-7.5-RU.mp4?raw=true"><img src="docs/assets/SleepyGram-7.5-RU.webp" alt="Обзор SleepyGram 7.5 с группировкой уведомлений и напоминаниями об ответе" width="864" /></a>
+    <br />
+    <a href="docs/assets/SleepyGram-7.5-RU.mp4?raw=true">Скачать обзор со звуком</a> · MP4 · 0:21
+  </p>
 </div>
 
 ---
