@@ -27,8 +27,8 @@ QString Position(int index, int count) {
 		tr::now,
 		lt_index,
 		QString::number(index),
-		lt_count,
-		count);
+		lt_total,
+		QString::number(count));
 }
 
 } // namespace Ayu::ScreenReader
